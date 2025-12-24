@@ -468,14 +468,26 @@ class MutationDataset:
 
         Returns
         -------
-        pd.Series
-            Gene counts sorted descending by frequency.
+        pd.DataFrame
+            DataFrame with gene as index, ensembl_gene_id column,
+            and count column, sorted descending by count.
         """
-        return (
+        # Get counts per gene
+        counts = (
             self.mutation_db
             .groupby("gene")["Tumor_Sample_Barcode"]
             .nunique()
-            .sort_values(ascending=False))
+            .rename("count"))
+
+        # Get ensembl_gene_id mapping (one per gene symbol)
+        gene_mapping = (
+            self.mutation_db[['gene', 'ensembl_gene_id']]
+            .drop_duplicates('gene')
+            .set_index('gene'))
+
+        # Combine and sort
+        result = counts.to_frame().join(gene_mapping)
+        return result.sort_values('count', ascending=False)
 
     @property
     def variant_type_counts(self):

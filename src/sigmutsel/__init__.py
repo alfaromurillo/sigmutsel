@@ -6,7 +6,7 @@ signature decomposition.
 
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from sigmutsel.models import MutationDataset, Model
 from sigmutsel import locations

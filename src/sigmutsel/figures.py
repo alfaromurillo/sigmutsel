@@ -296,3 +296,236 @@ def comparison_with_observed(expected,
         plt.close("all")
 
     return r2
+
+
+def plot_signature_correlations(
+        db,
+        assignments,
+        location_sig_matrix_norm,
+        L_low,
+        L_high,
+        cov_matrix_for_corr,
+        top_n=None,
+        figsize=None,
+        mutations_log_scale=False,
+        save_path=None,
+        show=True):
+    """Plot correlations with bars and mutation counts.
+
+    Computes signature correlations with provided covariates and
+    visualizes them as bars with mutation counts.
+
+    Parameters
+    ----------
+    db : pd.DataFrame
+        Mutation database with columns 'Tumor_Sample_Barcode',
+        'type', and 'ensembl_gene_id'.
+    assignments : pd.DataFrame
+        Signature assignments per sample from
+        signature_decomposition.
+    location_sig_matrix_norm : str or Path
+        Path to normalized signature matrix file.
+    L_low : float
+        Lower bound for mutation burden filter.
+    L_high : float
+        Upper bound for mutation burden filter.
+    cov_matrix_for_corr : dict
+        Dictionary mapping covariate names to pd.Series
+        indexed by ensembl_gene_id. Example:
+        {"mrt": mrt_series, "gtex": gtex_series, ...}
+    top_n : int, optional
+        If provided, only plot the top N signatures by
+        mutation count. Default None (plot all).
+    figsize : tuple, optional
+        Figure size. Default .
+    mutations_log_scale : bool, optional
+        If True, use log scale for mutations y-axis.
+        Default False.
+    save_path : str or Path, optional
+        Path to save the figure. If None, doesn't save.
+    show : bool, optional
+        Whether to display the figure. Default True.
+
+    Returns
+    -------
+    tuple
+        (fig, ax1, ax2) matplotlib figure and axes objects.
+    """
+    from .signature_attribution import assign_signatures_per_gene_id
+    import matplotlib.pyplot as plt
+    import matplotlib
+    import numpy as np
+
+    # Compute signature attribution per gene
+    sigs_per_gene_id = assign_signatures_per_gene_id(
+        db,
+        assignments,
+        location_sig_matrix_norm,
+        L_low,
+        L_high)
+
+    # Get gene IDs that are present in database
+    db_gene_ids = db['ensembl_gene_id'].unique()
+
+    # Compute correlations with each covariate
+    correlations = pd.DataFrame()
+    for cov_name, cov_series in cov_matrix_for_corr.items():
+        # Get shared gene IDs between signatures and covariate
+        shared_genes = (sigs_per_gene_id.index
+                        .intersection(cov_series.index)
+                        .intersection(db_gene_ids))
+
+        # Compute correlations
+        corr_values = (sigs_per_gene_id.reindex(shared_genes)
+                       .corrwith(cov_series.reindex(shared_genes))
+                       .dropna())
+        correlations[cov_name] = corr_values
+
+    # Add mutation counts
+    correlations['mutations'] = sigs_per_gene_id.sum(axis=0)
+
+    # Sort by mutations descending
+    correlations = correlations.sort_values(
+        by='mutations', ascending=False)
+
+    # Filter to top_n if specified
+    if top_n is not None:
+        correlations = correlations.head(top_n)
+
+    # Separate correlation columns from mutations
+    corr_cols = [
+        col for col in correlations.columns
+        if col != 'mutations']
+    corr_data = correlations[corr_cols]
+    mutations = correlations['mutations']
+
+    # Set up figure and primary axis
+    if figsize is None:
+        max_width_beamer = 307.28987 / 72.27
+        max_height_beamer = 224.14662 / 72.27
+        figsize = (max_width_beamer, max_height_beamer)
+
+    fig, ax1 = plt.subplots(figsize=figsize)
+
+    # X positions for signatures (equal spacing)
+    x_pos = np.arange(len(correlations))
+    width = 0.8 / len(corr_cols)  # Bar width
+
+    # Use Set1 colormap
+    import matplotlib.cm as cm
+    cmap = cm.get_cmap('tab10')
+    colors = [cmap(i) for i in range(len(corr_cols))]
+
+    # Plot bars for each correlation column
+    for i, col in enumerate(corr_cols):
+        offset = (i - len(corr_cols)/2 + 0.5) * width
+        ax1.bar(x_pos + offset,
+                corr_data[col],
+                width,
+                label=col,
+                color=colors[i],
+                alpha=0.8)
+
+    # Configure primary y-axis (correlations)
+    ax1.set_xlabel('Signature', fontsize=9)
+    ax1.set_ylabel('Correlation', fontsize=9)
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(
+        correlations.index, rotation=90, fontsize=7)
+    ax1.tick_params(axis='y', labelsize=7)
+
+    # Add minor ticks every 0.01 for correlation
+    y_min, y_max = ax1.get_ylim()
+    ax1.set_yticks(
+        np.arange(np.ceil(y_min*100)/100,
+                  np.floor(y_max*100)/100 + 0.01, 0.01),
+        minor=True)
+
+    ax1.axhline(y=0, color='DimGray', linestyle='-',
+                linewidth=0.5, alpha=0.5)
+    ax1.legend(loc='upper right', fontsize=8, ncol=1)
+    ax1.grid(axis='y', alpha=0.3)
+
+    # Create secondary y-axis for mutations (horizontal lines)
+    ax2 = ax1.twinx()
+
+    # Draw horizontal lines spanning the bar width
+    line_width = 0.8  # Total width for bars
+    for i, (x, mut_count) in enumerate(zip(x_pos, mutations)):
+        ax2.plot([x - line_width/2, x + line_width/2],
+                 [mut_count, mut_count],
+                 color='DimGray',
+                 linewidth=1.5,
+                 alpha=0.7)
+
+    ax2.set_ylabel('Mutations attributed to signature',
+                   fontsize=9,
+                   color='DimGray')
+    ax2.tick_params(axis='y', labelcolor='DimGray', labelsize=7)
+
+    # Add a simple legend entry for mutations
+    mutations_line = ax2.plot([], [], color='DimGray', linewidth=1.5,
+                              alpha=0.7, label='Mutations')[0]
+
+    # Set legend text color to DimGray
+    ax2_legend = ax2.legend(loc='upper left',
+                            fontsize=7, frameon=True)
+    for text in ax2_legend.get_texts():
+        text.set_color('DimGray')
+
+    if mutations_log_scale:
+        ax2.set_yscale('log')
+        # For log scale, align minimum mutation count with
+        # y=0 of correlation axis
+        y_min, y_max = ax1.get_ylim()
+        zero_frac = (0 - y_min) / (y_max - y_min)
+        mut_min, mut_max = mutations.min(), mutations.max()
+        log_ratio = np.log10(mut_max / mut_min)
+        # Calculate bottom value such that mut_min appears
+        # at zero_frac
+        ax2_bottom = mut_min / (10 ** (log_ratio * zero_frac /
+                                       (1 - zero_frac)))
+        ax2.set_ylim(bottom=ax2_bottom, top=mut_max * 1.05)
+    else:
+        # Align mutations axis so 0 mutations aligns with
+        # 0 correlation
+        y_min, y_max = ax1.get_ylim()
+        # Position of 0 on ax1 as fraction of axis height
+        zero_frac = (0 - y_min) / (y_max - y_min)
+        # Set ax2 limits so 0 aligns with 0 on ax1
+        mut_max = mutations.max()
+        ax2_top = mut_max * 1.1
+        # Solve: (0 - bottom) / (top - bottom) = zero_frac
+        # => bottom = -zero_frac * top / (1 - zero_frac)
+        ax2_bottom = -zero_frac * ax2_top / (1 - zero_frac)
+        ax2.set_ylim(bottom=ax2_bottom, top=ax2_top)
+
+        # Format ticks as 0, 10K, 20K, etc. and remove
+        # negative ticks
+        ax2_ticks = ax2.get_yticks()
+        ax2_ticks = [t for t in ax2_ticks if t >= 0]
+        ax2.set_yticks(ax2_ticks)
+        ax2_ticklabels = [
+            f"{int(t/1000)}K" if t > 0 else "0"
+            for t in ax2_ticks]
+        ax2.set_yticklabels(ax2_ticklabels)
+
+        # Add minor ticks every 1K for mutations
+        mut_min = max(0, ax2.get_ylim()[0])
+        mut_max = ax2.get_ylim()[1]
+        ax2.set_yticks(
+            np.arange(0, mut_max + 1000, 1000),
+            minor=True)
+
+
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+
+    if show:
+        plt.show()
+    else:
+        plt.close('all')
+
+    return fig, ax1, ax2

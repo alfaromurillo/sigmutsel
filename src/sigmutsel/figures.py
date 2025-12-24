@@ -78,8 +78,6 @@ def plot_posteriors_vs_counts(
     import matplotlib.ticker as mticker
     import seaborn as sns
 
-    matplotlib.use("qtAgg")
-
     def _marker(label: str):
         gene = label if level == "gene" else label.split(" p.")[0]
         if gene in oncogenes:
@@ -221,8 +219,6 @@ def comparison_with_observed(expected,
     import matplotlib
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator, AutoMinorLocator
-
-    matplotlib.use("qtAgg")
 
     # --- Normalize observed to a per-gene Series ---
     if isinstance(observed, pd.DataFrame):

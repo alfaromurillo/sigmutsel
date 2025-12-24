@@ -2426,6 +2426,98 @@ class Model:
             level=level,
             **kwargs)
 
+    def plot_signature_correlations(
+            self,
+            top_n=None,
+            figsize=None,
+            mutations_log_scale=False,
+            save_path=None,
+            show=True):
+        """Plot signature correlations with covariates.
+
+        Visualizes correlations between mutational signatures and
+        provided covariates using bars and mutation counts.
+
+        Parameters
+        ----------
+        top_n : int, optional
+            If provided, only plot the top N signatures by
+            mutation count. Default None (plot all).
+        figsize : tuple, optional
+            Figure size. Default None.
+        mutations_log_scale : bool, optional
+            If True, use log scale for mutations y-axis.
+            Default False.
+        save_path : str or Path, optional
+            Path to save the figure. If None, doesn't save.
+        show : bool, optional
+            Whether to display the figure. Default True.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If covariates are not set or required data is missing.
+
+        Examples
+        --------
+        >>> # Plot all signature correlations
+        >>> model.plot_signature_correlations(show=True)
+        >>>
+        >>> # Plot top 5 signatures only
+        >>> model.plot_signature_correlations(
+        ...     top_n=5,
+        ...     save_path='sig_corr.png')
+        >>>
+        >>> # Use log scale for mutations
+        >>> model.plot_signature_correlations(
+        ...     mutations_log_scale=True,
+        ...     figsize=(12, 8))
+        """
+        from pathlib import Path
+        from .figures import plot_signature_correlations
+
+        # Check that covariates are set
+        if self.cov_matrix is None:
+            raise ValueError(
+                "No covariates set. "
+                "Create model with cov_matrix parameter.")
+
+        # Get L_low and L_high from auto kwargs or use defaults
+        L_low = self._auto_mu_taus_kwargs.get('L_low', 64)
+        L_high = self._auto_mu_taus_kwargs.get('L_high', 500)
+
+        # Build signature matrix path
+        location_sig_matrix_norm = (
+            Path(self.dataset.location_maf_files) /
+            "signature_decomposition" /
+            self.dataset.signature_class /
+            "Assignment_Solution" /
+            "Signatures" /
+            "Assignment_Solution_Signatures.txt")
+
+        # Convert cov_matrix DataFrame to dict of Series
+        cov_matrix_for_corr = {
+            col: self.cov_matrix[col]
+            for col in self.cov_matrix.columns}
+
+        # Call the plotting function
+        plot_signature_correlations(
+            db=self.dataset.mutation_db,
+            assignments=self.dataset.sig_assignments,
+            location_sig_matrix_norm=location_sig_matrix_norm,
+            L_low=L_low,
+            L_high=L_high,
+            cov_matrix_for_corr=cov_matrix_for_corr,
+            top_n=top_n,
+            figsize=figsize,
+            mutations_log_scale=mutations_log_scale,
+            save_path=save_path,
+            show=show)
+
     def compute_mu_ms(self, use_cov_effects=True, **kwargs):
         """Compute per-variant mutation rates per sample.
 

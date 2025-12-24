@@ -80,7 +80,12 @@ def filter_db(db, variant_type="SNP"):
 
     variant_type = variant_type.upper()
 
-    if (variant_type == "INDEL") or (variant_type == "ID"):
+    # Handle COSMIC signature class aliases
+    if variant_type in ("SBS", "RNA-SBS"):
+        variant_type = "SNP"
+    elif variant_type == "DBS":
+        variant_type = "DBP"
+    elif (variant_type == "INDEL") or (variant_type == "ID"):
         variant_type = ['INS', 'DEL']
 
     if isinstance(variant_type, list):
@@ -315,6 +320,10 @@ def create_mutation_type_column(df, variant_type="SNP", **kwargs):
 
     """
     variant_type = variant_type.upper()
+
+    # Handle COSMIC signature class aliases
+    if variant_type in ("SBS", "RNA-SBS"):  # alias for SNP
+        variant_type = "SNP"
 
     if variant_type == "SNP":
         return create_mutation_type_column_snp(df, **kwargs)
@@ -858,9 +867,25 @@ def generate_compact_db(
         f"Generating compact mutation database for "
         f"{signature_class} from raw MAF files...")
 
+    # Map signature class to variant type for MAF processing
+    # COSMIC signature classes (SBS, DBS, ID) need to be mapped to
+    # MAF Variant_Type values (SNP, DBP, INS/DEL)
+    signature_to_variant_type = {
+        "SBS": "SNP",
+        "DBS": "DBP",
+        "ID": "ID",
+        "CN": "CN",
+        "SV": "SV",
+        "RNA-SBS": "SNP",
+    }
+
+    variant_type = signature_to_variant_type.get(
+        signature_class,
+        signature_class)
+
     db = load_validate_compact_all_maf_files_parallel(
         maf_dir,
-        variant_type=signature_class,
+        variant_type=variant_type,
         **kwargs)
 
     if location_gene_set is not None:

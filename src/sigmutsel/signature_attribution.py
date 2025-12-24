@@ -72,7 +72,7 @@ def assign_signatures_per_gene_id(
         Signature probabilities summed per gene, indexed by
         ensembl_gene_id with signature columns.
     """
-    from compute_alphas import estimate_alphas
+    from .compute_alphas import estimate_alphas
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 
     sig_matrix = pd.read_csv(

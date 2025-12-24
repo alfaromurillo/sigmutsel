@@ -284,8 +284,8 @@ def compute_mu_g_per_tumor(
         out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
 
     else:
-        from constants import canonical_types_order
-        from constants import extract_context
+        from .constants import canonical_types_order
+        from .constants import extract_context
 
         probs_g_context = (contexts_by_gene/contexts_by_gene.sum(axis=0))
 
@@ -338,11 +338,11 @@ def compute_n_taus(contexts_by_gene_or_db):
     `:const:constants.canonical_types_order`.
 
     """
-    from constants import canonical_contexts_order
+    from .constants import canonical_contexts_order
 
     if (set(canonical_contexts_order) == set(contexts_by_gene_or_db.columns)):
         # case where it is contexts_by_gene
-        from constants import canonical_types_order
+        from .constants import canonical_types_order
 
         repeated_contexts = [f"{context[0]}{context[2]}{context[-1]}"
                              for context in canonical_types_order]
@@ -833,7 +833,7 @@ def compute_mu_m_per_tumor(
         # Sum all signature-specific DataFrames
         mu_g_j = sum(mu_g_j.values())
 
-    from constants import extract_context
+    from .constants import extract_context
 
     variants = variants_df.copy()
 

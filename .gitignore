@@ -98,3 +98,6 @@ results/
 *.vcf
 *.bam
 *.sam
+
+# Auto-generated version file (setuptools-scm)
+src/sigmutsel/_version.py

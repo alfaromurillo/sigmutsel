@@ -8,8 +8,6 @@ burden corrected for low counts (ell_hats) per tumor.
 import logging
 import pandas as pd
 
-from codon_probabilities import prob_random_snv_is_syn
-
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +53,11 @@ def count_mutation_burden(db):
     mutation_counts = pd.concat([total_counts,
                                  silent_counts], axis=1).fillna(0).astype(int)
 
-    mutation_counts['expected_mutations'] = (
-        mutation_counts['synonymous_mutations'] / prob_random_snv_is_syn)
-
     return mutation_counts
 
 
 def estimate_ell_hats(df, L_low, L_high, *,
-                      cut_at_L_low=True,
-                      use_expected_burden=False):
+                      cut_at_L_low=False):
     """Estimate adjusted mutation burdens (ell_hat) per sample.
 
     This function uses the total or expected mutation burden per
@@ -75,19 +69,14 @@ def estimate_ell_hats(df, L_low, L_high, *,
     adjustment is applied:
         ell_hat = ell + (1 - ell / L_low) * ell
 
-    When `use_expected_burden` is True, the burden is estimated from
-    synonymous mutation counts and a fixed probability of
-    synonymity.
-
     Parameters
     ----------
     df : pd.DataFrame
         DataFrame containing mutation burden per sample, as returned
         by :func:`count_mutation_burden`. Must include columns:
-        'total_mutations', 'expected_mutations', and
-        'synonymous_mutations'. If those columns are not present it
-        assumes that `df` is a mutation DataFrame and runs
-        :func:`count_mutation_burden` first.
+        'total_mutations', and 'synonymous_mutations'. If those
+        columns are not present it assumes that `df` is a mutation
+        DataFrame and runs :func:`count_mutation_burden` first.
 
     L_low : float
         Threshold below which burdens are corrected.
@@ -99,10 +88,6 @@ def estimate_ell_hats(df, L_low, L_high, *,
         If True, low-burden samples are assigned a fixed value.
         If False, use a smoothed burden adjustment.
 
-    use_expected_burden : bool, default=True
-        Whether to use expected burden (via synonymous mutations)
-        instead of raw total burden.
-
     Returns
     -------
     ell_hats : pd.Series
@@ -110,27 +95,14 @@ def estimate_ell_hats(df, L_low, L_high, *,
 
     """
     if all(col in df.columns for col in ['total_mutations',
-                                         'expected_mutations',
                                          'synonymous_mutations']):
         mb = df.copy()
 
     else:
         mb = count_mutation_burden(df)
 
-    if use_expected_burden:
-        ells = mb['expected_mutations']
-
-        # Fit regression through origin: syn vs total
-        zoom_mask = ((mb['total_mutations'] >= L_low)
-                     & (mb['total_mutations'] <= L_high))
-        x = mb['total_mutations'][zoom_mask]
-        y = mb['synonymous_mutations'][zoom_mask]
-        slope = (x * y).sum() / (x**2).sum()
-        expected_syn_at_L_low = slope * L_low
-        L_low_star = expected_syn_at_L_low / prob_random_snv_is_syn
-    else:
-        ells = mb['total_mutations']
-        L_low_star = L_low
+    ells = mb['total_mutations']
+    L_low_star = L_low
 
     samples_low = mb['total_mutations'] < L_low
     samples_not_low = ~samples_low

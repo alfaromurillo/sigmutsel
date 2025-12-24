@@ -1185,6 +1185,7 @@ class MutationDataset:
         print(title)
         print("="*len(title))
         self.generate_contexts_by_gene(fastas=fastas)
+        print("")
 
         title = "Variant data: generating annotations and presence."
         print("="*len(title))
@@ -1241,7 +1242,7 @@ class Model:
         Mutation rates per variant per sample. Lazy-loaded.
     Auto-initialization parameters
         Optional keyword arguments ``L_low``, ``L_high``,
-        ``cut_at_L_low``, ``use_expected_burden``,
+        ``cut_at_L_low``,
         ``cov_effects_per_sigma``,
         ``prob_g_tau_tau_independent``, and ``signature_selection``
         can be provided at initialization to automatically run
@@ -1326,7 +1327,6 @@ class Model:
             L_low: float | None = None,
             L_high: float | None = None,
             cut_at_L_low: bool | None = None,
-            use_expected_burden: bool | None = None,
             cov_effects_per_sigma: bool | None = None,
             prob_g_tau_tau_independent: bool | None = None,
             signature_selection: list | tuple | None = None):
@@ -1349,8 +1349,7 @@ class Model:
         self._auto_mu_taus_kwargs = {
             "L_low": L_low,
             "L_high": L_high,
-            "cut_at_L_low": cut_at_L_low,
-            "use_expected_burden": use_expected_burden}
+            "cut_at_L_low": cut_at_L_low}
         self._auto_cov_effects_per_sigma = cov_effects_per_sigma
         self._auto_prob_g_tau_tau_independent = (
             prob_g_tau_tau_independent)
@@ -3093,9 +3092,6 @@ class Model:
                 correction
             - cut_at_L_low : bool, default False
                 Whether to hard clip burden estimates at L_low
-            - use_expected_burden : bool, default False
-                Whether to estimate expected burden from synonymous
-                mutations
 
         Returns
         -------

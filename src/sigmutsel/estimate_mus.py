@@ -29,7 +29,6 @@ def compute_mu_tau_per_tumor(db,
                              L_low=None,
                              L_high=None,
                              cut_at_L_low=False,
-                             use_expected_burden=False,
                              separate_per_sigma=False):
     r"""Compute per-tumor per-type baseline mutation rates.
 
@@ -76,11 +75,6 @@ def compute_mu_tau_per_tumor(db,
           burden estimates
         - True: Hard clip all burden estimates below L_low to
           exactly L_low
-    use_expected_burden : bool, default False
-        Whether to estimate expected burden from synonymous
-        mutation counts rather than using observed total
-        mutation counts. Useful when observed counts may be
-        biased.
     separate_per_sigma : bool, default False
         Whether to return signature-separated mutation rates:
         - False: Return single DataFrame summed across all
@@ -140,8 +134,7 @@ def compute_mu_tau_per_tumor(db,
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 
     ell_hats = estimate_ell_hats(db, L_low, L_high,
-                                 cut_at_L_low=cut_at_L_low,
-                                 use_expected_burden=use_expected_burden)
+                                 cut_at_L_low=cut_at_L_low)
 
     sig_matrix = load_signature_matrix(location_signature_matrix)
 

@@ -24,6 +24,7 @@ def plot_posteriors_vs_counts(
         *,
         level: str = "gene",
         max_shift_x: int | None = None,
+        min_shift_x: int | None = None,
         save: str | None = None,
         show: bool = False) -> None:
     """Plot posterior mean ± 94 % HDI against observed sample counts.
@@ -53,6 +54,9 @@ def plot_posteriors_vs_counts(
     max_shift_x : int or None, optional
         Upper limit for the *x*-axis.  If *None* (default) the limit is set
         to slightly above the largest count observed.
+    min_shift_x : int or None, optional
+        Lower limit for the *x*-axis.  If *None* (default) the limit is set
+        to slightly before the lowest count observed.
     save : str or None, optional
         File path (usually ``*.png``) to save the figure.  If *None*
         (default) the figure is only displayed and not written to disk.
@@ -143,7 +147,7 @@ def plot_posteriors_vs_counts(
         ax.set_ylim(0.9, 10**3)
 
     xmax = max_shift_x or df["count"].max()*1.02
-    xmin = 40 if level == "gene" else 5
+    xmin = min_shift_x or df["count"].min()*0.98
     ax.set_xlim(xmin, xmax)
     major = 50 if level == "gene" else 10
     minor = 10 if level == "gene" else 1

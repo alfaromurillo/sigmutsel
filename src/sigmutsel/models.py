@@ -3339,6 +3339,10 @@ class Model:
             compute_kwargs["L_low"] = l_low
             compute_kwargs["L_high"] = l_high
 
+            # Store L_low and L_high for use by other methods
+            self._auto_mu_taus_kwargs["L_low"] = l_low
+            self._auto_mu_taus_kwargs["L_high"] = l_high
+
             # Compute mutation burdens
             self._mu_taus = compute_mu_tau_per_tumor(
                 db=self.dataset.mutation_db,

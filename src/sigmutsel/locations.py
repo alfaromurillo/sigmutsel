@@ -38,7 +38,7 @@ location_inclusion_signatures_matrix = (
 location_hgnc_complete_set = DATA_DIR / "hgnc_complete_set.txt"
 
 location_cancer_gene_census = (
-    DATA_DIR / "Census_allFri_May_30_16_47_00_2025.tsv")
+    DATA_DIR / "Census_allFri May 30 16_47_00 2025.tsv")
 
 location_cosmic_cancer_gene_census = (
     DATA_DIR / "Cosmic_CancerGeneCensus_v101_GRCh38.tsv")

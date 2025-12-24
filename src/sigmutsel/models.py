@@ -185,6 +185,8 @@ class MutationDataset:
 
     def save_dataset(self, directory):
         """Persist loaded dataset artifacts to a directory."""
+        import json
+
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
 
@@ -244,7 +246,13 @@ class MutationDataset:
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             if fmt == 'parquet':
-                value.to_parquet(file_path)
+                # Convert list columns to JSON strings for parquet compatibility
+                value_to_save = value.copy()
+                for col in value_to_save.columns:
+                    if value_to_save[col].apply(lambda x: isinstance(x, list)).any():
+                        value_to_save[col] = value_to_save[col].apply(
+                            lambda x: json.dumps(x) if isinstance(x, list) else x)
+                value_to_save.to_parquet(file_path)
             elif fmt == 'csv':
                 value.to_csv(file_path)
             else:
@@ -274,6 +282,8 @@ class MutationDataset:
     @classmethod
     def load_dataset(cls, directory):
         """Load dataset artifacts from a directory created by save_dataset."""
+        import json
+
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
         if not manifest_path.exists():
@@ -293,6 +303,17 @@ class MutationDataset:
 
             if fmt == 'parquet':
                 value = pd.read_parquet(file_path)
+                # Convert JSON strings back to lists for columns like mut_types
+                for col in value.columns:
+                    # Check if column contains JSON array strings
+                    sample = value[col].dropna().iloc[0] if not value[col].dropna().empty else None
+                    if isinstance(sample, str) and sample.startswith('['):
+                        try:
+                            value[col] = value[col].apply(
+                                lambda x: json.loads(x) if isinstance(x, str) and x.startswith('[') else x)
+                        except (json.JSONDecodeError, TypeError):
+                            # If it's not valid JSON, leave it as is
+                            pass
             elif fmt == 'csv':
                 value = pd.read_csv(file_path, index_col=0)
             else:

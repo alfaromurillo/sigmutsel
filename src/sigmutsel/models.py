@@ -941,6 +941,11 @@ class MutationDataset:
         generate_mutational_matrices : Generate matrices first
         has_mutational_matrices : Check if matrices exist
         """
+        title = "Signature decomposition"
+        print("="*len(title))
+        print(title)
+        print("="*len(title))
+
         import logging
         from pathlib import Path
         from .signature_decomposition import (
@@ -966,7 +971,7 @@ class MutationDataset:
         if not self.has_mutational_matrices():
             logger.info(
                 "Mutational matrices not found. "
-                "Generating them before signature decomposition.")
+                "Generating them before signature decomposition...")
             matrix_kwargs = {}
             if exome is not None:
                 matrix_kwargs['exome'] = exome
@@ -974,6 +979,8 @@ class MutationDataset:
                 reference_genome=genome_build,
                 force_generation=False,
                 **matrix_kwargs)
+            logger.info("...done.")
+            print("")
 
         if not self.has_mutational_matrices():
             raise FileNotFoundError(
@@ -1070,10 +1077,9 @@ class MutationDataset:
             genome_build=genome_build,
             **kwargs)
 
-        if results_exist:
-            logger.info("... done loading signature decomposition.")
-        else:
+        if not results_exist:
             logger.info("... done with signature decomposition.")
+            print("")
 
         # Load the normalized signature matrix
         sig_matrix_path = (
@@ -1086,6 +1092,7 @@ class MutationDataset:
             logger.info(
                 f"Loaded normalized signature matrix from "
                 f"{sig_matrix_path}")
+            print("")
         else:
             logger.warning(
                 f"Signature matrix not found at {sig_matrix_path}")
@@ -1096,6 +1103,7 @@ class MutationDataset:
         self._signature_cosmic_version = cosmic_version
         self._signature_genome_build = genome_build
 
+        print("")
         return self._sig_assignments
 
     def generate_contexts_by_gene(

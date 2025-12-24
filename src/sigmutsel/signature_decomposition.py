@@ -644,5 +644,6 @@ def signature_decomposition(
                     f"'{cancer_type}'")
 
     logger.info("... done.")
+    print("")
 
     return assignments

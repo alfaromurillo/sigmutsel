@@ -52,6 +52,7 @@ def compute_contexts_by_gene(
         Index → stable Ensembl gene ID (version stripped)
         Columns → 32 context counts (ACA … TTT)
     """
+    logger.info("Build a 32-context table for the longest transcript of each gene....")
     # ---- normalise inputs ------------------------------------------------
     if fasta_files is None:
         fasta_files = location_cds_fasta
@@ -130,6 +131,8 @@ def compute_contexts_by_gene(
             .astype(int)
             .sort_index())
 
+    logger.info("...done.")
+    print("")
     return df
 
 

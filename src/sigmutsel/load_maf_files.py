@@ -899,6 +899,7 @@ def generate_compact_db(
             f"Saved compact mutation database to {location_db}")
 
     logger.info("... done generating compact mutation database.")
+    print("")
 
     return db
 

@@ -111,6 +111,7 @@ def extract_variants_from_db(db: pd.DataFrame,
               .set_index("variant"))
 
     logger.info("... done.")
+    print("")
     return result
 
 
@@ -162,6 +163,7 @@ def annotate_variants_with_types(
     out["mut_types"] = tidy_types.reindex(key).values
 
     logger.info("... done.")
+    print("")
     return out
 
 

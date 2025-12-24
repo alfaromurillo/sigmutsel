@@ -1165,19 +1165,34 @@ class MutationDataset:
 
     def build_full_dataset(self, fastas=None):
         """Run the full data-generation pipeline for this dataset."""
-        logger.info("Mutation data: building compact mutation database.")
+        title = "Mutation data: building compact mutation database."
+        print("="*len(title))
+        print(title)
+        print("="*len(title))
         self.generate_mutation_db()
+        print("")
 
-        logger.info("Gene presence: computing matrices.")
+        title = "Gene presence: computing matrices."
+        print("="*len(title))
+        print(title)
+        print("="*len(title))
         self.compute_gene_presence()
         self.compute_gene_presence_non_silent()
+        print("")
 
-        logger.info("Contexts by gene: computing opportunities.")
+        title = "Contexts by gene: computing opportunities."
+        print("="*len(title))
+        print(title)
+        print("="*len(title))
         self.generate_contexts_by_gene(fastas=fastas)
 
-        logger.info("Variant data: generating annotations and presence.")
+        title = "Variant data: generating annotations and presence."
+        print("="*len(title))
+        print(title)
+        print("="*len(title))
         self.generate_variant_db()
         self.compute_variants_present()
+        print("")
 
 
 @dataclass(repr=False, init=False)

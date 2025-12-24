@@ -133,9 +133,9 @@ def compute_mu_tau_per_tumor(db,
     ...     separate_per_sigma=True)
     >>> mu_sig1 = mu_by_sig['Signature_1']
     """
-    from compute_alphas import estimate_alphas
-    from compute_mutation_burden import estimate_ell_hats
-    from load_signature_matrix import load_signature_matrix
+    from .compute_alphas import estimate_alphas
+    from .compute_mutation_burden import estimate_ell_hats
+    from .load_signature_matrix import load_signature_matrix
 
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 

@@ -19,7 +19,7 @@ import logging
 import pandas as pd
 import numpy as np
 
-from compute_mutation_burden import count_mutation_burden
+from .compute_mutation_burden import count_mutation_burden
 
 
 logger = logging.getLogger(__name__)

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigmutsel"
+version = "0.1.0"
+authors = [
+    {name = "Jorge Alfaro-Murillo", email = "jorge.alfaro@ucr.ac.cr"},
+]
+description = "Signature based mutation rate estimation and selection inference in cancer"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+    "pymc>=5.0.0",
+    "arviz>=0.15.0",
+    "scikit-learn>=1.3.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "biopython>=1.80",
+    "SigProfilerMatrixGenerator>=1.2",
+    "SigProfilerAssignment>=0.1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+sigmutsel-setup = "sigmutsel.setup:main"
+sigmutsel-check-data = "sigmutsel.locations:print_data_status"
+
+[project.urls]
+Homepage = "https://github.com/alfaromurillo/sigmutsel"
+Repository = "https://github.com/alfaromurillo/sigmutsel"
+Issues = "https://github.com/alfaromurillo/sigmutsel/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 70
+target-version = ['py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 70
+target-version = "py310"

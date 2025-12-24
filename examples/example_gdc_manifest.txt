@@ -1,0 +1,6 @@
+id	filename	md5	size	state
+3a875986-a034-462a-ab56-527f384164b3	c4334b80-ba31-484a-a81f-c07077e9ecfc.wxs.aliquot_ensemble_masked.maf.gz	c734b4b736bd3bba6fef8be8e54c1118	5938	released
+de662663-2cbc-4f0b-b138-c56e484f1809	7ca0615f-4ca0-4d3a-b86b-ca1d76a00eb9.wxs.aliquot_ensemble_masked.maf.gz	16a2df43c8b4ae4385d39555b48465b1	727040	released
+3bfcb35a-16cc-42f7-ba4f-4d77e0747209	134638b3-f509-42db-8dab-48e1a9403653.wxs.aliquot_ensemble_masked.maf.gz	84f7886ec2017d4d1a239032885e0203	340692	released
+2b245782-ba86-42d8-806c-0567ad6372d2	c2ea6ca3-275b-4457-85f6-39eab00b774f.wxs.aliquot_ensemble_masked.maf.gz	2c703050aec2dc1ed98de26d16851df5	169726	released
+2199b042-4d39-4584-bb5c-50cda194771c	80606d36-3559-4811-a0ad-f1ba0379f723.wxs.aliquot_ensemble_masked.maf.gz	a285eb74b67295d82f533a985426f19b	36031	released

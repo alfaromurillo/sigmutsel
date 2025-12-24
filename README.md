@@ -87,7 +87,7 @@ from sigmutsel import MutationDataset, Model
 
 # Create dataset from MAF files
 dataset = MutationDataset(
-    maf_directory="/path/to/maf/files",
+    location_maf_files="/path/to/maf/files",
     signature_class="SBS"
 )
 

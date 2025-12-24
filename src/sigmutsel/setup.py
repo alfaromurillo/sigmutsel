@@ -3,11 +3,11 @@
 This module handles downloading large reference files that are not
 included in the package distribution. Users can run this as:
 
-    python -m sigmutsel.download
+    python -m sigmutsel setup
 
 Or import and call programmatically:
 
-    from sigmutsel.download import download_all
+    from sigmutsel.setup import download_all
     download_all()
 """
 
@@ -263,16 +263,16 @@ def main():
         epilog="""
 Examples:
   # Download all files with defaults
-  python -m sigmutsel.download
+  python -m sigmutsel setup
 
   # Re-download even if files exist
-  python -m sigmutsel.download --force
+  python -m sigmutsel setup --force
 
   # Keep FASTA compressed
-  python -m sigmutsel.download --keep-fasta-compressed
+  python -m sigmutsel setup --keep-fasta-compressed
 
   # Decompress GTF files
-  python -m sigmutsel.download --decompress-gtf
+  python -m sigmutsel setup --decompress-gtf
         """
     )
 

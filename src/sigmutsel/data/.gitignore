@@ -1,0 +1,15 @@
+# Ignore large downloaded files
+*.fa
+*.fa.gz
+*.gtf
+*.gtf.gz
+*.gct
+*.gct.gz
+hgnc_complete_set.txt
+
+# Keep small reference files
+!exclusion_signatures_matrix_by_cancer_type.txt
+!inclusion_signatures_matrix_by_cancer_type.txt
+!Census_allFri_May_30_16_47_00_2025.tsv
+!Cosmic_CancerGeneCensus_v101_GRCh38.tsv
+!README.md

@@ -1,0 +1,16 @@
+include README.md
+include LICENSE
+include pyproject.toml
+recursive-include src *.py
+recursive-include src/sigmutsel/data README.md
+recursive-include src/sigmutsel/data exclusion_signatures_matrix_by_cancer_type.txt
+recursive-include src/sigmutsel/data inclusion_signatures_matrix_by_cancer_type.txt
+recursive-include src/sigmutsel/data Census_allFri_May_30_16_47_00_2025.tsv
+recursive-include src/sigmutsel/data Cosmic_CancerGeneCensus_v101_GRCh38.tsv
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude src/sigmutsel/data *.fa
+recursive-exclude src/sigmutsel/data *.fa.gz
+recursive-exclude src/sigmutsel/data *.gtf
+recursive-exclude src/sigmutsel/data *.gtf.gz
+recursive-exclude src/sigmutsel/data hgnc_complete_set.txt

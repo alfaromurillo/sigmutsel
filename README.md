@@ -160,7 +160,7 @@ download_tcga_maf_files(
 )
 ```
 
-**Example:** See `examples/example_gdc_manifest.txt` for a sample manifest file with 5 SKCM samples.
+**Example:** See `examples/example_gdc_manifest.txt` for a sample manifest file with 50 SKCM samples.
 
 The utility will:
 - Download files using `gdc-client`

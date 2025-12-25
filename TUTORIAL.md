@@ -364,7 +364,7 @@ Example covariate sources:
 ## Example Data
 
 Example files referenced in this tutorial:
-- `example_gdc_manifest.txt`: 5 SKCM samples from TCGA
+- `example_gdc_manifest.txt`: 50 SKCM samples from TCGA
 - `example_gtex_skin_covariates.parquet`: GTEx skin tissue expression
 
 Download from:

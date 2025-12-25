@@ -85,39 +85,33 @@ See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed installation instructions.
 ```python
 from sigmutsel import MutationDataset, Model
 
-# Create dataset from MAF files
+# 1. Create dataset from MAF files
 dataset = MutationDataset(
-    location_maf_files="/path/to/maf/files",
-    signature_class="SBS"
-)
+    location_maf_files="maf_files",
+    signature_class="SBS")
 
-# Run signature decomposition
+# 2. Run signature decomposition
 dataset.run_signature_decomposition(
     genome_build='GRCh38',
     exome=True,
-    cosmic_version=3.4
-)
+    cosmic_version=3.4)
 
-# Build full dataset
+# 3. Build full dataset
 dataset.build_full_dataset()
 
-# Create model without covariates
+# 4. Create model and estimate mutation rates
 model = Model(dataset, cov_matrix=None)
 model.compute_mu_gs()
 
-# Or with covariates
-import pandas as pd
-cov_matrix = pd.DataFrame(...)  # Your covariate matrix
-model = Model(dataset, cov_matrix)
-model.estimate_cov_effects()
+# 5. Estimate selection
+model.estimate_gamma('TP53', level='gene')
+model.estimate_gamma('BRAF p.V600E', level='variant')
 
-# Estimate selection for specific variants/genes
-model.estimate_gamma('KRAS p.G12D', level='variant')
-model.estimate_gamma('ENSG00000133703', level='gene')
-
-# Plot results
-model.plot_gamma_results(show=True)
+# 6. Plot results
+model.plot_gamma_results(save='selection.png')
 ```
+
+See [TUTORIAL.md](TUTORIAL.md) for a detailed walkthrough including covariates, PCA, and signature-specific effects.
 
 ## Downloading TCGA Data
 

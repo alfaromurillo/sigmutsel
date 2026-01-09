@@ -390,12 +390,12 @@ def run_signature_decomposition(samples,
             f"Signatures to include: {expanded_included}")
 
     if exclude_signature_subgroups is not None:
+        how_many_sigs = (f"{len(exclude_signature_subgroups)}"
+                         if isinstance(exclude_signature_subgroups, list)
+                         else 'unknown')
         logger.info(
-            f"Passing exclude_signature_subgroups with "
-            f"{(len(exclude_signature_subgroups)
-                if isinstance(exclude_signature_subgroups, list)
-                else 'unknown')} "
-            f"signatures")
+            "Passing exclude_signature_subgroups with "
+            f"{how_many_sigs} signatures")
 
     Analyzer.cosmic_fit(
         samples=samples,

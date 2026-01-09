@@ -517,7 +517,8 @@ def plot_signature_correlations(
         color="DimGray",
         linewidth=1.5,
         alpha=0.7,
-        label="Mutations")[0]
+        label="Mutations",
+    )[0]
 
     # Set legend text color to DimGray
     ax2_legend = ax2.legend(

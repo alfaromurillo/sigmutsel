@@ -34,18 +34,19 @@ logger = logging.getLogger(__name__)
 #
 # For a full description of all the columns check
 # :var:`constants.maf_column_descriptions`
-cols_to_keep = ['Tumor_Sample_Barcode',
-                'Chromosome',
-                # # Gene is the Ensembl stable gene identifier
-                # 'Gene',  # it will change to 'ensembl_gene_id'
-                # 'CONTEXT',
-                # 'Reference_Allele',
-                # 'Tumor_Seq_Allele2',
-                'Variant_Classification',
-                # 'Variant_Type',
-                # 'Codons',
-                "Start_Position",
-                ]
+cols_to_keep = [
+    "Tumor_Sample_Barcode",
+    "Chromosome",
+    # # Gene is the Ensembl stable gene identifier
+    # 'Gene',  # it will change to 'ensembl_gene_id'
+    # 'CONTEXT',
+    # 'Reference_Allele',
+    # 'Tumor_Seq_Allele2',
+    "Variant_Classification",
+    # 'Variant_Type',
+    # 'Codons',
+    "Start_Position",
+]
 
 
 def filter_db(db, variant_type="SNP"):
@@ -75,8 +76,12 @@ def filter_db(db, variant_type="SNP"):
 
     """
     if "Variant_Type" not in db.columns:
-        logger.error("Missing 'Variant_Type' column in input DataFrame.")
-        raise KeyError("Input DataFrame must contain 'Variant_Type' column.")
+        logger.error(
+            "Missing 'Variant_Type' column in input DataFrame."
+        )
+        raise KeyError(
+            "Input DataFrame must contain 'Variant_Type' column."
+        )
 
     variant_type = variant_type.upper()
 
@@ -86,7 +91,7 @@ def filter_db(db, variant_type="SNP"):
     elif variant_type == "DBS":
         variant_type = "DBP"
     elif (variant_type == "INDEL") or (variant_type == "ID"):
-        variant_type = ['INS', 'DEL']
+        variant_type = ["INS", "DEL"]
 
     if isinstance(variant_type, list):
         return db[db["Variant_Type"].isin(variant_type)].copy()
@@ -114,15 +119,19 @@ def validate_chromosome(df):
         values.
 
     """
-    invalid_entries = df[~df['Chromosome'].isin(chromosomes)]
+    invalid_entries = df[~df["Chromosome"].isin(chromosomes)]
 
     if not invalid_entries.empty:
-        logger.warning(f"Removed {len(invalid_entries)} invalid chromosomes")
-        logger.debug(f"Invalid rows:\n{invalid_entries[cols_to_keep]}")
+        logger.warning(
+            f"Removed {len(invalid_entries)} invalid chromosomes"
+        )
+        logger.debug(
+            f"Invalid rows:\n{invalid_entries[cols_to_keep]}"
+        )
     else:
         logger.debug("All entries have valid chromosomes")
 
-    return df[df['Chromosome'].isin(chromosomes)]
+    return df[df["Chromosome"].isin(chromosomes)]
 
 
 def validate_alleles_snv(df):
@@ -144,20 +153,27 @@ def validate_alleles_snv(df):
         DataFrame with only valid SNVs (one-letter alleles).
 
     """
-    is_valid_ref = df['Reference_Allele'].str.len() == 1
-    is_valid_alt = df['Tumor_Seq_Allele2'].str.len() == 1
+    is_valid_ref = df["Reference_Allele"].str.len() == 1
+    is_valid_alt = df["Tumor_Seq_Allele2"].str.len() == 1
 
-    is_nuc_ref = df['Reference_Allele'].str.upper().isin(nucleotides)
-    is_nuc_alt = df['Tumor_Seq_Allele2'].str.upper().isin(nucleotides)
+    is_nuc_ref = df["Reference_Allele"].str.upper().isin(nucleotides)
+    is_nuc_alt = df["Tumor_Seq_Allele2"].str.upper().isin(nucleotides)
 
     is_valid = is_valid_ref & is_valid_alt & is_nuc_ref & is_nuc_alt
     invalid_entries = df[~is_valid]
 
-    relevant_cols = cols_to_keep + ['Reference_Allele', 'Tumor_Seq_Allele2']
+    relevant_cols = cols_to_keep + [
+        "Reference_Allele",
+        "Tumor_Seq_Allele2",
+    ]
 
     if not invalid_entries.empty:
-        logger.warning(f"Removed {len(invalid_entries)} invalid alleles")
-        logger.debug(f"Invalid rows:\n{invalid_entries[relevant_cols]}")
+        logger.warning(
+            f"Removed {len(invalid_entries)} invalid alleles"
+        )
+        logger.debug(
+            f"Invalid rows:\n{invalid_entries[relevant_cols]}"
+        )
     else:
         logger.debug("All entries have valid one-letter alleles")
 
@@ -190,9 +206,12 @@ def validate_context_snv(df, *, context_length=11):
     Assumes a global set `nucleotides` is defined, containing
     valid characters: {'A', 'C', 'G', 'T'}.
     """
-    is_valid_length = df['CONTEXT'].str.len() == context_length
-    is_valid_chars = df['CONTEXT'].str.upper().apply(
-        lambda s: set(s).issubset(nucleotides))
+    is_valid_length = df["CONTEXT"].str.len() == context_length
+    is_valid_chars = (
+        df["CONTEXT"]
+        .str.upper()
+        .apply(lambda s: set(s).issubset(nucleotides))
+    )
 
     is_valid_context = is_valid_length & is_valid_chars
     invalid_entries = df[~is_valid_context]
@@ -200,16 +219,18 @@ def validate_context_snv(df, *, context_length=11):
     if not invalid_entries.empty:
         logger.warning(
             f"Removed {len(invalid_entries)} rows due to invalid CONTEXT "
-            f"(not length {context_length} or invalid characters).")
-        logger.debug(f"Invalid rows:\n{invalid_entries[cols_to_keep]}")
+            f"(not length {context_length} or invalid characters)."
+        )
+        logger.debug(
+            f"Invalid rows:\n{invalid_entries[cols_to_keep]}"
+        )
     else:
         logger.debug("All CONTEXT entries are valid.")
 
     return df[is_valid_context]
 
 
-def validate_reference_matches_context_snv(df, *,
-                                           context_length=11):
+def validate_reference_matches_context_snv(df, *, context_length=11):
     """Validate that Reference_Allele matches center of CONTEXT.
 
     This function checks that the value in the 'Reference_Allele'
@@ -238,19 +259,23 @@ def validate_reference_matches_context_snv(df, *,
     The central base is taken to be position (context_length - 1) // 2.
     """
     mid_index = (context_length - 1) // 2
-    is_match = df['Reference_Allele'] == df['CONTEXT'].str[mid_index]
+    is_match = df["Reference_Allele"] == df["CONTEXT"].str[mid_index]
     invalid_entries = df[~is_match]
 
     if not invalid_entries.empty:
         logger.warning(
             f"Removed {len(invalid_entries)} rows where Reference_Allele "
-            f"does not match CONTEXT[{mid_index}].")
+            f"does not match CONTEXT[{mid_index}]."
+        )
         logger.debug(
             "Invalid rows:\n"
-            f"{invalid_entries[cols_to_keep + ['Reference_Allele']]}")
+            f"{invalid_entries[cols_to_keep + ['Reference_Allele']]}"
+        )
     else:
-        logger.debug("All entries have Reference_Allele matching the "
-                     "center of CONTEXT.")
+        logger.debug(
+            "All entries have Reference_Allele matching the "
+            "center of CONTEXT."
+        )
 
     return df[is_match]
 
@@ -287,12 +312,14 @@ def validate_full(df, *, variant_type="SNP", context_length=11):
     if variant_type == "SNP":
         new_df = validate_alleles_snv(new_df)
         new_df = validate_context_snv(
-            new_df,
-            context_length=context_length)
+            new_df, context_length=context_length
+        )
         new_df = validate_reference_matches_context_snv(
-            new_df,
-            context_length=context_length)
-    logger.debug(f"Validation complete. Remaining rows: {len(new_df)}.")
+            new_df, context_length=context_length
+        )
+    logger.debug(
+        f"Validation complete. Remaining rows: {len(new_df)}."
+    )
     return new_df
 
 
@@ -362,11 +389,11 @@ def create_mutation_type_column_snp(df, *, context_length=11):
     mid = (context_length - 1) // 2
 
     def get_type(row):
-        context = row['CONTEXT']
-        ref = row['Reference_Allele']
-        alt = row['Tumor_Seq_Allele2']
+        context = row["CONTEXT"]
+        ref = row["Reference_Allele"]
+        alt = row["Tumor_Seq_Allele2"]
 
-        if ref in {'C', 'T'}:
+        if ref in {"C", "T"}:
             left = context[mid - 1]
             right = context[mid + 1]
             return f"{left}[{ref}>{alt}]{right}"
@@ -379,7 +406,7 @@ def create_mutation_type_column_snp(df, *, context_length=11):
             right = rc_context[mid + 1]
             return f"{left}[{rc_ref}>{rc_alt}]{right}"
 
-    df['type'] = df.apply(get_type, axis=1)
+    df["type"] = df.apply(get_type, axis=1)
 
     return df
 
@@ -416,7 +443,7 @@ def reduce_context_to_trinucleotides(df, *, context_length=11):
     """
     df = df.copy()
     mid = (context_length - 1) // 2
-    df['context'] = df['CONTEXT'].str[mid - 1:mid + 2]
+    df["context"] = df["CONTEXT"].str[mid - 1 : mid + 2]
     return df
 
 
@@ -430,28 +457,37 @@ def build_id83_lookup(seqinfo_dir):
     SigProfilerMatrixGeneratorFunc
 
     """
+
     def _read_seqinfo_file(path):
         """Read one chrN_seqinfo.txt into a tidy DataFrame."""
-        cols = ["Tumor_Sample_Barcode", "chr_num", "pos", "id83",
-                "ref", "alt", "strand_flag"]
-        df = pd.read_table(path, header=None, names=cols,
-                           usecols=[0, 1, 2, 3])
+        cols = [
+            "Tumor_Sample_Barcode",
+            "chr_num",
+            "pos",
+            "id83",
+            "ref",
+            "alt",
+            "strand_flag",
+        ]
+        df = pd.read_table(
+            path, header=None, names=cols, usecols=[0, 1, 2, 3]
+        )
         df["Chromosome"] = "chr" + df.chr_num.astype(str)
         df.drop("chr_num", axis=1, inplace=True)
         return df
 
-    frames = [_read_seqinfo_file(fp)
-              for fp in Path(seqinfo_dir).glob("*_seqinfo.txt")]
+    frames = [
+        _read_seqinfo_file(fp)
+        for fp in Path(seqinfo_dir).glob("*_seqinfo.txt")
+    ]
     lookup = pd.concat(frames, ignore_index=True)
     lookup.drop_duplicates(inplace=True)
     return lookup
 
 
 def create_mutation_type_column_id(
-        df: pd.DataFrame,
-        seqinfo_dir: str | Path,
-        *,
-        max_shift: int = 2) -> pd.DataFrame:
+    df: pd.DataFrame, seqinfo_dir: str | Path, *, max_shift: int = 2
+) -> pd.DataFrame:
     """Annotate a mutation Data-frame with its COSMIC ID-83 type.
 
     The function first calls :func:`build_id83_lookup` to read all
@@ -497,8 +533,12 @@ def create_mutation_type_column_id(
     df = df.reset_index(drop=True).copy()
     lookup_all = build_id83_lookup(seqinfo_dir)
 
-    samples_here = df["Tumor_Sample_Barcode"].unique()  # probably just one
-    lookup = lookup_all[lookup_all["Tumor_Sample_Barcode"].isin(samples_here)]
+    samples_here = df[
+        "Tumor_Sample_Barcode"
+    ].unique()  # probably just one
+    lookup = lookup_all[
+        lookup_all["Tumor_Sample_Barcode"].isin(samples_here)
+    ]
 
     df["pos_tmp"] = df.Start_Position
 
@@ -507,7 +547,8 @@ def create_mutation_type_column_id(
         lookup,
         how="left",
         left_on=["Tumor_Sample_Barcode", "Chromosome", "pos_tmp"],
-        right_on=["Tumor_Sample_Barcode", "Chromosome", "pos"])
+        right_on=["Tumor_Sample_Barcode", "Chromosome", "pos"],
+    )
 
     # Else, start trying to shift and stop when either:
     #     - every seqinfo row has been used,  OR
@@ -531,13 +572,12 @@ def create_mutation_type_column_id(
         retry = df.loc[still_missing].copy()
         retry["pos_tmp"] = retry.Start_Position + shift
 
-        merged.loc[still_missing, "id83"] = (
-            retry.merge(
-                lookup,
-                how="left",
-                left_on=["Tumor_Sample_Barcode", "Chromosome", "pos_tmp"],
-                right_on=["Tumor_Sample_Barcode", "Chromosome", "pos"]
-            ).id83.values)
+        merged.loc[still_missing, "id83"] = retry.merge(
+            lookup,
+            how="left",
+            left_on=["Tumor_Sample_Barcode", "Chromosome", "pos_tmp"],
+            right_on=["Tumor_Sample_Barcode", "Chromosome", "pos"],
+        ).id83.values
 
     unresolved = merged.id83.isna().sum()
     expected_nan = len(df) - len(lookup)
@@ -549,7 +589,8 @@ def create_mutation_type_column_id(
             f"unresolved rows, but there were {expected_nan} expected "
             "(len(df) − len(lookup)). This suggests at least one "
             "seqinfo line was matched to multiple MAF rows. "
-            "Try reducing `max_shift`.")
+            "Try reducing `max_shift`."
+        )
 
     # Clean up the type column, drop other created columns
     merged["type"] = merged["id83"].str.split(":", n=1).str[1]
@@ -558,9 +599,7 @@ def create_mutation_type_column_id(
     return merged
 
 
-def compact_data(df, *,
-                 variant_type="SNP",
-                 **kwargs):
+def compact_data(df, *, variant_type="SNP", **kwargs):
     """Reduce MAF DataFrame to minimal columns to continue analysis.
 
     This function extracts essential information from a MAF-like
@@ -614,33 +653,37 @@ def compact_data(df, *,
     df = df.copy()
 
     # Drop entries that do not have a gene
-    bad_mask = (df["Hugo_Symbol"].eq("Unknown") | df["Gene"].isna())
+    bad_mask = df["Hugo_Symbol"].eq("Unknown") | df["Gene"].isna()
     if bad_mask.any():
         logger.warning(
             f"Dropping:\n{df.loc[bad_mask]}\n"
-            "because of gene='Unknown' and/or missing Ensembl gene ID.")
+            "because of gene='Unknown' and/or missing Ensembl gene ID."
+        )
         df = df.loc[~bad_mask]
 
-    df['gene'] = df['Hugo_Symbol']  # usual gene name
-    df['ensembl_gene_id'] = df['Gene']  # Ensembl stable gene identifier
-    df['variant'] = df['Hugo_Symbol'] + ' ' + df['HGVSp_Short']
+    df["gene"] = df["Hugo_Symbol"]  # usual gene name
+    df["ensembl_gene_id"] = df[
+        "Gene"
+    ]  # Ensembl stable gene identifier
+    df["variant"] = df["Hugo_Symbol"] + " " + df["HGVSp_Short"]
 
     df = create_mutation_type_column(
-        df,
-        variant_type=variant_type,
-        **kwargs)
+        df, variant_type=variant_type, **kwargs
+    )
 
-    final_cols_to_keep = (cols_to_keep
-                          + ['gene', 'ensembl_gene_id', 'variant', 'type'])
+    final_cols_to_keep = cols_to_keep + [
+        "gene",
+        "ensembl_gene_id",
+        "variant",
+        "type",
+    ]
 
     df = df[final_cols_to_keep]
 
     return df
 
 
-def process_single_maf(maf_file,
-                       variant_type="SNP",
-                       **kwargs):
+def process_single_maf(maf_file, variant_type="SNP", **kwargs):
     """Process a single MAF file into a cleaned and compact DataFrame.
 
     This function reads a MAF file, filters and validates for
@@ -671,8 +714,9 @@ def process_single_maf(maf_file,
     try:
         logger.debug(f"Reading MAF file: {maf_file.name}")
 
-        df = pd.read_csv(maf_file, sep="\t",
-                         comment="#", low_memory=False)
+        df = pd.read_csv(
+            maf_file, sep="\t", comment="#", low_memory=False
+        )
 
         df = filter_db(df, variant_type)
         df = validate_full(df, variant_type=variant_type)
@@ -687,9 +731,8 @@ def process_single_maf(maf_file,
 
 
 def load_validate_compact_all_maf_files_parallel(
-        maf_dir,
-        variant_type="SNP",
-        **kwargs):
+    maf_dir, variant_type="SNP", **kwargs
+):
     """Load and process all MAF files in a directory in parallel.
 
     This function scans a directory for MAF files, processes each file
@@ -722,17 +765,20 @@ def load_validate_compact_all_maf_files_parallel(
 
     """
     maf_dir = Path(maf_dir)
-    all_files = [f for f in maf_dir.iterdir()
-                 if f.is_file() and f.suffix == ".maf"]
+    all_files = [
+        f
+        for f in maf_dir.iterdir()
+        if f.is_file() and f.suffix == ".maf"
+    ]
 
     if not all_files:
         raise ValueError("No .maf files found in directory.")
 
     logger.info(f"Found {len(all_files)} MAF files to process.")
 
-    func = partial(process_single_maf,
-                   variant_type=variant_type,
-                   **kwargs)
+    func = partial(
+        process_single_maf, variant_type=variant_type, **kwargs
+    )
 
     with Pool(processes=cpu_count()) as pool:
         all_dataframes = pool.map(func, all_files)
@@ -741,21 +787,25 @@ def load_validate_compact_all_maf_files_parallel(
 
     if all_dataframes:
         combined_df = pd.concat(all_dataframes, ignore_index=True)
-        logger.info("Successfully processed "
-                    f"{len(all_dataframes)}/{len(all_files)} files.")
+        logger.info(
+            "Successfully processed "
+            f"{len(all_dataframes)}/{len(all_files)} files."
+        )
         return combined_df
     else:
-        raise ValueError("No valid MAF files were "
-                         "successfully processed.")
+        raise ValueError(
+            "No valid MAF files were " "successfully processed."
+        )
 
 
 def generate_compact_db(
-        maf_dir: str,
-        *,
-        signature_class: str = "SBS",
-        location_db: str | None = None,
-        location_gene_set: str | None = location_hgnc_complete_set,
-        **kwargs) -> pd.DataFrame:
+    maf_dir: str,
+    *,
+    signature_class: str = "SBS",
+    location_db: str | None = None,
+    location_gene_set: str | None = location_hgnc_complete_set,
+    **kwargs,
+) -> pd.DataFrame:
     """Generate a compact mutation database from MAF files.
 
     Always processes raw MAF files to generate a compact mutation
@@ -865,7 +915,8 @@ def generate_compact_db(
     """
     logger.info(
         f"Generating compact mutation database for "
-        f"{signature_class} from raw MAF files...")
+        f"{signature_class} from raw MAF files..."
+    )
 
     # Map signature class to variant type for MAF processing
     # COSMIC signature classes (SBS, DBS, ID) need to be mapped to
@@ -880,23 +931,21 @@ def generate_compact_db(
     }
 
     variant_type = signature_to_variant_type.get(
-        signature_class,
-        signature_class)
+        signature_class, signature_class
+    )
 
     db = load_validate_compact_all_maf_files_parallel(
-        maf_dir,
-        variant_type=variant_type,
-        **kwargs)
+        maf_dir, variant_type=variant_type, **kwargs
+    )
 
     if location_gene_set is not None:
-        db = update_genes_with_gene_set(
-            location_gene_set,
-            db)
+        db = update_genes_with_gene_set(location_gene_set, db)
 
     if location_db is not None:
         db.to_parquet(location_db, index=False)
         logger.info(
-            f"Saved compact mutation database to {location_db}")
+            f"Saved compact mutation database to {location_db}"
+        )
 
     logger.info("... done generating compact mutation database.")
     print("")
@@ -905,13 +954,14 @@ def generate_compact_db(
 
 
 def load_or_generate_compact_db(
-        location_db: str,
-        maf_dir: str,
-        *,
-        signature_class: str = "SBS",
-        location_gene_set: str | None = location_hgnc_complete_set,
-        force_generation: bool = False,
-        **kwargs) -> pd.DataFrame:
+    location_db: str,
+    maf_dir: str,
+    *,
+    signature_class: str = "SBS",
+    location_gene_set: str | None = location_hgnc_complete_set,
+    force_generation: bool = False,
+    **kwargs,
+) -> pd.DataFrame:
     """Load or generate a compact database of mutations.
 
     Loads a preprocessed mutation database if it exists at the
@@ -1042,12 +1092,11 @@ def load_or_generate_compact_db(
     if os.path.exists(location_db) and not force_generation:
         logger.info(
             f"Loading compact mutation database for {signature_class}"
-            f" from {location_db}")
+            f" from {location_db}"
+        )
         db = pd.read_parquet(location_db)
         if location_gene_set is not None:
-            db = update_genes_with_gene_set(
-                location_gene_set,
-                db)
+            db = update_genes_with_gene_set(location_gene_set, db)
         logger.info("... done loading compact mutation database.")
     else:
         # Use generate_compact_db to create the database
@@ -1056,5 +1105,6 @@ def load_or_generate_compact_db(
             signature_class=signature_class,
             location_db=location_db,
             location_gene_set=location_gene_set,
-            **kwargs)
+            **kwargs,
+        )
     return db

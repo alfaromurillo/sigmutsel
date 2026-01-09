@@ -23,16 +23,17 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_gamma_from_mus(
-        mus_yes,
-        mus_no,
-        draws=4000,
-        upper_bound_prior=1e6,
-        burn=1000,
-        chains=4,
-        save_name=None,
-        kwargs=None,
-        max_retries=5,
-        factor_of_reduction=10):
+    mus_yes,
+    mus_no,
+    draws=4000,
+    upper_bound_prior=1e6,
+    burn=1000,
+    chains=4,
+    save_name=None,
+    kwargs=None,
+    max_retries=5,
+    factor_of_reduction=10,
+):
     """Estimate gamma from mu values using a Poisson observation model.
 
     This function infers the posterior distribution of a selective
@@ -102,20 +103,20 @@ def estimate_gamma_from_mus(
         try:
             with pm.Model():
                 gamma = pm.Uniform(
-                    name="gamma",
-                    lower=0,
-                    upper=upper_bound_prior)
+                    name="gamma", lower=0, upper=upper_bound_prior
+                )
 
-                Ps = tt.clip(1 - tt.exp(-gamma * mus_all),
-                             1e-12,
-                             1-1e-12)
+                Ps = tt.clip(
+                    1 - tt.exp(-gamma * mus_all), 1e-12, 1 - 1e-12
+                )
 
                 pm.Bernoulli(
                     name="variants_observed",
                     p=Ps,
-                    observed=np.concatenate([
-                        np.ones(len(mus_yes)),
-                        np.zeros(len(mus_no))]))
+                    observed=np.concatenate(
+                        [np.ones(len(mus_yes)), np.zeros(len(mus_no))]
+                    ),
+                )
 
                 if draws == 1:
                     results = pm.find_MAP(**kwargs)
@@ -125,7 +126,8 @@ def estimate_gamma_from_mus(
                         chains=chains,
                         tune=burn,
                         random_seed=random_seed,
-                        **kwargs)
+                        **kwargs,
+                    )
 
             if save_name is not None:
                 if draws == 1:
@@ -134,39 +136,48 @@ def estimate_gamma_from_mus(
                     pm.save_trace(results, save_name, overwrite=True)
 
                     # Warnings for convergence
-                    summary = az.summary(results,
-                                         var_names=["gamma"])
+                    summary = az.summary(results, var_names=["gamma"])
                     rhat = summary["r_hat"].item()
                     ess_bulk = summary["ess_bulk"].item()
 
                     if rhat > 1.01:
-                        logger.warning(f"R-hat for gamma "
-                                       f"is {rhat:.3f} > 1.01. "
-                                       "Chains may not have converged.")
+                        logger.warning(
+                            f"R-hat for gamma "
+                            f"is {rhat:.3f} > 1.01. "
+                            "Chains may not have converged."
+                        )
 
                     if ess_bulk < 200:
-                        logger.warning("Effective sample size (ESS) "
-                                       f"for gamma "
-                                       f"is {ess_bulk:.0f} < 200. Increase "
-                                       "draws or tune steps.")
+                        logger.warning(
+                            "Effective sample size (ESS) "
+                            f"for gamma "
+                            f"is {ess_bulk:.0f} < 200. Increase "
+                            "draws or tune steps."
+                        )
 
                     # Check for divergences
-                    n_divergent = (results.sample_stats["diverging"]
-                                   .sum().item())
+                    n_divergent = (
+                        results.sample_stats["diverging"].sum().item()
+                    )
                     if n_divergent > 0:
-                        logger.warning(f"{n_divergent} divergent "
-                                       "transitions were detected. "
-                                       "Consider reparameterizing or "
-                                       "increasing target_accept.")
+                        logger.warning(
+                            f"{n_divergent} divergent "
+                            "transitions were detected. "
+                            "Consider reparameterizing or "
+                            "increasing target_accept."
+                        )
 
             return results
 
         except (pm.SamplingError, ValueError, KeyError) as e:
             logger.warning(
                 "Sampling failed with upper bound "
-                f"{upper_bound_prior:.1e}: {e}")
+                f"{upper_bound_prior:.1e}: {e}"
+            )
             attempt += 1
             upper_bound_prior /= factor_of_reduction
 
-    raise RuntimeError(f"Sampling failed after {max_retries} attempts "
-                       "Try setting a smaller upper_bound_prior manually.")
+    raise RuntimeError(
+        f"Sampling failed after {max_retries} attempts "
+        "Try setting a smaller upper_bound_prior manually."
+    )

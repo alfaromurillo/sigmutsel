@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_alphas(
-        df: pd.DataFrame,
-        assignments: pd.DataFrame,
-        L_low: Optional[float] = None,
-        L_high: Optional[float] = None
-        ) -> pd.DataFrame:
+    df: pd.DataFrame,
+    assignments: pd.DataFrame,
+    L_low: Optional[float] = None,
+    L_high: Optional[float] = None,
+) -> pd.DataFrame:
     """Return per-sample signature probabilities (`alphas`).
 
     This computes the probability that a mutation in a sample belongs
@@ -76,7 +76,7 @@ def estimate_alphas(
 
     """
     # Ensure we have totals; align to assignments by sample index
-    if 'total_mutations' in df.columns:
+    if "total_mutations" in df.columns:
         mb = df.copy()
     else:
         mb = count_mutation_burden(df)
@@ -84,12 +84,13 @@ def estimate_alphas(
     # Align on common samples only
     idx = assignments.index.intersection(mb.index)
     if len(idx) == 0:
-        raise ValueError("No overlapping samples between df and "
-                         "assignments.")
+        raise ValueError(
+            "No overlapping samples between df and " "assignments."
+        )
     mb = mb.loc[idx]
     assignments = assignments.loc[idx]
 
-    totals = mb['total_mutations'].astype(float)
+    totals = mb["total_mutations"].astype(float)
 
     # Raw proportions; avoid divide-by-zero by masking totals==0.
     denom = totals.replace(0.0, np.nan)
@@ -108,27 +109,33 @@ def estimate_alphas(
         raise ValueError("Require L_low < L_high (or L_high=inf).")
 
     # Define sets.
-    samples_normal = totals.between(L_low, L_high, inclusive='both')
+    samples_normal = totals.between(L_low, L_high, inclusive="both")
     samples_low = totals < L_low
 
     # If there are no low-burden samples, nothing to blend.
     if not samples_low.any():
-        logger.warning("No samples below L_low; returning raw proportions.")
+        logger.warning(
+            "No samples below L_low; returning raw proportions."
+        )
         return pre_alphas
 
     # Compute alpha_bar over intermediate-burden samples.
     if samples_normal.any():
         alpha_bar = pre_alphas.loc[samples_normal].mean(axis=0)
     else:
-        logger.warning("No samples in [L_low, L_high]; skipping "
-                       "correction and returning raw proportions.")
+        logger.warning(
+            "No samples in [L_low, L_high]; skipping "
+            "correction and returning raw proportions."
+        )
         return pre_alphas
 
     # Blend for low-burden samples:
     # weight = totals / L_low (clipped to [0,1]); avoid div by zero.
     if L_low <= 0.0:
-        logger.warning("L_low==0 implies no meaningful blending; "
-                       "returning raw proportions.")
+        logger.warning(
+            "L_low==0 implies no meaningful blending; "
+            "returning raw proportions."
+        )
         return pre_alphas
 
     w = (totals.loc[samples_low] / L_low).clip(0.0, 1.0)
@@ -136,10 +143,13 @@ def estimate_alphas(
     # Broadcast alpha_bar to low sample index.
     alpha_bars = pd.DataFrame(
         np.repeat(alpha_bar.values[None, :], w.shape[0], axis=0),
-        index=w.index, columns=alpha_bar.index)
+        index=w.index,
+        columns=alpha_bar.index,
+    )
 
-    alphas_low = (pre_alphas.loc[samples_low].mul(w, axis=0) +
-                  alpha_bars.mul(1.0 - w, axis=0))
+    alphas_low = pre_alphas.loc[samples_low].mul(
+        w, axis=0
+    ) + alpha_bars.mul(1.0 - w, axis=0)
 
     # Merge with non-low samples.
     alphas = pd.concat([alphas_low, pre_alphas.loc[~samples_low]])

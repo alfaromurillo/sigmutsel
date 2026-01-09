@@ -143,36 +143,45 @@ class MutationDataset:
     _signature_genome_build: str | None = None
     _contexts_by_gene: pd.DataFrame = None
     dataset_directory: str | None = field(
-        default=None, init=False, repr=False)
+        default=None, init=False, repr=False
+    )
 
     def __repr__(self):
         """Show loaded status of lazy attributes (custom repr)."""
         loaded = []
         if self._mutation_db is not None:
             loaded.append(
-                f"mutation_db: {self._mutation_db.shape[0]} rows")
+                f"mutation_db: {self._mutation_db.shape[0]} rows"
+            )
         if self._genes_present is not None:
             loaded.append(
-                f"genes_present: {self._genes_present.shape}")
+                f"genes_present: {self._genes_present.shape}"
+            )
         if self._genes_present_non_silent is not None:
             loaded.append(
                 f"genes_present_non_silent: "
-                f"{self._genes_present_non_silent.shape}")
+                f"{self._genes_present_non_silent.shape}"
+            )
         if self._variant_db is not None:
             loaded.append(
-                f"variant_db: {self._variant_db.shape[0]} variants")
+                f"variant_db: {self._variant_db.shape[0]} variants"
+            )
         if self._variants_present is not None:
             loaded.append(
-                f"variants_present: {self._variants_present.shape}")
+                f"variants_present: {self._variants_present.shape}"
+            )
         if self._sig_assignments is not None:
             loaded.append(
-                f"sig_assignments: {self._sig_assignments.shape}")
+                f"sig_assignments: {self._sig_assignments.shape}"
+            )
         if self._signature_matrix is not None:
             loaded.append(
-                f"signature_matrix: {self._signature_matrix.shape}")
+                f"signature_matrix: {self._signature_matrix.shape}"
+            )
         if self._contexts_by_gene is not None:
             loaded.append(
-                f"contexts_by_gene: {self._contexts_by_gene.shape}")
+                f"contexts_by_gene: {self._contexts_by_gene.shape}"
+            )
 
         loaded_str = "\n  ".join(loaded) if loaded else "None"
 
@@ -181,7 +190,8 @@ class MutationDataset:
             f"  signature_class={self.signature_class!r}\n"
             f"  location_maf_files={self.location_maf_files!r}\n"
             f"  loaded_data:\n  {loaded_str}\n"
-            f")")
+            f")"
+        )
 
     def save_dataset(self, directory):
         """Persist loaded dataset artifacts to a directory."""
@@ -191,48 +201,70 @@ class MutationDataset:
         manifest_path = directory / "dataset_manifest.json"
 
         if manifest_path.exists():
-            response = input(
-                f"Dataset already exists at {directory}. "
-                "Overwrite? [y/N]: ").strip().lower()
+            response = (
+                input(
+                    f"Dataset already exists at {directory}. "
+                    "Overwrite? [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
             if response not in {"y", "yes"}:
                 raise FileExistsError(
-                    f"Dataset directory {directory} already exists.")
+                    f"Dataset directory {directory} already exists."
+                )
 
         directory.mkdir(parents=True, exist_ok=True)
 
         data_specs = [
-            ('mutation_db',
-             '_mutation_db',
-             'mutation_db.parquet',
-             'parquet'),
-            ('genes_present',
-             '_genes_present',
-             'genes_present.parquet',
-             'parquet'),
-            ('genes_present_non_silent',
-             '_genes_present_non_silent',
-             'genes_present_non_silent.parquet',
-             'parquet'),
-            ('variant_db',
-             '_variant_db',
-             'variant_db.parquet',
-             'parquet'),
-            ('variants_present',
-             '_variants_present',
-             'variants_present.parquet',
-             'parquet'),
-            ('sig_assignments',
-             '_sig_assignments',
-             'sig_assignments.parquet',
-             'parquet'),
-            ('signature_matrix',
-             '_signature_matrix',
-             'signature_matrix.parquet',
-             'parquet'),
-            ('contexts_by_gene',
-             '_contexts_by_gene',
-             'contexts_by_gene.csv',
-             'csv'),
+            (
+                "mutation_db",
+                "_mutation_db",
+                "mutation_db.parquet",
+                "parquet",
+            ),
+            (
+                "genes_present",
+                "_genes_present",
+                "genes_present.parquet",
+                "parquet",
+            ),
+            (
+                "genes_present_non_silent",
+                "_genes_present_non_silent",
+                "genes_present_non_silent.parquet",
+                "parquet",
+            ),
+            (
+                "variant_db",
+                "_variant_db",
+                "variant_db.parquet",
+                "parquet",
+            ),
+            (
+                "variants_present",
+                "_variants_present",
+                "variants_present.parquet",
+                "parquet",
+            ),
+            (
+                "sig_assignments",
+                "_sig_assignments",
+                "sig_assignments.parquet",
+                "parquet",
+            ),
+            (
+                "signature_matrix",
+                "_signature_matrix",
+                "signature_matrix.parquet",
+                "parquet",
+            ),
+            (
+                "contexts_by_gene",
+                "_contexts_by_gene",
+                "contexts_by_gene.csv",
+                "csv",
+            ),
         ]
 
         saved_files = {}
@@ -245,18 +277,29 @@ class MutationDataset:
             file_path = directory / filename
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if fmt == 'parquet':
+            if fmt == "parquet":
                 # Convert list columns to JSON strings for parquet compatibility
                 value_to_save = value.copy()
                 for col in value_to_save.columns:
-                    if value_to_save[col].apply(lambda x: isinstance(x, list)).any():
+                    if (
+                        value_to_save[col]
+                        .apply(lambda x: isinstance(x, list))
+                        .any()
+                    ):
                         value_to_save[col] = value_to_save[col].apply(
-                            lambda x: json.dumps(x) if isinstance(x, list) else x)
+                            lambda x: (
+                                json.dumps(x)
+                                if isinstance(x, list)
+                                else x
+                            )
+                        )
                 value_to_save.to_parquet(file_path)
-            elif fmt == 'csv':
+            elif fmt == "csv":
                 value.to_csv(file_path)
             else:
-                raise ValueError(f"Unsupported format {fmt} for {public_name}")
+                raise ValueError(
+                    f"Unsupported format {fmt} for {public_name}"
+                )
 
             saved_files[public_name] = {
                 "filename": filename,
@@ -289,47 +332,67 @@ class MutationDataset:
         if not manifest_path.exists():
             raise FileNotFoundError(
                 f"Dataset manifest not found at {manifest_path}. "
-                "Ensure save_dataset() was run first.")
+                "Ensure save_dataset() was run first."
+            )
 
         manifest = json.loads(manifest_path.read_text())
         dataset = cls(
             location_maf_files=manifest.get("location_maf_files"),
-            signature_class=manifest.get("signature_class", "SBS"))
+            signature_class=manifest.get("signature_class", "SBS"),
+        )
 
         for attr_name, info in manifest.get("files", {}).items():
             filename = info["filename"]
-            fmt = info.get("format", Path(filename).suffix.lstrip("."))
+            fmt = info.get(
+                "format", Path(filename).suffix.lstrip(".")
+            )
             file_path = directory / filename
 
-            if fmt == 'parquet':
+            if fmt == "parquet":
                 value = pd.read_parquet(file_path)
                 # Convert JSON strings back to lists for columns like mut_types
                 for col in value.columns:
                     # Check if column contains JSON array strings
-                    sample = value[col].dropna().iloc[0] if not value[col].dropna().empty else None
-                    if isinstance(sample, str) and sample.startswith('['):
+                    sample = (
+                        value[col].dropna().iloc[0]
+                        if not value[col].dropna().empty
+                        else None
+                    )
+                    if isinstance(sample, str) and sample.startswith(
+                        "["
+                    ):
                         try:
                             value[col] = value[col].apply(
-                                lambda x: json.loads(x) if isinstance(x, str) and x.startswith('[') else x)
+                                lambda x: (
+                                    json.loads(x)
+                                    if isinstance(x, str)
+                                    and x.startswith("[")
+                                    else x
+                                )
+                            )
                         except (json.JSONDecodeError, TypeError):
                             # If it's not valid JSON, leave it as is
                             pass
-            elif fmt == 'csv':
+            elif fmt == "csv":
                 value = pd.read_csv(file_path, index_col=0)
             else:
                 raise ValueError(
-                    f"Unsupported file format {fmt} for {attr_name}")
+                    f"Unsupported file format {fmt} for {attr_name}"
+                )
 
             setattr(dataset, attr_name, value)
 
         signature_params = manifest.get("signature_parameters", {})
-        dataset._signature_reference_genome = (
-            signature_params.get("reference_genome"))
+        dataset._signature_reference_genome = signature_params.get(
+            "reference_genome"
+        )
         dataset._signature_exome = signature_params.get("exome")
-        dataset._signature_cosmic_version = (
-            signature_params.get("cosmic_version"))
-        dataset._signature_genome_build = (
-            signature_params.get("genome_build"))
+        dataset._signature_cosmic_version = signature_params.get(
+            "cosmic_version"
+        )
+        dataset._signature_genome_build = signature_params.get(
+            "genome_build"
+        )
 
         dataset.dataset_directory = str(directory)
         return dataset
@@ -340,7 +403,8 @@ class MutationDataset:
         if self._mutation_db is None:
             raise ValueError(
                 "Mutation database not loaded. "
-                "Call generate_mutation_db() or load_dataset() first.")
+                "Call generate_mutation_db() or load_dataset() first."
+            )
         return self._mutation_db
 
     @mutation_db.setter
@@ -357,8 +421,9 @@ class MutationDataset:
         if self._mutation_db is None:
             raise ValueError(
                 "Cannot compute n_samples: mutation database not "
-                "loaded. Call generate_mutation_db() or load_dataset() first.")
-        return self._mutation_db['Tumor_Sample_Barcode'].nunique()
+                "loaded. Call generate_mutation_db() or load_dataset() first."
+            )
+        return self._mutation_db["Tumor_Sample_Barcode"].nunique()
 
     @property
     def n_genes(self):
@@ -369,8 +434,9 @@ class MutationDataset:
         if self._mutation_db is None:
             raise ValueError(
                 "Cannot compute n_genes: mutation database not "
-                "loaded. Call generate_mutation_db() or load_dataset() first.")
-        return self._mutation_db['ensembl_gene_id'].nunique()
+                "loaded. Call generate_mutation_db() or load_dataset() first."
+            )
+        return self._mutation_db["ensembl_gene_id"].nunique()
 
     @property
     def genes_present(self):
@@ -378,7 +444,8 @@ class MutationDataset:
         if self._genes_present is None:
             raise ValueError(
                 "Gene presence matrix not computed. "
-                "Call compute_gene_presence() first.")
+                "Call compute_gene_presence() first."
+            )
         return self._genes_present
 
     @genes_present.setter
@@ -392,7 +459,8 @@ class MutationDataset:
         if self._genes_present_non_silent is None:
             raise ValueError(
                 "Non-silent gene presence matrix not computed. "
-                "Call compute_gene_presence_non_silent() first.")
+                "Call compute_gene_presence_non_silent() first."
+            )
         return self._genes_present_non_silent
 
     @genes_present_non_silent.setter
@@ -406,10 +474,12 @@ class MutationDataset:
         if self._variant_db is None:
             logger.warning(
                 "Variant database not loaded. "
-                "Call generate_variant_db() or load_dataset() first.")
+                "Call generate_variant_db() or load_dataset() first."
+            )
             raise ValueError(
                 "Variant database not loaded. "
-                "Call generate_variant_db() or load_dataset() first.")
+                "Call generate_variant_db() or load_dataset() first."
+            )
         return self._variant_db
 
     @variant_db.setter
@@ -423,7 +493,8 @@ class MutationDataset:
         if self._variants_present is None:
             raise ValueError(
                 "Variant presence matrix not computed. "
-                "Call compute_variants_present() first.")
+                "Call compute_variants_present() first."
+            )
         return self._variants_present
 
     @variants_present.setter
@@ -444,8 +515,9 @@ class MutationDataset:
             raise ValueError(
                 "Cannot compute n_variants: mutation database "
                 "not loaded. Call generate_mutation_db() or "
-                "load_dataset() first.")
-        return self._mutation_db['variant'].nunique()
+                "load_dataset() first."
+            )
+        return self._mutation_db["variant"].nunique()
 
     @property
     def variant_counts(self):
@@ -457,10 +529,12 @@ class MutationDataset:
             Variant counts sorted descending by frequency.
         """
         return (
-            self.mutation_db
-            .groupby("variant")["Tumor_Sample_Barcode"]
+            self.mutation_db.groupby("variant")[
+                "Tumor_Sample_Barcode"
+            ]
             .nunique()
-            .sort_values(ascending=False))
+            .sort_values(ascending=False)
+        )
 
     @property
     def gene_counts(self):
@@ -474,20 +548,21 @@ class MutationDataset:
         """
         # Get counts per gene
         counts = (
-            self.mutation_db
-            .groupby("gene")["Tumor_Sample_Barcode"]
+            self.mutation_db.groupby("gene")["Tumor_Sample_Barcode"]
             .nunique()
-            .rename("count"))
+            .rename("count")
+        )
 
         # Get ensembl_gene_id mapping (one per gene symbol)
         gene_mapping = (
-            self.mutation_db[['gene', 'ensembl_gene_id']]
-            .drop_duplicates('gene')
-            .set_index('gene'))
+            self.mutation_db[["gene", "ensembl_gene_id"]]
+            .drop_duplicates("gene")
+            .set_index("gene")
+        )
 
         # Combine and sort
         result = counts.to_frame().join(gene_mapping)
-        return result.sort_values('count', ascending=False)
+        return result.sort_values("count", ascending=False)
 
     @property
     def variant_type_counts(self):
@@ -499,10 +574,10 @@ class MutationDataset:
             Variant type counts sorted descending.
         """
         return (
-            self.mutation_db
-            .groupby("variant")["type"]
+            self.mutation_db.groupby("variant")["type"]
             .nunique()
-            .sort_values(ascending=False))
+            .sort_values(ascending=False)
+        )
 
     @property
     def variant_summary(self):
@@ -515,14 +590,18 @@ class MutationDataset:
             indexed by variant, sorted by types then tumors.
         """
         return (
-            self.mutation_db
-            .groupby('variant')
-            .agg(num_types=('type', 'nunique'),
-                 num_tumors=('Tumor_Sample_Barcode', 'nunique'))
+            self.mutation_db.groupby("variant")
+            .agg(
+                num_types=("type", "nunique"),
+                num_tumors=("Tumor_Sample_Barcode", "nunique"),
+            )
             .reset_index()
-            .sort_values(by=['num_types', 'num_tumors'],
-                         ascending=[False, False])
-            .set_index('variant'))
+            .sort_values(
+                by=["num_types", "num_tumors"],
+                ascending=[False, False],
+            )
+            .set_index("variant")
+        )
 
     def has_mutation_db(self):
         """Check if mutation database has been loaded."""
@@ -596,18 +675,24 @@ class MutationDataset:
         from .load_maf_files import generate_compact_db
 
         # Auto-set seqinfo_dir for ID signature class if not provided
-        if (self.signature_class == 'ID' and
-                'seqinfo_dir' not in kwargs):
-            kwargs['seqinfo_dir'] = (
-                Path(self.location_maf_files) / "output" /
-                "vcf_files" / "ID")
+        if (
+            self.signature_class == "ID"
+            and "seqinfo_dir" not in kwargs
+        ):
+            kwargs["seqinfo_dir"] = (
+                Path(self.location_maf_files)
+                / "output"
+                / "vcf_files"
+                / "ID"
+            )
 
         # Use generate_compact_db and store result
         self._mutation_db = generate_compact_db(
             self.location_maf_files,
             signature_class=self.signature_class,
             location_gene_set=location_gene_set,
-            **kwargs)
+            **kwargs,
+        )
 
     def has_gene_presence(self):
         """Check if gene presence matrix has been computed."""
@@ -621,9 +706,7 @@ class MutationDataset:
         """Check if variants have been loaded."""
         return self._variant_db is not None
 
-    def generate_variant_db(
-            self,
-            position_tolerance=3):
+    def generate_variant_db(self, position_tolerance=3):
         """Generate variant database from the mutation database.
 
         Parameters
@@ -639,19 +722,21 @@ class MutationDataset:
         """
         from .variant_annotation import (
             extract_variants_from_db,
-            annotate_variants_with_types)
+            annotate_variants_with_types,
+        )
 
         if self._mutation_db is None:
             raise ValueError(
                 "Mutation database not loaded. "
-                "Call generate_mutation_db() or load_dataset() first.")
+                "Call generate_mutation_db() or load_dataset() first."
+            )
 
         variants = extract_variants_from_db(
-            self.mutation_db,
-            position_tolerance=position_tolerance)
+            self.mutation_db, position_tolerance=position_tolerance
+        )
         variants = annotate_variants_with_types(
-            variants,
-            self.mutation_db)
+            variants, self.mutation_db
+        )
 
         self._variant_db = variants
         return variants
@@ -664,8 +749,7 @@ class MutationDataset:
         """
         from .estimate_presence import compute_genes_present
 
-        self._genes_present = compute_genes_present(
-            self.mutation_db)
+        self._genes_present = compute_genes_present(self.mutation_db)
 
     def compute_gene_presence_non_silent(self):
         """Compute non-silent gene presence matrix.
@@ -675,10 +759,9 @@ class MutationDataset:
         """
         from .estimate_presence import compute_genes_present
 
-        self._genes_present_non_silent = (
-            compute_genes_present(
-                self.mutation_db,
-                scope='non-silent'))
+        self._genes_present_non_silent = compute_genes_present(
+            self.mutation_db, scope="non-silent"
+        )
 
     def compute_variants_present(self):
         """Compute variant presence matrix.
@@ -691,11 +774,12 @@ class MutationDataset:
         if self._variant_db is None:
             raise ValueError(
                 "Variants database not loaded. "
-                "Call generate_variant_db() or load_dataset() first.")
+                "Call generate_variant_db() or load_dataset() first."
+            )
 
         self._variants_present = compute_variants_present(
-            self.mutation_db,
-            self._variant_db)
+            self.mutation_db, self._variant_db
+        )
 
     @property
     def sig_assignments(self):
@@ -703,7 +787,8 @@ class MutationDataset:
         if self._sig_assignments is None:
             raise ValueError(
                 "Signature assignments not loaded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._sig_assignments
 
     @sig_assignments.setter
@@ -717,7 +802,8 @@ class MutationDataset:
         if self._signature_matrix is None:
             raise ValueError(
                 "Signature matrix not loaded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._signature_matrix
 
     @signature_matrix.setter
@@ -731,7 +817,8 @@ class MutationDataset:
         if self._signature_reference_genome is None:
             raise ValueError(
                 "Reference genome not recorded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._signature_reference_genome
 
     @property
@@ -740,7 +827,8 @@ class MutationDataset:
         if self._signature_exome is None:
             raise ValueError(
                 "Exome flag not recorded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._signature_exome
 
     @property
@@ -749,7 +837,8 @@ class MutationDataset:
         if self._signature_cosmic_version is None:
             raise ValueError(
                 "COSMIC version not recorded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._signature_cosmic_version
 
     @property
@@ -758,7 +847,8 @@ class MutationDataset:
         if self._signature_genome_build is None:
             raise ValueError(
                 "Genome build not recorded. "
-                "Call run_signature_decomposition() first.")
+                "Call run_signature_decomposition() first."
+            )
         return self._signature_genome_build
 
     @property
@@ -767,7 +857,8 @@ class MutationDataset:
         if self._contexts_by_gene is None:
             raise ValueError(
                 "Contexts by gene not loaded. "
-                "Call generate_contexts_by_gene() or load_dataset() first.")
+                "Call generate_contexts_by_gene() or load_dataset() first."
+            )
         return self._contexts_by_gene
 
     @contexts_by_gene.setter
@@ -796,14 +887,16 @@ class MutationDataset:
         ...     dataset.generate_mutational_matrices()
         """
         from pathlib import Path
+
         output_dir = Path(self.location_maf_files) / "output"
         return output_dir.exists()
 
     def generate_mutational_matrices(
-            self,
-            reference_genome='GRCh38',
-            force_generation=False,
-            **kwargs):
+        self,
+        reference_genome="GRCh38",
+        force_generation=False,
+        **kwargs,
+    ):
         """Generate mutational matrices using SigProfilerMatrixGenerator.
 
         Runs
@@ -861,21 +954,24 @@ class MutationDataset:
 
         """
         from .mutational_matrices_generator import (
-            mutational_matrices_generation)
+            mutational_matrices_generation,
+        )
 
         return mutational_matrices_generation(
             path_to_input_files=self.location_maf_files,
             reference_genome=reference_genome,
             force_generation=force_generation,
-            **kwargs)
+            **kwargs,
+        )
 
     def run_signature_decomposition(
-            self,
-            force_generation=False,
-            exome=None,
-            cosmic_version=None,
-            genome_build='GRCh38',
-            **kwargs):
+        self,
+        force_generation=False,
+        exome=None,
+        cosmic_version=None,
+        genome_build="GRCh38",
+        **kwargs,
+    ):
         """Run COSMIC signature decomposition on mutational matrices.
 
         Runs signature decomposition using the appropriate mutational
@@ -975,43 +1071,46 @@ class MutationDataset:
         has_mutational_matrices : Check if matrices exist
         """
         title = "Signature decomposition"
-        print("="*len(title))
+        print("=" * len(title))
         print(title)
-        print("="*len(title))
+        print("=" * len(title))
 
         import logging
         from pathlib import Path
         from .signature_decomposition import (
-            signature_decomposition as run_sig_decomp)
+            signature_decomposition as run_sig_decomp,
+        )
 
         logger = logging.getLogger(__name__)
 
         if exome is None:
-            exome = kwargs.pop('exome', True)
+            exome = kwargs.pop("exome", True)
         else:
-            kwargs.pop('exome', None)
+            kwargs.pop("exome", None)
 
         if cosmic_version is None:
-            cosmic_version = kwargs.pop('cosmic_version', 3.4)
+            cosmic_version = kwargs.pop("cosmic_version", 3.4)
         else:
-            kwargs.pop('cosmic_version', None)
+            kwargs.pop("cosmic_version", None)
 
         if genome_build is None:
-            genome_build = kwargs.pop('genome_build', 'GRCh38')
+            genome_build = kwargs.pop("genome_build", "GRCh38")
         else:
-            kwargs.pop('genome_build', None)
+            kwargs.pop("genome_build", None)
 
         if not self.has_mutational_matrices():
             logger.info(
                 "Mutational matrices not found. "
-                "Generating them before signature decomposition...")
+                "Generating them before signature decomposition..."
+            )
             matrix_kwargs = {}
             if exome is not None:
-                matrix_kwargs['exome'] = exome
+                matrix_kwargs["exome"] = exome
             self.generate_mutational_matrices(
                 reference_genome=genome_build,
                 force_generation=False,
-                **matrix_kwargs)
+                **matrix_kwargs,
+            )
             logger.info("...done.")
             print("")
 
@@ -1021,41 +1120,46 @@ class MutationDataset:
                 f"{self.location_maf_files}/output/. "
                 "Automatic generation failed. "
                 "Run generate_mutational_matrices() manually for "
-                "more details.")
+                "more details."
+            )
 
         # Determine which matrix to use based on signature_class
         matrix_map = {
-            'SBS': 'SBS96',
-            'DBS': 'DBS78',
-            'ID': 'ID83',
+            "SBS": "SBS96",
+            "DBS": "DBS78",
+            "ID": "ID83",
         }
 
         # Provide helpful error for common mistakes
         if self.signature_class not in matrix_map:
             # Suggest correction for old aliases
-            if self.signature_class == 'SNP':
+            if self.signature_class == "SNP":
                 raise ValueError(
                     "signature_class='SNP' is not supported. "
                     "Use signature_class='SBS' instead. "
                     "Create a new dataset with: "
                     "MutationDataset(location_maf_files=..., "
-                    "signature_class='SBS')")
-            elif self.signature_class == 'INDEL':
+                    "signature_class='SBS')"
+                )
+            elif self.signature_class == "INDEL":
                 raise ValueError(
                     "signature_class='INDEL' is not supported. "
                     "Use signature_class='ID' instead. "
                     "Create a new dataset with: "
                     "MutationDataset(location_maf_files=..., "
-                    "signature_class='ID')")
+                    "signature_class='ID')"
+                )
             else:
                 raise ValueError(
                     f"Signature decomposition not supported for "
                     f"signature_class='{self.signature_class}'. "
-                    f"Supported classes: {list(matrix_map.keys())}")
+                    f"Supported classes: {list(matrix_map.keys())}"
+                )
 
         matrix_resolution = matrix_map[self.signature_class]
         matrix_filename = (
-            f"mutational_matrix.{matrix_resolution}.exome")
+            f"mutational_matrix.{matrix_resolution}.exome"
+        )
 
         # Build path to matrix file
         output_dir = Path(self.location_maf_files) / "output"
@@ -1068,11 +1172,13 @@ class MutationDataset:
                 f"Matrix file not found at {matrix_path}. "
                 f"Expected {matrix_resolution} matrix for "
                 f"{self.signature_class} signature class. "
-                "Run generate_mutational_matrices() first.")
+                "Run generate_mutational_matrices() first."
+            )
 
         # Create results directory in standard location
         sig_decomp_dir = (
-            Path(self.location_maf_files) / "signature_decomposition")
+            Path(self.location_maf_files) / "signature_decomposition"
+        )
         sig_decomp_dir.mkdir(parents=True, exist_ok=True)
 
         results_dir = sig_decomp_dir / self.signature_class
@@ -1086,29 +1192,33 @@ class MutationDataset:
                 f"Signature decomposition for {self.signature_class} "
                 f"was previously run and will be loaded from "
                 f"{results_dir}. To re-run decomposition, use "
-                f"force_generation=True.")
+                f"force_generation=True."
+            )
         else:
             logger.info(
                 f"Running signature decomposition for "
-                f"{self.signature_class} using matrix: {matrix_path}")
+                f"{self.signature_class} using matrix: {matrix_path}"
+            )
 
         # Set collapse_to_SBS96=False for ID and DBS
         collapse_to_SBS96 = (
-            self.signature_class == 'SBS'
-            if 'collapse_to_SBS96' not in kwargs
-            else kwargs.pop('collapse_to_SBS96'))
+            self.signature_class == "SBS"
+            if "collapse_to_SBS96" not in kwargs
+            else kwargs.pop("collapse_to_SBS96")
+        )
 
         # Run signature decomposition
         self._sig_assignments = run_sig_decomp(
             results_dir=str(results_dir),
             input_data=str(matrix_path),
-            input_type='matrix',
+            input_type="matrix",
             collapse_to_SBS96=collapse_to_SBS96,
             force_generation=force_generation,
             exome=exome,
             cosmic_version=cosmic_version,
             genome_build=genome_build,
-            **kwargs)
+            **kwargs,
+        )
 
         if not results_exist:
             logger.info("... done with signature decomposition.")
@@ -1116,19 +1226,24 @@ class MutationDataset:
 
         # Load the normalized signature matrix
         sig_matrix_path = (
-            solution_dir / "Signatures" /
-            "Assignment_Solution_Signatures.txt")
+            solution_dir
+            / "Signatures"
+            / "Assignment_Solution_Signatures.txt"
+        )
 
         if sig_matrix_path.exists():
             self._signature_matrix = pd.read_csv(
-                sig_matrix_path, sep='\t', index_col=0)
+                sig_matrix_path, sep="\t", index_col=0
+            )
             logger.info(
                 f"Loaded normalized signature matrix from "
-                f"{sig_matrix_path}")
+                f"{sig_matrix_path}"
+            )
             print("")
         else:
             logger.warning(
-                f"Signature matrix not found at {sig_matrix_path}")
+                f"Signature matrix not found at {sig_matrix_path}"
+            )
             self._signature_matrix = None
 
         self._signature_reference_genome = genome_build
@@ -1139,9 +1254,7 @@ class MutationDataset:
         print("")
         return self._sig_assignments
 
-    def generate_contexts_by_gene(
-            self,
-            fastas=None):
+    def generate_contexts_by_gene(self, fastas=None):
         """Generate trinucleotide context counts by gene.
 
         Computes trinucleotide context counts from FASTA files and
@@ -1195,43 +1308,44 @@ class MutationDataset:
             raise ValueError(
                 "Mutation database must be loaded before computing "
                 "contexts. Call generate_mutation_db() or "
-                "load_dataset() first.")
+                "load_dataset() first."
+            )
 
         # Compute contexts, restricting to genes in mutation_db
         self._contexts_by_gene = compute_contexts_by_gene(
-            fastas,
-            restrict_to_db=self.mutation_db)
+            fastas, restrict_to_db=self.mutation_db
+        )
 
         return self._contexts_by_gene
 
     def build_full_dataset(self, fastas=None):
         """Run the full data-generation pipeline for this dataset."""
         title = "Mutation data: building compact mutation database."
-        print("="*len(title))
+        print("=" * len(title))
         print(title)
-        print("="*len(title))
+        print("=" * len(title))
         self.generate_mutation_db()
         print("")
 
         title = "Gene presence: computing matrices."
-        print("="*len(title))
+        print("=" * len(title))
         print(title)
-        print("="*len(title))
+        print("=" * len(title))
         self.compute_gene_presence()
         self.compute_gene_presence_non_silent()
         print("")
 
         title = "Contexts by gene: computing opportunities."
-        print("="*len(title))
+        print("=" * len(title))
         print(title)
-        print("="*len(title))
+        print("=" * len(title))
         self.generate_contexts_by_gene(fastas=fastas)
         print("")
 
         title = "Variant data: generating annotations and presence."
-        print("="*len(title))
+        print("=" * len(title))
         print(title)
-        print("="*len(title))
+        print("=" * len(title))
         self.generate_variant_db()
         self.compute_variants_present()
         print("")
@@ -1353,28 +1467,40 @@ class Model:
     _mu_taus: pd.DataFrame | dict = None
     _prob_g_tau_tau_independent: bool | None = None
     gammas: dict = field(default_factory=dict, init=False, repr=False)
-    _saved_location: str | None = field(default=None, init=False, repr=False)
-    _auto_mu_taus_kwargs: dict = field(default_factory=dict, init=False, repr=False)
-    _auto_cov_effects_per_sigma: bool | None = field(default=None, init=False, repr=False)
-    _auto_prob_g_tau_tau_independent: bool | None = field(default=None, init=False, repr=False)
-    _auto_signature_selection: list | None = field(default=None, init=False, repr=False)
+    _saved_location: str | None = field(
+        default=None, init=False, repr=False
+    )
+    _auto_mu_taus_kwargs: dict = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _auto_cov_effects_per_sigma: bool | None = field(
+        default=None, init=False, repr=False
+    )
+    _auto_prob_g_tau_tau_independent: bool | None = field(
+        default=None, init=False, repr=False
+    )
+    _auto_signature_selection: list | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __init__(
-            self,
-            dataset: MutationDataset | str | Path,
-            cov_matrix: pd.DataFrame | None = None,
-            *,
-            cov_effects_kwargs: dict | None = None,
-            L_low: float | None = None,
-            L_high: float | None = None,
-            cut_at_L_low: bool | None = None,
-            cov_effects_per_sigma: bool | None = None,
-            prob_g_tau_tau_independent: bool | None = None,
-            signature_selection: list | tuple | None = None):
+        self,
+        dataset: MutationDataset | str | Path,
+        cov_matrix: pd.DataFrame | None = None,
+        *,
+        cov_effects_kwargs: dict | None = None,
+        L_low: float | None = None,
+        L_high: float | None = None,
+        cut_at_L_low: bool | None = None,
+        cov_effects_per_sigma: bool | None = None,
+        prob_g_tau_tau_independent: bool | None = None,
+        signature_selection: list | tuple | None = None,
+    ):
         self.dataset = dataset
         self.cov_matrix = cov_matrix
         self.cov_effects_kwargs = (
-            cov_effects_kwargs.copy() if cov_effects_kwargs else {})
+            cov_effects_kwargs.copy() if cov_effects_kwargs else {}
+        )
 
         self._base_mus = None
         self.cov_effects = None
@@ -1390,13 +1516,17 @@ class Model:
         self._auto_mu_taus_kwargs = {
             "L_low": L_low,
             "L_high": L_high,
-            "cut_at_L_low": cut_at_L_low}
+            "cut_at_L_low": cut_at_L_low,
+        }
         self._auto_cov_effects_per_sigma = cov_effects_per_sigma
         self._auto_prob_g_tau_tau_independent = (
-            prob_g_tau_tau_independent)
+            prob_g_tau_tau_independent
+        )
         self._auto_signature_selection = (
             list(signature_selection)
-            if signature_selection is not None else None)
+            if signature_selection is not None
+            else None
+        )
         self._saved_location = None
 
         self.__post_init__()
@@ -1423,31 +1553,36 @@ class Model:
     def _apply_auto_configuration(self):
         """Apply automatic mu_taus/base_mus/signature setup if requested."""
         auto_mu_kwargs = {
-            key: value for key, value in self._auto_mu_taus_kwargs.items()
-            if value is not None}
+            key: value
+            for key, value in self._auto_mu_taus_kwargs.items()
+            if value is not None
+        }
 
         need_mu_taus = (
-            bool(auto_mu_kwargs) or
-            self._auto_cov_effects_per_sigma is not None or
-            self._auto_prob_g_tau_tau_independent is not None or
-            self._auto_signature_selection is not None)
+            bool(auto_mu_kwargs)
+            or self._auto_cov_effects_per_sigma is not None
+            or self._auto_prob_g_tau_tau_independent is not None
+            or self._auto_signature_selection is not None
+        )
 
         if need_mu_taus and self._mu_taus is None:
             separate = bool(self._auto_cov_effects_per_sigma)
             self.compute_mu_taus(
-                separate_per_sigma=separate,
-                **auto_mu_kwargs)
+                separate_per_sigma=separate, **auto_mu_kwargs
+            )
 
-        if (self._auto_prob_g_tau_tau_independent is not None and
-                self._base_mus is None):
+        if (
+            self._auto_prob_g_tau_tau_independent is not None
+            and self._base_mus is None
+        ):
             self.compute_base_mus(
                 prob_g_tau_tau_independent=(
-                    self._auto_prob_g_tau_tau_independent))
+                    self._auto_prob_g_tau_tau_independent
+                )
+            )
 
-        if (self._auto_signature_selection and
-                self._base_mus is None):
-            self.compute_base_mus(
-                prob_g_tau_tau_independent=False)
+        if self._auto_signature_selection and self._base_mus is None:
+            self.compute_base_mus(prob_g_tau_tau_independent=False)
 
         if self._auto_signature_selection:
             self.aggregate_signatures(self._auto_signature_selection)
@@ -1473,13 +1608,15 @@ class Model:
         if self._base_mus is not None:
             if isinstance(self._base_mus, dict):
                 loaded.append(
-                    f"base_mus: dict with {len(self._base_mus)} signatures")
+                    f"base_mus: dict with {len(self._base_mus)} signatures"
+                )
             else:
                 loaded.append(f"base_mus: {self._base_mus.shape}")
         if self._mu_taus is not None:
             if isinstance(self._mu_taus, dict):
                 loaded.append(
-                    f"mu_taus: dict with {len(self._mu_taus)} signatures")
+                    f"mu_taus: dict with {len(self._mu_taus)} signatures"
+                )
             else:
                 loaded.append(f"mu_taus: {self._mu_taus.shape}")
         if self.cov_effects is not None:
@@ -1576,7 +1713,8 @@ class Model:
             logger.warning(
                 "Covariate effects have not been estimated yet. "
                 "Run estimate_cov_effects() to set "
-                "n_in_cov_effects_estimation.")
+                "n_in_cov_effects_estimation."
+            )
 
         # If already set, return it
         if self._n_in_cov_effects_estimation is not None:
@@ -1586,17 +1724,20 @@ class Model:
         if self.cov_matrix is None:
             raise ValueError(
                 "Covariate matrix not assigned. "
-                "Call assign_cov_matrix() first.")
+                "Call assign_cov_matrix() first."
+            )
 
         if self.dataset._contexts_by_gene is None:
             raise ValueError(
                 "Trinucleotide contexts by gene not loaded. "
                 "Call dataset.generate_contexts_by_gene() or "
-                "load_dataset() first.")
+                "load_dataset() first."
+            )
 
         # Identify passenger genes with complete covariate data
         passenger_gene_ids = filter_passenger_genes_ensembl(
-            self.cov_matrix.index)
+            self.cov_matrix.index
+        )
 
         # Filter to genes with no NaN values in any covariate
         passenger_cov = self.cov_matrix.loc[passenger_gene_ids]
@@ -1610,7 +1751,8 @@ class Model:
             "passenger genes with complete covariates. "
             "This will be set to the actual value when "
             "estimate_cov_effects() is called.",
-            n_complete)
+            n_complete,
+        )
 
         return n_complete
 
@@ -1672,21 +1814,24 @@ class Model:
         if self.cov_effects is not None:
             logger.info(
                 "Passenger genes R² not yet computed; running "
-                "estimate_passenger_genes_r2() now.")
+                "estimate_passenger_genes_r2() now."
+            )
             self.estimate_passenger_genes_r2()
             return self._passenger_genes_r2
 
         logger.info(
             "Passenger genes R² unavailable: "
-            "estimate_cov_effects() has not been run yet.")
+            "estimate_cov_effects() has not been run yet."
+        )
 
         # For models with covariates but no R² yet, return None (user
         # should call estimate_cov_effects or
         # estimate_passenger_genes_r2)
         return None
 
-    def assign_cov_matrix(self, cov_matrix, run_pca=False,
-                          pca_kwargs=None):
+    def assign_cov_matrix(
+        self, cov_matrix, run_pca=False, pca_kwargs=None
+    ):
         """Assign covariate matrix, restricting to dataset genes.
 
         This method assigns a covariate matrix to the model after
@@ -1823,11 +1968,13 @@ class Model:
             raise ValueError(
                 "Trinucleotide contexts by gene not loaded in dataset. "
                 "Call dataset.generate_contexts_by_gene() or "
-                "load_dataset() first.")
+                "load_dataset() first."
+            )
 
         # Reindex to match contexts_by_gene
         reindexed = cov_matrix.reindex(
-            self.dataset.contexts_by_gene.index)
+            self.dataset.contexts_by_gene.index
+        )
 
         # Optionally run PCA
         if run_pca:
@@ -1837,7 +1984,8 @@ class Model:
                 pca_kwargs = {}
 
             self.cov_matrix = run_pca_on_covariates(
-                reindexed, **pca_kwargs)
+                reindexed, **pca_kwargs
+            )
         else:
             self.cov_matrix = reindexed
 
@@ -1849,7 +1997,8 @@ class Model:
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
         return self._base_mus
 
     @base_mus.setter
@@ -1871,28 +2020,32 @@ class Model:
                 "Cannot validate base_mus index: "
                 "contexts_by_gene not loaded in dataset. "
                 "Call dataset.generate_contexts_by_gene() or "
-                "load_dataset() to ensure gene indices match.")
+                "load_dataset() to ensure gene indices match."
+            )
             self._base_mus = value
             return
 
         # Validate index for DataFrames
         if isinstance(value, pd.DataFrame):
             if not value.index.equals(
-                    self.dataset.contexts_by_gene.index):
+                self.dataset.contexts_by_gene.index
+            ):
                 logger.warning(
                     "base_mus index does not match "
                     "dataset.contexts_by_gene.index. "
                     "This may cause errors when computing mutation "
                     "rates. To fix: reindex base_mus to match "
                     "contexts_by_gene.index, or recompute base_mus "
-                    "after loading contexts_by_gene.")
+                    "after loading contexts_by_gene."
+                )
 
         # Validate index for dicts of DataFrames (signature-separated)
         elif isinstance(value, dict):
             for sig_name, df in value.items():
                 if isinstance(df, pd.DataFrame):
                     if not df.index.equals(
-                            self.dataset.contexts_by_gene.index):
+                        self.dataset.contexts_by_gene.index
+                    ):
                         logger.warning(
                             "base_mus['%s'] index does not match "
                             "dataset.contexts_by_gene.index. "
@@ -1901,7 +2054,8 @@ class Model:
                             "base_mus DataFrames to match "
                             "contexts_by_gene.index, or recompute "
                             "base_mus after loading contexts_by_gene.",
-                            sig_name)
+                            sig_name,
+                        )
                         break  # Only warn once
 
         self._base_mus = value
@@ -1922,7 +2076,8 @@ class Model:
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
         return isinstance(self._base_mus, dict)
 
     def has_cov_effects(self):
@@ -1947,7 +2102,8 @@ class Model:
         if self._prob_g_tau_tau_independent is None:
             raise ValueError(
                 "prob_g_tau_tau_independent not set. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
         return self._prob_g_tau_tau_independent
 
     @prob_g_tau_tau_independent.setter
@@ -1973,7 +2129,8 @@ class Model:
             return self.cov_matrix is other.cov_matrix
 
         return set(self.cov_matrix.columns).issubset(
-            other.cov_matrix.columns)
+            other.cov_matrix.columns
+        )
 
     def is_supermodel_of(self, other):
         """Check if this model is a supermodel of another model."""
@@ -2000,7 +2157,8 @@ class Model:
         if self.cov_matrix is None:
             raise ValueError(
                 "Model has no covariates to remove. "
-                "Assign a covariate matrix first.")
+                "Assign a covariate matrix first."
+            )
 
         if isinstance(covariates, str):
             covariate_set = {covariates}
@@ -2010,10 +2168,14 @@ class Model:
         invalid = covariate_set - set(self.covariate_names)
         if invalid:
             raise ValueError(
-                f"Covariate(s) not found in model: {sorted(invalid)}")
+                f"Covariate(s) not found in model: {sorted(invalid)}"
+            )
 
         remaining_columns = [
-            col for col in self.covariate_names if col not in covariate_set]
+            col
+            for col in self.covariate_names
+            if col not in covariate_set
+        ]
 
         new_model = self.copy()
         if remaining_columns:
@@ -2023,12 +2185,13 @@ class Model:
         return new_model
 
     def estimate_gamma(
-            self,
-            item,
-            level=None,
-            upper_bound_prior=0.5 * 10**3,
-            store=True,
-            non_silent=True):
+        self,
+        item,
+        level=None,
+        upper_bound_prior=0.5 * 10**3,
+        store=True,
+        non_silent=True,
+    ):
         """Estimate selection coefficient for a variant or gene.
 
         Parameters
@@ -2070,21 +2233,22 @@ class Model:
         if level is None:
             level = self._detect_item_level(item)
 
-        if level == 'variant':
+        if level == "variant":
             result = self._estimate_gamma_variant(
-                item,
-                upper_bound_prior=upper_bound_prior,
-                store=store)
-        elif level == 'gene':
+                item, upper_bound_prior=upper_bound_prior, store=store
+            )
+        elif level == "gene":
             result = self._estimate_gamma_gene(
                 item,
                 upper_bound_prior=upper_bound_prior,
                 store=store,
-                non_silent=non_silent)
+                non_silent=non_silent,
+            )
         else:
             raise ValueError(
                 f"Invalid level: {level!r}. "
-                "Must be 'variant', 'gene', or None.")
+                "Must be 'variant', 'gene', or None."
+            )
 
         self._report_gamma_posterior(result)
         return result
@@ -2109,32 +2273,38 @@ class Model:
         """
         # Check if it's a variant
         if self.mu_ms is not None and item in self.mu_ms.index:
-            return 'variant'
-        if (hasattr(self.dataset, '_variants_present') and
-                self.dataset._variants_present is not None and
-                item in self.dataset._variants_present.index):
-            return 'variant'
+            return "variant"
+        if (
+            hasattr(self.dataset, "_variants_present")
+            and self.dataset._variants_present is not None
+            and item in self.dataset._variants_present.index
+        ):
+            return "variant"
 
         # Check if it's an ensembl_gene_id
         if self._mu_gs is not None and item in self.mu_gs.index:
-            return 'gene'
-        if (hasattr(self.dataset, '_genes_present') and
-                self.dataset._genes_present is not None and
-                item in self.dataset._genes_present.index):
-            return 'gene'
+            return "gene"
+        if (
+            hasattr(self.dataset, "_genes_present")
+            and self.dataset._genes_present is not None
+            and item in self.dataset._genes_present.index
+        ):
+            return "gene"
 
         # Check if it's a gene name in mutation database
-        if hasattr(self.dataset, 'mutation_db'):
+        if hasattr(self.dataset, "mutation_db"):
             mapping = (
-                self.dataset.mutation_db[['gene', 'ensembl_gene_id']]
+                self.dataset.mutation_db[["gene", "ensembl_gene_id"]]
                 .drop_duplicates()
-                .set_index('gene')['ensembl_gene_id'])
+                .set_index("gene")["ensembl_gene_id"]
+            )
             if item in mapping.index:
-                return 'gene'
+                return "gene"
 
         raise ValueError(
             f"Could not identify {item!r} as a variant or gene. "
-            "Please specify 'level' parameter explicitly.")
+            "Please specify 'level' parameter explicitly."
+        )
 
     def _report_gamma_posterior(self, result):
         """Print posterior summary for gamma inference if available."""
@@ -2142,27 +2312,27 @@ class Model:
             import arviz as az
         except ImportError:  # pragma: no cover - optional dependency
             logger.warning(
-                "arviz is not installed; cannot summarize gamma posterior.")
+                "arviz is not installed; cannot summarize gamma posterior."
+            )
             return
 
         if not hasattr(result, "posterior"):
             return
 
         try:
-            summary = az.summary(result, var_names=['gamma'])
+            summary = az.summary(result, var_names=["gamma"])
         except Exception as exc:  # pragma: no cover - logging path
             logger.warning(
-                "Failed to summarize gamma posterior: %s", exc)
+                "Failed to summarize gamma posterior: %s", exc
+            )
             return
 
         print("Gamma posterior summary:")
         print(summary.to_string())
 
     def _estimate_gamma_variant(
-            self,
-            variant,
-            upper_bound_prior=0.5 * 10**3,
-            store=True):
+        self, variant, upper_bound_prior=0.5 * 10**3, store=True
+    ):
         """Estimate selection coefficient for a variant.
 
         Parameters
@@ -2186,7 +2356,8 @@ class Model:
 
         if variant not in self.mu_ms.index:
             raise ValueError(
-                f"Variant {variant!r} not found in mutation rates.")
+                f"Variant {variant!r} not found in mutation rates."
+            )
 
         variants_present = self.dataset.variants_present
         present_mask = variants_present.loc[variant] == 1
@@ -2195,7 +2366,8 @@ class Model:
         result = estimate_gamma_from_mus(
             self.mu_ms.loc[variant][present_mask],
             self.mu_ms.loc[variant][absent_mask],
-            upper_bound_prior=upper_bound_prior)
+            upper_bound_prior=upper_bound_prior,
+        )
 
         if store:
             self.gammas[variant] = result
@@ -2203,11 +2375,12 @@ class Model:
         return result
 
     def _estimate_gamma_gene(
-            self,
-            gene,
-            upper_bound_prior=0.5 * 10**3,
-            store=True,
-            non_silent=True):
+        self,
+        gene,
+        upper_bound_prior=0.5 * 10**3,
+        store=True,
+        non_silent=True,
+    ):
         """Estimate selection coefficient for a gene.
 
         Parameters
@@ -2233,24 +2406,29 @@ class Model:
 
         gene_presence = (
             self.dataset.genes_present_non_silent
-            if non_silent else self.dataset.genes_present)
+            if non_silent
+            else self.dataset.genes_present
+        )
 
         # Try to get ensembl_gene_id if gene is a name
         if gene in self.mu_gs.index:
             gene_id = gene
         else:
             mapping = (
-                self.dataset.mutation_db[['gene', 'ensembl_gene_id']]
+                self.dataset.mutation_db[["gene", "ensembl_gene_id"]]
                 .drop_duplicates()
-                .set_index('gene')['ensembl_gene_id'])
+                .set_index("gene")["ensembl_gene_id"]
+            )
             if gene not in mapping:
                 raise ValueError(
-                    f"Gene {gene!r} not found in mutation database.")
+                    f"Gene {gene!r} not found in mutation database."
+                )
             gene_id = mapping[gene]
 
         if gene_id not in self.mu_gs.index:
             raise ValueError(
-                f"Gene ID {gene_id!r} not found in mu_gs.")
+                f"Gene ID {gene_id!r} not found in mu_gs."
+            )
 
         present_mask = gene_presence.loc[gene_id] == 1
         absent_mask = ~present_mask
@@ -2258,7 +2436,8 @@ class Model:
         result = estimate_gamma_from_mus(
             self.mu_gs.loc[gene_id][present_mask],
             self.mu_gs.loc[gene_id][absent_mask],
-            upper_bound_prior=upper_bound_prior)
+            upper_bound_prior=upper_bound_prior,
+        )
 
         if store:
             # Always store with ensembl_gene_id for consistency
@@ -2267,11 +2446,12 @@ class Model:
         return result
 
     def plot_gamma_results(
-            self,
-            keys=None,
-            level=None,
-            change_gene_ids_to_names=True,
-            **kwargs):
+        self,
+        keys=None,
+        level=None,
+        change_gene_ids_to_names=True,
+        **kwargs,
+    ):
         """Plot posterior vs counts for selection results.
 
         Parameters
@@ -2329,7 +2509,8 @@ class Model:
         if not self.gammas:
             raise ValueError(
                 "No gamma results to plot. "
-                "Call estimate_gamma() first.")
+                "Call estimate_gamma() first."
+            )
 
         # Select results based on keys
         if keys is None:
@@ -2339,7 +2520,8 @@ class Model:
             # Single key
             if keys not in self.gammas:
                 raise ValueError(
-                    f"Key {keys!r} not found in gamma results.")
+                    f"Key {keys!r} not found in gamma results."
+                )
             results = {keys: self.gammas[keys]}
         else:
             # List of keys
@@ -2347,60 +2529,73 @@ class Model:
             for key in keys:
                 if key not in self.gammas:
                     raise ValueError(
-                        f"Key {key!r} not found in gamma results.")
+                        f"Key {key!r} not found in gamma results."
+                    )
                 results[key] = self.gammas[key]
 
         # Auto-detect level if not specified
         if level is None:
             # Check first key to determine level
             first_key = next(iter(results.keys()))
-            if (hasattr(self.dataset, '_variants_present') and
-                    self.dataset._variants_present is not None and
-                    first_key in self.dataset._variants_present.index):
-                level = 'variant'
-            elif (hasattr(self.dataset, '_genes_present') and
-                    self.dataset._genes_present is not None and
-                    first_key in self.dataset._genes_present.index):
-                level = 'gene'
+            if (
+                hasattr(self.dataset, "_variants_present")
+                and self.dataset._variants_present is not None
+                and first_key in self.dataset._variants_present.index
+            ):
+                level = "variant"
+            elif (
+                hasattr(self.dataset, "_genes_present")
+                and self.dataset._genes_present is not None
+                and first_key in self.dataset._genes_present.index
+            ):
+                level = "gene"
             else:
                 raise ValueError(
                     f"Could not auto-detect level for key {first_key!r}. "
-                    "Please specify level='variant' or level='gene'.")
+                    "Please specify level='variant' or level='gene'."
+                )
 
         # Build counts dictionary from dataset
-        if level == 'variant':
+        if level == "variant":
             if self.dataset._variants_present is None:
                 raise ValueError(
                     "Variant presence matrix not computed. "
-                    "Call dataset.compute_variants_present() first.")
-            variant_counts = (
-                self.dataset.variants_present.sum(axis=1).astype(int))
+                    "Call dataset.compute_variants_present() first."
+                )
+            variant_counts = self.dataset.variants_present.sum(
+                axis=1
+            ).astype(int)
             counts = {
                 key: int(variant_counts.get(key, 0))
-                for key in results.keys()}
+                for key in results.keys()
+            }
             passenger_genes = set(
-                filter_passenger_genes(self.dataset.mutation_db))
+                filter_passenger_genes(self.dataset.mutation_db)
+            )
             results_for_plot = results
         else:  # level == 'gene'
             if self.dataset._genes_present_non_silent is None:
                 raise ValueError(
                     "Gene presence matrix not computed. "
-                    "Call dataset.compute_gene_presence_non_silent() first.")
+                    "Call dataset.compute_gene_presence_non_silent() first."
+                )
             gene_presence = self.dataset.genes_present_non_silent
             gene_counts = gene_presence.sum(axis=1).astype(int)
 
             mapping_df = (
-                self.dataset.mutation_db[['ensembl_gene_id', 'gene']]
+                self.dataset.mutation_db[["ensembl_gene_id", "gene"]]
                 .dropna()
-                .drop_duplicates())
+                .drop_duplicates()
+            )
             id_to_name = dict(
-                zip(mapping_df['ensembl_gene_id'],
-                    mapping_df['gene']))
+                zip(mapping_df["ensembl_gene_id"], mapping_df["gene"])
+            )
             name_to_id = dict(
-                zip(mapping_df['gene'],
-                    mapping_df['ensembl_gene_id']))
+                zip(mapping_df["gene"], mapping_df["ensembl_gene_id"])
+            )
             passenger_gene_names = set(
-                filter_passenger_genes(self.dataset.mutation_db))
+                filter_passenger_genes(self.dataset.mutation_db)
+            )
 
             results_for_plot = {}
             counts = {}
@@ -2414,7 +2609,8 @@ class Model:
                     raise ValueError(
                         f"Gene key {key!r} not found in dataset. "
                         "Ensure gamma results were generated for valid "
-                        "Ensembl IDs or gene symbols.")
+                        "Ensembl IDs or gene symbols."
+                    )
 
                 if change_gene_ids_to_names:
                     base_label = id_to_name.get(gene_id, gene_id)
@@ -2436,15 +2632,17 @@ class Model:
             counts,
             passenger_genes,
             level=level,
-            **kwargs)
+            **kwargs,
+        )
 
     def plot_signature_correlations(
-            self,
-            top_n=None,
-            figsize=None,
-            mutations_log_scale=False,
-            save_path=None,
-            show=True):
+        self,
+        top_n=None,
+        figsize=None,
+        mutations_log_scale=False,
+        save_path=None,
+        show=True,
+    ):
         """Plot signature correlations with covariates.
 
         Visualizes correlations between mutational signatures and
@@ -2496,25 +2694,28 @@ class Model:
         if self.cov_matrix is None:
             raise ValueError(
                 "No covariates set. "
-                "Create model with cov_matrix parameter.")
+                "Create model with cov_matrix parameter."
+            )
 
         # Get L_low and L_high from auto kwargs or use defaults
-        L_low = self._auto_mu_taus_kwargs.get('L_low', 64)
-        L_high = self._auto_mu_taus_kwargs.get('L_high', 500)
+        L_low = self._auto_mu_taus_kwargs.get("L_low", 64)
+        L_high = self._auto_mu_taus_kwargs.get("L_high", 500)
 
         # Build signature matrix path
         location_sig_matrix_norm = (
-            Path(self.dataset.location_maf_files) /
-            "signature_decomposition" /
-            self.dataset.signature_class /
-            "Assignment_Solution" /
-            "Signatures" /
-            "Assignment_Solution_Signatures.txt")
+            Path(self.dataset.location_maf_files)
+            / "signature_decomposition"
+            / self.dataset.signature_class
+            / "Assignment_Solution"
+            / "Signatures"
+            / "Assignment_Solution_Signatures.txt"
+        )
 
         # Convert cov_matrix DataFrame to dict of Series
         cov_matrix_for_corr = {
             col: self.cov_matrix[col]
-            for col in self.cov_matrix.columns}
+            for col in self.cov_matrix.columns
+        }
 
         # Call the plotting function
         plot_signature_correlations(
@@ -2528,7 +2729,8 @@ class Model:
             figsize=figsize,
             mutations_log_scale=mutations_log_scale,
             save_path=save_path,
-            show=show)
+            show=show,
+        )
 
     def compute_mu_ms(self, use_cov_effects=True, **kwargs):
         """Compute per-variant mutation rates per sample.
@@ -2574,22 +2776,26 @@ class Model:
             raise ValueError(
                 "Mutation database not loaded in dataset. "
                 "Call dataset.generate_mutation_db() or "
-                "dataset.load_dataset() first.")
+                "dataset.load_dataset() first."
+            )
 
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates (base_mus) not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
 
         if self.dataset._variant_db is None:
             raise ValueError(
                 "Variant database not loaded. "
-                "Call generate_variant_db() or load_dataset() first.")
+                "Call generate_variant_db() or load_dataset() first."
+            )
 
         if self._prob_g_tau_tau_independent is None:
             raise ValueError(
                 "prob_g_tau_tau_independent flag not set. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
 
         # Choose which mutation rates to use
         if use_cov_effects and self._mu_gs is not None:
@@ -2602,7 +2808,8 @@ class Model:
             mu_g_j=mu_g_j,
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
-            **kwargs)
+            **kwargs,
+        )
 
         return self.mu_ms
 
@@ -2663,7 +2870,8 @@ class Model:
         if manifest_path.exists() and not overwrite:
             raise FileExistsError(
                 f"Model directory {directory} already exists. "
-                "Pass overwrite=True to replace it.")
+                "Pass overwrite=True to replace it."
+            )
 
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -2677,7 +2885,9 @@ class Model:
             folder_path.mkdir(exist_ok=True)
             stored = {}
             for key, df in data.items():
-                stored[key] = _save_dataframe(df, f"{folder}/{key}.parquet")
+                stored[key] = _save_dataframe(
+                    df, f"{folder}/{key}.parquet"
+                )
             return stored
 
         def _save_array(arr, filename):
@@ -2692,7 +2902,8 @@ class Model:
 
             # Handle None, bool, int, float, str - already JSON-safe
             if value is None or isinstance(
-                    value, (bool, int, float, str)):
+                value, (bool, int, float, str)
+            ):
                 return value
 
             # Handle numpy types first (most specific)
@@ -2713,8 +2924,10 @@ class Model:
 
             # Handle collections recursively
             if isinstance(value, dict):
-                return {_json_safe(k): _json_safe(v)
-                        for k, v in value.items()}
+                return {
+                    _json_safe(k): _json_safe(v)
+                    for k, v in value.items()
+                }
             if isinstance(value, (list, tuple)):
                 return [_json_safe(v) for v in value]
             if isinstance(value, set):
@@ -2743,47 +2956,53 @@ class Model:
         files = {}
 
         if self.cov_matrix is not None:
-            files['cov_matrix'] = _save_dataframe(
-                self.cov_matrix, "cov_matrix.parquet")
+            files["cov_matrix"] = _save_dataframe(
+                self.cov_matrix, "cov_matrix.parquet"
+            )
 
         if self._mu_taus is not None:
             if isinstance(self._mu_taus, dict):
-                files['mu_taus'] = _save_dict_of_dataframes(
-                    self._mu_taus,
-                    "mu_taus")
+                files["mu_taus"] = _save_dict_of_dataframes(
+                    self._mu_taus, "mu_taus"
+                )
             else:
-                files['mu_taus'] = _save_dataframe(
-                    self._mu_taus, "mu_taus.parquet")
+                files["mu_taus"] = _save_dataframe(
+                    self._mu_taus, "mu_taus.parquet"
+                )
 
         if self._base_mus is not None:
             if isinstance(self._base_mus, dict):
-                files['base_mus'] = _save_dict_of_dataframes(
-                    self._base_mus,
-                    "base_mus")
+                files["base_mus"] = _save_dict_of_dataframes(
+                    self._base_mus, "base_mus"
+                )
             else:
-                files['base_mus'] = _save_dataframe(
-                    self._base_mus, "base_mus.parquet")
+                files["base_mus"] = _save_dataframe(
+                    self._base_mus, "base_mus.parquet"
+                )
 
         if self.cov_effects is not None:
-            files['cov_effects'] = _save_array(
-                self.cov_effects,
-                "cov_effects.npy")
+            files["cov_effects"] = _save_array(
+                self.cov_effects, "cov_effects.npy"
+            )
 
         if self.cov_effects_posteriors is not None:
             posterior = self.cov_effects_posteriors
             if hasattr(posterior, "to_netcdf"):
                 filename = directory / "cov_effects_posteriors.nc"
                 posterior.to_netcdf(filename)
-                files['cov_effects_posteriors'] = (
-                    "cov_effects_posteriors.nc")
+                files["cov_effects_posteriors"] = (
+                    "cov_effects_posteriors.nc"
+                )
 
         if self._mu_gs is not None:
-            files['mu_gs'] = _save_dataframe(
-                self._mu_gs, "mu_gs.parquet")
+            files["mu_gs"] = _save_dataframe(
+                self._mu_gs, "mu_gs.parquet"
+            )
 
         if self.mu_ms is not None:
-            files['mu_ms'] = _save_dataframe(
-                self.mu_ms, "mu_ms.parquet")
+            files["mu_ms"] = _save_dataframe(
+                self.mu_ms, "mu_ms.parquet"
+            )
 
         if self.gammas:
             gammas_dir = directory / "gammas"
@@ -2792,11 +3011,13 @@ class Model:
 
             for key, result in self.gammas.items():
                 # Create safe filename by replacing problematic chars
-                safe_key = (str(key)
-                           .replace(" ", "_")
-                           .replace("/", "_")
-                           .replace("\\", "_")
-                           .replace(":", "_"))
+                safe_key = (
+                    str(key)
+                    .replace(" ", "_")
+                    .replace("/", "_")
+                    .replace("\\", "_")
+                    .replace(":", "_")
+                )
                 filename = f"gamma_{safe_key}.nc"
                 filepath = gammas_dir / filename
 
@@ -2807,12 +3028,14 @@ class Model:
                 else:
                     logger.warning(
                         f"Gamma result for {key!r} does not have "
-                        f"to_netcdf method. Skipping save.")
+                        f"to_netcdf method. Skipping save."
+                    )
 
-            files['gamma_files'] = gamma_files
+            files["gamma_files"] = gamma_files
 
         dataset_snapshot = getattr(
-            self.dataset, "dataset_directory", None)
+            self.dataset, "dataset_directory", None
+        )
         if dataset_snapshot is not None:
             dataset_snapshot = str(Path(dataset_snapshot).resolve())
         else:
@@ -2820,22 +3043,26 @@ class Model:
                 "Dataset does not have an associated saved directory. "
                 "Model snapshots will be unable to reload the dataset. "
                 "Call MutationDataset.save_dataset() and reload it "
-                "before saving models.")
+                "before saving models."
+            )
 
         manifest = {
             "version": 1,
             "dataset_snapshot": dataset_snapshot,
             "dataset_location": getattr(
-                self.dataset, "location_maf_files", None),
+                self.dataset, "location_maf_files", None
+            ),
             "covariate_names": self.covariate_names,
             "mu_taus_separate": isinstance(self._mu_taus, dict),
             "prob_g_tau_tau_independent": (
-                self._prob_g_tau_tau_independent),
+                self._prob_g_tau_tau_independent
+            ),
             "files": files,
         }
 
         manifest_path.write_text(
-            json.dumps(_json_safe(manifest), indent=2))
+            json.dumps(_json_safe(manifest), indent=2)
+        )
         self._saved_location = str(directory.resolve())
 
     @classmethod
@@ -2849,7 +3076,8 @@ class Model:
 
         if not manifest_path.exists():
             raise FileNotFoundError(
-                f"Model manifest not found at {manifest_path}.")
+                f"Model manifest not found at {manifest_path}."
+            )
 
         manifest = json.loads(manifest_path.read_text())
 
@@ -2858,7 +3086,8 @@ class Model:
             raise ValueError(
                 "Model manifest does not include a dataset_snapshot "
                 "entry. Recreate the model by loading the appropriate "
-                "MutationDataset and re-saving the model snapshot.")
+                "MutationDataset and re-saving the model snapshot."
+            )
 
         snapshot_path = Path(dataset_snapshot)
         if not snapshot_path.is_absolute():
@@ -2870,53 +3099,59 @@ class Model:
             raise FileNotFoundError(
                 f"Dataset snapshot not found at {snapshot_path}. "
                 "Ensure the dataset directory still exists or "
-                "recreate it with MutationDataset.save_dataset().")
+                "recreate it with MutationDataset.save_dataset()."
+            )
 
         model = cls(
             dataset=MutationDataset.load_dataset(snapshot_path),
-            cov_matrix=None)
+            cov_matrix=None,
+        )
 
         files = manifest.get("files", {})
 
         def _load_dataframe(filename):
             return pd.read_parquet(directory / filename)
 
-        if 'cov_matrix' in files:
-            model.cov_matrix = _load_dataframe(files['cov_matrix'])
+        if "cov_matrix" in files:
+            model.cov_matrix = _load_dataframe(files["cov_matrix"])
 
-        if 'mu_taus' in files:
-            mu_info = files['mu_taus']
+        if "mu_taus" in files:
+            mu_info = files["mu_taus"]
             if isinstance(mu_info, dict):
                 model._mu_taus = {
                     sig: _load_dataframe(path)
-                    for sig, path in mu_info.items()}
+                    for sig, path in mu_info.items()
+                }
             else:
                 model._mu_taus = _load_dataframe(mu_info)
 
-        if 'base_mus' in files:
-            base_info = files['base_mus']
+        if "base_mus" in files:
+            base_info = files["base_mus"]
             if isinstance(base_info, dict):
                 model._base_mus = {
                     sig: _load_dataframe(path)
-                    for sig, path in base_info.items()}
+                    for sig, path in base_info.items()
+                }
             else:
                 model._base_mus = _load_dataframe(base_info)
 
-        if 'cov_effects' in files:
+        if "cov_effects" in files:
             model.cov_effects = np.load(
-                directory / files['cov_effects'])
+                directory / files["cov_effects"]
+            )
 
-        if 'mu_gs' in files:
-            model._mu_gs = _load_dataframe(files['mu_gs'])
+        if "mu_gs" in files:
+            model._mu_gs = _load_dataframe(files["mu_gs"])
 
-        if 'mu_ms' in files:
-            model.mu_ms = _load_dataframe(files['mu_ms'])
+        if "mu_ms" in files:
+            model.mu_ms = _load_dataframe(files["mu_ms"])
 
         # Load gamma results (new format: individual .nc files)
-        if 'gamma_files' in files:
+        if "gamma_files" in files:
             import arviz as az
+
             model.gammas = {}
-            for key, filepath in files['gamma_files'].items():
+            for key, filepath in files["gamma_files"].items():
                 full_path = directory / filepath
                 if full_path.exists():
                     try:
@@ -2924,26 +3159,29 @@ class Model:
                     except Exception as e:
                         logger.warning(
                             f"Failed to load gamma result for {key!r} "
-                            f"from {filepath}: {e}")
+                            f"from {filepath}: {e}"
+                        )
                 else:
                     logger.warning(
-                        f"Gamma file not found: {filepath}")
+                        f"Gamma file not found: {filepath}"
+                    )
 
         # Backward compatibility: load old JSON format
-        elif 'gammas' in files:
-            path = directory / files['gammas']
+        elif "gammas" in files:
+            path = directory / files["gammas"]
             model.gammas = json.loads(path.read_text())
-        elif 'gamma_ms' in files or 'gamma_gs' in files:
+        elif "gamma_ms" in files or "gamma_gs" in files:
             model.gammas = {}
-            if 'gamma_ms' in files:
-                path = directory / files['gamma_ms']
+            if "gamma_ms" in files:
+                path = directory / files["gamma_ms"]
                 model.gammas.update(json.loads(path.read_text()))
-            if 'gamma_gs' in files:
-                path = directory / files['gamma_gs']
+            if "gamma_gs" in files:
+                path = directory / files["gamma_gs"]
                 model.gammas.update(json.loads(path.read_text()))
 
         model._prob_g_tau_tau_independent = manifest.get(
-            "prob_g_tau_tau_independent")
+            "prob_g_tau_tau_independent"
+        )
         model._saved_location = str(directory.resolve())
 
         return model
@@ -2954,7 +3192,8 @@ class Model:
         if self._saved_location is None:
             raise ValueError(
                 "Model has not been saved yet. "
-                "Call save_model() or load_model() first.")
+                "Call save_model() or load_model() first."
+            )
         return self._saved_location
 
     @property
@@ -2963,7 +3202,8 @@ class Model:
         if self._mu_gs is None:
             raise ValueError(
                 "Mutation rates not computed. "
-                "Call compute_mu_gs() first.")
+                "Call compute_mu_gs() first."
+            )
         return self._mu_gs
 
     @mu_gs.setter
@@ -2985,21 +3225,24 @@ class Model:
                 "Cannot validate mu_gs index: "
                 "contexts_by_gene not loaded in dataset. "
                 "Call dataset.generate_contexts_by_gene() or "
-                "load_dataset() to ensure gene indices match.")
+                "load_dataset() to ensure gene indices match."
+            )
             self._mu_gs = value
             return
 
         # Validate index for DataFrames
         if isinstance(value, pd.DataFrame):
             if not value.index.equals(
-                    self.dataset.contexts_by_gene.index):
+                self.dataset.contexts_by_gene.index
+            ):
                 logger.warning(
                     "mu_gs index does not match "
                     "dataset.contexts_by_gene.index. "
                     "This may cause errors in downstream analysis. "
                     "To fix: reindex mu_gs to match "
                     "contexts_by_gene.index, or recompute mu_gs "
-                    "after loading contexts_by_gene.")
+                    "after loading contexts_by_gene."
+                )
 
             # Also check against cov_matrix if present
             if self.cov_matrix is not None:
@@ -3009,14 +3252,16 @@ class Model:
                         "This may cause errors in downstream analysis. "
                         "To fix: call model.assign_cov_matrix() again "
                         "to reindex cov_matrix to match "
-                        "contexts_by_gene.index, then recompute mu_gs.")
+                        "contexts_by_gene.index, then recompute mu_gs."
+                    )
 
         # Validate index for dicts of DataFrames (signature-separated)
         elif isinstance(value, dict):
             for sig_name, df in value.items():
                 if isinstance(df, pd.DataFrame):
                     if not df.index.equals(
-                            self.dataset.contexts_by_gene.index):
+                        self.dataset.contexts_by_gene.index
+                    ):
                         logger.warning(
                             "mu_gs['%s'] index does not match "
                             "dataset.contexts_by_gene.index. "
@@ -3025,7 +3270,8 @@ class Model:
                             "DataFrames to match contexts_by_gene.index, "
                             "or recompute mu_gs after loading "
                             "contexts_by_gene.",
-                            sig_name)
+                            sig_name,
+                        )
                         break  # Only warn once for contexts_by_gene
 
                     # Also check against cov_matrix if present
@@ -3040,7 +3286,8 @@ class Model:
                                 "reindex cov_matrix to match "
                                 "contexts_by_gene.index, then recompute "
                                 "mu_gs.",
-                                sig_name)
+                                sig_name,
+                            )
                             break  # Only warn once
 
         self._mu_gs = value
@@ -3153,15 +3400,19 @@ class Model:
             cov_matrix=(
                 self.cov_matrix.copy()
                 if self.cov_matrix is not None
-                else None),
+                else None
+            ),
             cov_effects_kwargs=copy_module.deepcopy(
-                self.cov_effects_kwargs))
+                self.cov_effects_kwargs
+            ),
+        )
 
         # Share large base results (memory efficient)
         new_model._base_mus = self._base_mus  # Share, don't copy
-        new_model._mu_taus = self._mu_taus    # Share, don't copy
+        new_model._mu_taus = self._mu_taus  # Share, don't copy
         new_model._prob_g_tau_tau_independent = (
-            self._prob_g_tau_tau_independent)
+            self._prob_g_tau_tau_independent
+        )
 
         # Model-specific results are left as None (default)
         # These will be recomputed for the new covariate matrix:
@@ -3176,7 +3427,8 @@ class Model:
         if self._mu_taus is None:
             raise ValueError(
                 "Mutation burdens not computed. "
-                "Call compute_mu_taus() first.")
+                "Call compute_mu_taus() first."
+            )
         return self._mu_taus
 
     @mu_taus.setter
@@ -3184,10 +3436,7 @@ class Model:
         """Set mutation burdens per tumor."""
         self._mu_taus = value
 
-    def compute_mu_taus(
-            self,
-            separate_per_sigma=False,
-            **kwargs):
+    def compute_mu_taus(self, separate_per_sigma=False, **kwargs):
         """Compute mutation burden (total mutations) per tumor.
 
         This method estimates the baseline mutation rate per tumor
@@ -3307,26 +3556,29 @@ class Model:
             raise ValueError(
                 "Mutation database not loaded in dataset. "
                 "Call dataset.generate_mutation_db() or "
-                "dataset.load_dataset() first.")
+                "dataset.load_dataset() first."
+            )
 
         # Ensure signature decomposition has been run
         if self.dataset._sig_assignments is None:
             raise ValueError(
                 "Signature decomposition not run. "
-                "Call dataset.run_signature_decomposition() first.")
+                "Call dataset.run_signature_decomposition() first."
+            )
 
         if self.dataset._signature_matrix is None:
             raise ValueError(
                 "Signature matrix not loaded. "
-                "Call dataset.run_signature_decomposition() first.")
+                "Call dataset.run_signature_decomposition() first."
+            )
 
         # Write signature matrix to temporary file for compute_mu_tau_per_tumor
         with tempfile.NamedTemporaryFile(
-                mode='w',
-                suffix='.txt',
-                delete=False) as tmp_file:
+            mode="w", suffix=".txt", delete=False
+        ) as tmp_file:
             self.dataset.signature_matrix.to_csv(
-                tmp_file.name, sep='\t')
+                tmp_file.name, sep="\t"
+            )
             tmp_path = tmp_file.name
 
         try:
@@ -3338,14 +3590,16 @@ class Model:
                     "L_low was not provided and 64 was chosen as the "
                     "lower burden threshold for correcting low-burden "
                     "samples. If you want to run a model without "
-                    "correction for low-burden samples set L_low=0.")
+                    "correction for low-burden samples set L_low=0."
+                )
             if "L_high" not in kwargs:
                 logger.warning(
                     "L_high was not provided and 500 was chosen as the "
                     "upper burden threshold for intermediate-burden "
                     "correction. If you want to run a model without a "
                     "limit for intermediate-burden correction set "
-                    "L_high=np.inf.")
+                    "L_high=np.inf."
+                )
 
             compute_kwargs = kwargs.copy()
             compute_kwargs["L_low"] = l_low
@@ -3361,7 +3615,8 @@ class Model:
                 location_signature_matrix=tmp_path,
                 assignments=self.dataset.sig_assignments,
                 separate_per_sigma=separate_per_sigma,
-                **compute_kwargs)
+                **compute_kwargs,
+            )
         finally:
             # Clean up temporary file
             Path(tmp_path).unlink(missing_ok=True)
@@ -3508,28 +3763,28 @@ class Model:
         if self._mu_taus is None:
             raise ValueError(
                 "Mutation burdens (mu_taus) not computed. "
-                "Call compute_mu_taus() first.")
+                "Call compute_mu_taus() first."
+            )
 
         # Ensure contexts_by_gene are loaded
         if self.dataset._contexts_by_gene is None:
             raise ValueError(
                 "Trinucleotide contexts by gene not loaded in dataset. "
                 "Call dataset.generate_contexts_by_gene() or "
-                "load_dataset() first.")
+                "load_dataset() first."
+            )
 
         # Compute baseline mutation rates per gene
         self._base_mus = compute_mu_g_per_tumor(
             mu_taus=self._mu_taus,
             contexts_by_gene=self.dataset.contexts_by_gene,
-            prob_g_tau_tau_independent=prob_g_tau_tau_independent)
+            prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+        )
 
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
         return self._base_mus
 
-    def compute_mu_gs(
-            self,
-            assign_base_mus_to_rest=True,
-            **kwargs):
+    def compute_mu_gs(self, assign_base_mus_to_rest=True, **kwargs):
         """Compute per-gene, per-sample mutation rates.
 
         This method computes the expected mutation rate for each gene
@@ -3657,13 +3912,15 @@ class Model:
             raise ValueError(
                 "Mutation database not loaded in dataset. "
                 "Call dataset.generate_mutation_db() or "
-                "dataset.load_dataset() first.")
+                "dataset.load_dataset() first."
+            )
 
         # Ensure base_mus have been computed
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates (base_mus) not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
 
         # If model has covariates but effects not estimated yet
         if self.cov_matrix is not None and self.cov_effects is None:
@@ -3671,14 +3928,16 @@ class Model:
                 "Model has a covariate matrix but covariate effects "
                 "have not been estimated yet. "
                 "Call estimate_cov_effects() first to estimate how "
-                "covariates affect mutation rates.")
+                "covariates affect mutation rates."
+            )
 
         # If using covariate effects, ensure cov_matrix is provided
         if self.cov_effects is not None and self.cov_matrix is None:
             raise ValueError(
                 "cov_matrix must be provided when using covariate "
                 "effects. This should not happen if the Model was "
-                "created properly.")
+                "created properly."
+            )
 
         # Compute per-gene, per-sample mutation rates
         result = compute_mus_per_gene_per_sample(
@@ -3686,7 +3945,8 @@ class Model:
             base_mus=self.base_mus,
             cov_effect=self.cov_effects,
             cov_matrix=self.cov_matrix,
-            **kwargs)
+            **kwargs,
+        )
 
         # Set _mu_gs
         if assign_base_mus_to_rest:
@@ -3701,7 +3961,8 @@ class Model:
         return self._mu_gs
 
     def estimate_cov_effects(
-            self, sample="MAP", chains=4, burn=1000, tol=0.05):
+        self, sample="MAP", chains=4, burn=1000, tol=0.05
+    ):
         """Estimate covariate effect coefficients via MAP or MCMC.
 
         This method estimates the effect of covariates on mutation
@@ -3964,7 +4225,8 @@ class Model:
             used
         """
         from .estimate_covariates_effect import (
-            estimate_covariates_effect)
+            estimate_covariates_effect,
+        )
         from .estimate_presence import filter_passenger_genes_ensembl
         from .constants import random_seed
 
@@ -3972,39 +4234,46 @@ class Model:
         cov_effects_kwargs = dict(self.cov_effects_kwargs)
         signature = inspect.signature(estimate_covariates_effect)
         default_lower_bound = signature.parameters[
-            'lower_bounds_c'].default
+            "lower_bounds_c"
+        ].default
         if default_lower_bound is inspect._empty:
             default_lower_bound = None
         default_upper_bound = signature.parameters[
-            'upper_bounds_c'].default
+            "upper_bounds_c"
+        ].default
         if default_upper_bound is inspect._empty:
             default_upper_bound = None
         lower_bounds_value = cov_effects_kwargs.get(
-            'lower_bounds_c', default_lower_bound)
+            "lower_bounds_c", default_lower_bound
+        )
         upper_bounds_value = cov_effects_kwargs.get(
-            'upper_bounds_c', default_upper_bound)
+            "upper_bounds_c", default_upper_bound
+        )
 
         # Step 1: Validation - Ensure prerequisites are available
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates (base_mus) not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
 
         if self.dataset._genes_present is None:
             raise ValueError(
                 "Gene presence matrix not computed in dataset. "
-                "Call dataset.compute_gene_presence() first.")
+                "Call dataset.compute_gene_presence() first."
+            )
 
         if self.cov_matrix is None:
             raise ValueError(
                 "Covariate matrix is None. Cannot estimate covariate "
                 "effects without covariates. Create model with "
-                "cov_matrix or use assign_cov_matrix().")
+                "cov_matrix or use assign_cov_matrix()."
+            )
 
         # Step 1: Determine draws and sampling mode
         if isinstance(sample, int) or (
-                isinstance(sample, str) and
-                sample.lower() == "full"):
+            isinstance(sample, str) and sample.lower() == "full"
+        ):
             draws = 4000
             is_mcmc = True
         elif isinstance(sample, str) and sample.lower() == "map":
@@ -4013,11 +4282,13 @@ class Model:
         else:
             raise ValueError(
                 f"sample must be 'MAP', 'full', or an integer, "
-                f"got {sample}")
+                f"got {sample}"
+            )
 
         # Step 2: Gene Filtering - Identify passenger genes
         passenger_gene_ids = filter_passenger_genes_ensembl(
-            self.cov_matrix.index)
+            self.cov_matrix.index
+        )
 
         # Step 2: Filter to genes with complete covariate data (no NaN)
         passenger_cov = self.cov_matrix.loc[passenger_gene_ids]
@@ -4029,14 +4300,18 @@ class Model:
             logger.info(
                 f"Subsampling {sample} genes from "
                 f"{len(passenger_genes_complete)} passenger genes "
-                f"with complete covariates")
+                f"with complete covariates"
+            )
             passenger_genes_complete = pd.Index(
                 passenger_genes_complete.to_series().sample(
-                    sample, random_state=random_seed))
+                    sample, random_state=random_seed
+                )
+            )
 
         # Step 2: Store gene count for later access
         self._n_in_cov_effects_estimation = len(
-            passenger_genes_complete)
+            passenger_genes_complete
+        )
 
         # Step 3: Data Preparation - Detect signature-dependent mode
         is_signature_dependent = isinstance(self._base_mus, dict)
@@ -4046,21 +4321,25 @@ class Model:
             logger.info(
                 f"Estimating covariate effects posteriors for "
                 f"{self._n_in_cov_effects_estimation} passenger genes "
-                f"with {self.cov_matrix.shape[1]} covariate(s)")
+                f"with {self.cov_matrix.shape[1]} covariate(s)"
+            )
             logger.info(
                 f"MCMC parameters: {draws} draws, {chains} chains, "
-                f"{burn} tuning steps")
+                f"{burn} tuning steps"
+            )
         else:
             logger.info(
                 f"Estimating covariate effects for "
                 f"{self._n_in_cov_effects_estimation} passenger genes "
-                f"with {self.cov_matrix.shape[1]} covariate(s)")
+                f"with {self.cov_matrix.shape[1]} covariate(s)"
+            )
 
         if is_signature_dependent:
             n_sigs = len(self._base_mus)
             logger.info(
                 f"Using signature-dependent mode "
-                f"({n_sigs} signatures)")
+                f"({n_sigs} signatures)"
+            )
         else:
             logger.info("Using signature-independent mode")
 
@@ -4069,21 +4348,23 @@ class Model:
             # Signature-separated: filter and transpose each DataFrame
             mus_transposed = {
                 sig: df.loc[passenger_genes_complete].T.values
-                for sig, df in self._base_mus.items()}
+                for sig, df in self._base_mus.items()
+            }
         else:
             # Signature-independent: filter and transpose DataFrame
-            mus_transposed = (
-                self._base_mus.loc[
-                    passenger_genes_complete].T.values)
+            mus_transposed = self._base_mus.loc[
+                passenger_genes_complete
+            ].T.values
 
         # Step 3: Filter genes_present matrix
-        presence_matrix = (
-            self.dataset.genes_present.loc[
-                passenger_genes_complete].T.values)
+        presence_matrix = self.dataset.genes_present.loc[
+            passenger_genes_complete
+        ].T.values
 
         # Step 3: Filter cov_matrix and convert to array
-        cov_matrix_array = (
-            self.cov_matrix.loc[passenger_genes_complete].values)
+        cov_matrix_array = self.cov_matrix.loc[
+            passenger_genes_complete
+        ].values
 
         # Step 4: Estimation - Run MAP or MCMC
         if is_mcmc:
@@ -4095,7 +4376,8 @@ class Model:
                 draws=draws,
                 chains=chains,
                 burn=burn,
-                **cov_effects_kwargs)
+                **cov_effects_kwargs,
+            )
 
             # Store full posterior
             self.cov_effects_posteriors = result
@@ -4104,38 +4386,45 @@ class Model:
             # Extract posterior mean for use in subsequent
             # calculations
             import arviz as az
-            posterior_mean = az.extract(
-                result, var_names=['c']).mean(dim='sample').values
+
+            posterior_mean = (
+                az.extract(result, var_names=["c"])
+                .mean(dim="sample")
+                .values
+            )
             self.cov_effects = posterior_mean
             logger.info(
                 "Extracted posterior mean for subsequent "
-                "calculations")
+                "calculations"
+            )
 
             lower_bounds_arr, upper_bounds_arr = (
                 self._resolve_covariate_bounds(
                     self.cov_effects.shape,
                     lower_bounds_value,
-                    upper_bounds_value))
+                    upper_bounds_value,
+                )
+            )
 
-            summary = az.summary(result, var_names=['c'])
-            logger.info(
-                "Posterior summary:\n%s",
-                summary.to_string())
+            summary = az.summary(result, var_names=["c"])
+            logger.info("Posterior summary:\n%s", summary.to_string())
 
-            if {'hdi_3%', 'hdi_97%'} <= set(summary.columns):
-                hdi_lower = summary['hdi_3%'].to_numpy()
-                hdi_upper = summary['hdi_97%'].to_numpy()
+            if {"hdi_3%", "hdi_97%"} <= set(summary.columns):
+                hdi_lower = summary["hdi_3%"].to_numpy()
+                hdi_upper = summary["hdi_97%"].to_numpy()
                 self._warn_if_near_bounds(
                     lower_candidate=hdi_lower,
                     upper_candidate=hdi_upper,
                     lower_bounds=lower_bounds_arr,
                     upper_bounds=upper_bounds_arr,
                     tol=tol,
-                    mode_desc="Posterior HDI")
+                    mode_desc="Posterior HDI",
+                )
             else:
                 logger.warning(
                     "Posterior summary missing HDI columns; "
-                    "skipping bounds proximity check for posterior.")
+                    "skipping bounds proximity check for posterior."
+                )
         else:
             logger.info("Running MAP estimation...")
             result = estimate_covariates_effect(
@@ -4143,24 +4432,28 @@ class Model:
                 presence_matrix=presence_matrix,
                 cov_matrix=cov_matrix_array,
                 draws=1,
-                **cov_effects_kwargs)
+                **cov_effects_kwargs,
+            )
 
             # Extract MAP estimate from result dict
-            self.cov_effects = result['c']
+            self.cov_effects = result["c"]
             logger.info("MAP estimation completed")
 
             lower_bounds_arr, upper_bounds_arr = (
                 self._resolve_covariate_bounds(
                     self.cov_effects.shape,
                     lower_bounds_value,
-                    upper_bounds_value))
+                    upper_bounds_value,
+                )
+            )
             self._warn_if_near_bounds(
                 lower_candidate=self.cov_effects,
                 upper_candidate=self.cov_effects,
                 lower_bounds=lower_bounds_arr,
                 upper_bounds=upper_bounds_arr,
                 tol=tol,
-                mode_desc="MAP estimates")
+                mode_desc="MAP estimates",
+            )
 
         # Step 5: Automatic Recomputation - gene-level rates
         self.compute_mu_gs()
@@ -4178,33 +4471,36 @@ class Model:
             return self.cov_effects
 
     def _resolve_covariate_bounds(
-            self,
-            coeffs_shape,
-            lower_value,
-            upper_value):
+        self, coeffs_shape, lower_value, upper_value
+    ):
         """Broadcast configured bounds to match coefficient shape."""
         upper_array = None
         if upper_value is not None:
             upper_array = self._broadcast_bounds_value(
-                upper_value, coeffs_shape)
+                upper_value, coeffs_shape
+            )
         else:
             logger.warning(
                 "upper_bounds_c was None; skipping bounds proximity "
-                "checks.")
+                "checks."
+            )
             return None, None
 
         if lower_value is None:
             lower_array = (
-                -upper_array if upper_array is not None else None)
+                -upper_array if upper_array is not None else None
+            )
         else:
             lower_array = self._broadcast_bounds_value(
-                lower_value, coeffs_shape)
+                lower_value, coeffs_shape
+            )
 
         if lower_array is None or upper_array is None:
             logger.warning(
                 "Unable to broadcast coefficient bounds to shape %s; "
                 "skipping boundary proximity checks.",
-                coeffs_shape)
+                coeffs_shape,
+            )
         return lower_array, upper_array
 
     def _broadcast_bounds_value(self, value, shape):
@@ -4217,17 +4513,20 @@ class Model:
         except ValueError:
             logger.warning(
                 "Could not broadcast bounds %s to shape %s",
-                arr, shape)
+                arr,
+                shape,
+            )
             return None
 
     def _warn_if_near_bounds(
-            self,
-            lower_candidate,
-            upper_candidate,
-            lower_bounds,
-            upper_bounds,
-            tol,
-            mode_desc):
+        self,
+        lower_candidate,
+        upper_candidate,
+        lower_bounds,
+        upper_bounds,
+        tol,
+        mode_desc,
+    ):
         """Warn if coefficients or HDIs are close to parameter bounds."""
         if lower_bounds is None or upper_bounds is None:
             return
@@ -4243,27 +4542,31 @@ class Model:
                 "Expected %d lower-side values for bounds check but "
                 "got %d; skipping.",
                 expected_size,
-                lower_candidate.size)
+                lower_candidate.size,
+            )
             return
         if upper_candidate.size != expected_size:
             logger.warning(
                 "Expected %d upper-side values for bounds check but "
                 "got %d; skipping.",
                 expected_size,
-                upper_candidate.size)
+                upper_candidate.size,
+            )
             return
 
         lower_candidate = lower_candidate.reshape(lower_bounds.shape)
         upper_candidate = upper_candidate.reshape(upper_bounds.shape)
 
         lower_mask = (
-            np.isfinite(lower_candidate) &
-            np.isfinite(lower_bounds) &
-            ((lower_candidate - lower_bounds) <= tol))
+            np.isfinite(lower_candidate)
+            & np.isfinite(lower_bounds)
+            & ((lower_candidate - lower_bounds) <= tol)
+        )
         upper_mask = (
-            np.isfinite(upper_candidate) &
-            np.isfinite(upper_bounds) &
-            ((upper_bounds - upper_candidate) <= tol))
+            np.isfinite(upper_candidate)
+            & np.isfinite(upper_bounds)
+            & ((upper_bounds - upper_candidate) <= tol)
+        )
 
         near_lower = np.flatnonzero(lower_mask.ravel())
         near_upper = np.flatnonzero(upper_mask.ravel())
@@ -4281,13 +4584,14 @@ class Model:
                 f"{mode_desc} are within {tol:.3g} of the parameter "
                 f"bounds for {', '.join(messages)}. "
                 "Consider rerunning estimate_cov_effects() with "
-                "adjusted lower_bounds_c/upper_bounds_c.")
+                "adjusted lower_bounds_c/upper_bounds_c."
+            )
             log_fn = getattr(logger, "warming", logger.warning)
             log_fn(warn_msg)
 
     def _coefficient_labels(self, shape):
         """Return human-readable labels for coefficients."""
-        covariate_labels = ['intercept'] + list(self.covariate_names)
+        covariate_labels = ["intercept"] + list(self.covariate_names)
 
         if len(shape) == 1:
             labels = []
@@ -4453,13 +4757,15 @@ class Model:
                 logging.info(
                     "Model has no covariate matrix. Computing mu_gs "
                     "with baseline mutation rates only (no covariate "
-                    "effects).")
+                    "effects)."
+                )
 
             # Ensure base_mus are available
             if self._base_mus is None:
                 raise ValueError(
                     "Baseline mutation rates (base_mus) not computed. "
-                    "Call compute_base_mus() first.")
+                    "Call compute_base_mus() first."
+                )
 
             # Compute mu_gs
             self.compute_mu_gs()
@@ -4468,24 +4774,28 @@ class Model:
         if self.dataset._genes_present is None:
             raise ValueError(
                 "Gene presence matrix not computed in dataset. "
-                "Call dataset.compute_gene_presence() first.")
+                "Call dataset.compute_gene_presence() first."
+            )
 
         # Identify passenger genes
         passenger_gene_ids = filter_passenger_genes_ensembl(
-            self._mu_gs.index)
+            self._mu_gs.index
+        )
 
         # Restrict to passenger genes
         mu_gs_passenger = self._mu_gs.loc[passenger_gene_ids]
-        genes_present_passenger = (
-            self.dataset.genes_present.loc[passenger_gene_ids])
+        genes_present_passenger = self.dataset.genes_present.loc[
+            passenger_gene_ids
+        ]
 
         # Sum observed mutations across all samples for each gene
         present_sum = genes_present_passenger.sum(
-            axis=1)  # Sum over genes
+            axis=1
+        )  # Sum over genes
 
         # Convert mutation rates to presence probabilities and sum
         # across all samples for each gene
-        expected = (1-np.exp(-mu_gs_passenger)).sum(axis=1)
+        expected = (1 - np.exp(-mu_gs_passenger)).sum(axis=1)
 
         # Compute R² between expected and observed
         r2 = r2_score(present_sum, expected)
@@ -4496,9 +4806,8 @@ class Model:
         return r2
 
     def aggregate_signatures(
-            self,
-            signature_selection,
-            include_other=False):
+        self, signature_selection, include_other=False
+    ):
         """Aggregate signature-separated base_mus into chosen signatures.
 
         This method allows you to combine multiple related signatures
@@ -4606,7 +4915,8 @@ class Model:
         if self._base_mus is None:
             raise ValueError(
                 "Baseline mutation rates (base_mus) not computed. "
-                "Call compute_base_mus() first.")
+                "Call compute_base_mus() first."
+            )
 
         # Ensure base_mus are signature-dependent
         if not isinstance(self._base_mus, dict):
@@ -4616,7 +4926,8 @@ class Model:
                 "DataFrame (signature-independent). "
                 "To create signature-separated base_mus, use "
                 "model.compute_mu_taus(separate_per_sigma=True) "
-                "before compute_base_mus().")
+                "before compute_base_mus()."
+            )
 
         aggregated = {}
         matched_signatures = set()
@@ -4625,7 +4936,7 @@ class Model:
         for item in signature_selection:
             # Case 1: Tuple/list - explicit grouping
             if isinstance(item, (tuple, list)):
-                group_name = '+'.join(item)
+                group_name = "+".join(item)
                 group_sum = None
                 for sig in item:
                     if sig in self._base_mus:
@@ -4646,8 +4957,10 @@ class Model:
                 else:
                     # Prefix aggregation
                     matching_sigs = [
-                        sig for sig in self._base_mus.keys()
-                        if sig.startswith(item)]
+                        sig
+                        for sig in self._base_mus.keys()
+                        if sig.startswith(item)
+                    ]
 
                     if matching_sigs:
                         agg_sum = None
@@ -4662,8 +4975,10 @@ class Model:
         # Add 'other' category if requested
         if include_other:
             other_sigs = [
-                sig for sig in self._base_mus.keys()
-                if sig not in matched_signatures]
+                sig
+                for sig in self._base_mus.keys()
+                if sig not in matched_signatures
+            ]
 
             if other_sigs:
                 other_sum = None
@@ -4672,7 +4987,7 @@ class Model:
                         other_sum = self._base_mus[sig].copy()
                     else:
                         other_sum += self._base_mus[sig]
-                aggregated['other'] = other_sum
+                aggregated["other"] = other_sum
 
         # Replace base_mus with aggregated version
         self._base_mus = aggregated

@@ -37,12 +37,13 @@ import pandas as pd
 
 
 def assign_signatures_per_gene_id(
-        db,
-        assignments,
-        location_sig_matrix_norm,
-        L_low,
-        L_high,
-        chunk_size=50000):
+    db,
+    assignments,
+    location_sig_matrix_norm,
+    L_low,
+    L_high,
+    chunk_size=50000,
+):
     """Assign signature probabilities per gene ID.
 
     Memory-efficient chunked version that processes mutations
@@ -73,16 +74,16 @@ def assign_signatures_per_gene_id(
         ensembl_gene_id with signature columns.
     """
     from .compute_alphas import estimate_alphas
+
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 
     sig_matrix = pd.read_csv(
-        location_sig_matrix_norm,
-        sep="\t").set_index('MutationType')
+        location_sig_matrix_norm, sep="\t"
+    ).set_index("MutationType")
 
     # Filter sig_matrix to only include signatures in assignments
     # (in case assignments was filtered to exclude signatures)
-    common_sigs = sig_matrix.columns.intersection(
-        alphas.columns)
+    common_sigs = sig_matrix.columns.intersection(alphas.columns)
     sig_matrix = sig_matrix[common_sigs]
     alphas = alphas[common_sigs]
 
@@ -92,24 +93,24 @@ def assign_signatures_per_gene_id(
 
     # Create lookup dictionaries
     sample_to_idx = {
-        sample: i for i, sample in enumerate(alphas.index)}
+        sample: i for i, sample in enumerate(alphas.index)
+    }
     type_to_idx = {
-        mut_type: i
-        for i, mut_type in enumerate(sig_matrix.index)}
+        mut_type: i for i, mut_type in enumerate(sig_matrix.index)
+    }
 
     # Get gene IDs and create mapping
-    gene_ids_sorted = sorted(db['ensembl_gene_id'].unique())
-    gene_to_idx = {
-        gene: i for i, gene in enumerate(gene_ids_sorted)}
+    gene_ids_sorted = sorted(db["ensembl_gene_id"].unique())
+    gene_to_idx = {gene: i for i, gene in enumerate(gene_ids_sorted)}
     n_genes = len(gene_ids_sorted)
 
     # Initialize result array
     result = np.zeros((n_genes, n_sigs), dtype=np.float64)
 
     # Extract columns once to avoid repeated DataFrame access
-    sample_col = db['Tumor_Sample_Barcode'].values
-    type_col = db['type'].values
-    gene_col = db['ensembl_gene_id'].values
+    sample_col = db["Tumor_Sample_Barcode"].values
+    type_col = db["type"].values
+    gene_col = db["ensembl_gene_id"].values
 
     # Process in chunks to limit memory usage
     n_mutations = len(db)
@@ -118,17 +119,20 @@ def assign_signatures_per_gene_id(
 
         # Get indices for this chunk
         sample_chunk = [
-            sample_to_idx[s]
-            for s in sample_col[start_idx:end_idx]]
+            sample_to_idx[s] for s in sample_col[start_idx:end_idx]
+        ]
         type_chunk = [
-            type_to_idx[t] for t in type_col[start_idx:end_idx]]
+            type_to_idx[t] for t in type_col[start_idx:end_idx]
+        ]
         gene_chunk = [
-            gene_to_idx[g] for g in gene_col[start_idx:end_idx]]
+            gene_to_idx[g] for g in gene_col[start_idx:end_idx]
+        ]
 
         # Compute probabilities for this chunk
         # P(τ | σ) × P(σ | j)
-        numerator = (sig_matrix_arr[type_chunk] *
-                     alphas_arr[sample_chunk])
+        numerator = (
+            sig_matrix_arr[type_chunk] * alphas_arr[sample_chunk]
+        )
         # P(τ | j) = Σ_σ numerator
         denominator = numerator.sum(axis=1, keepdims=True)
         # P(σ | τ, j)
@@ -139,6 +143,5 @@ def assign_signatures_per_gene_id(
 
     # Return as DataFrame
     return pd.DataFrame(
-        result,
-        columns=sig_matrix.columns,
-        index=gene_ids_sorted)
+        result, columns=sig_matrix.columns, index=gene_ids_sorted
+    )

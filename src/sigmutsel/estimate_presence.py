@@ -21,8 +21,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def compute_variants_present(db: pd.DataFrame,
-                             variants_df: pd.DataFrame) -> pd.DataFrame:
+def compute_variants_present(
+    db: pd.DataFrame, variants_df: pd.DataFrame
+) -> pd.DataFrame:
     """Build a 0/1 matrix of variant present per tumor.
 
     Parameters
@@ -42,7 +43,9 @@ def compute_variants_present(db: pd.DataFrame,
         alphabetically. Entry is 1 if the tumor carries the variant in
         ``db``, else 0.
     """
-    logger.info("Producing presence matrix for all tumors per variant...")
+    logger.info(
+        "Producing presence matrix for all tumors per variant..."
+    )
     # drop rows without a variant label
     db_ = db.dropna(subset=["variant", "Tumor_Sample_Barcode"])
 
@@ -52,9 +55,9 @@ def compute_variants_present(db: pd.DataFrame,
 
     # enforce ordering: rows = variants_df.index, cols = sorted tumor list
     tumors_sorted = sorted(present.columns)  # alphabetical
-    present = present.reindex(index=variants_df.index,
-                              columns=tumors_sorted,
-                              fill_value=0).astype("uint8")
+    present = present.reindex(
+        index=variants_df.index, columns=tumors_sorted, fill_value=0
+    ).astype("uint8")
 
     logger.info("... done.")
     print("")
@@ -82,20 +85,24 @@ def compute_genes_present(db, scope=None):
         columns are tumor barcodes. Entry is 1 if the tumor has ≥1
         variant in that gene (filtered by scope), else 0.
     """
-    logger.info("Producing presence matrix for all tumors per gene...")
-    if scope == 'silent' or 'non-silent':
+    logger.info(
+        "Producing presence matrix for all tumors per gene..."
+    )
+    if scope == "silent" or "non-silent":
         logger.info(f"Restricting to {scope} variants")
 
     # Filter by variant classification scope
-    if scope == 'silent':
-        db_filtered = db[db['Variant_Classification'] == 'Silent']
-    elif scope == 'non-silent':
-        db_filtered = db[db['Variant_Classification'] != 'Silent']
+    if scope == "silent":
+        db_filtered = db[db["Variant_Classification"] == "Silent"]
+    elif scope == "non-silent":
+        db_filtered = db[db["Variant_Classification"] != "Silent"]
     else:  # None or 'all'
         db_filtered = db
 
-    present = pd.crosstab(db_filtered['ensembl_gene_id'],
-                          db_filtered['Tumor_Sample_Barcode'])
+    present = pd.crosstab(
+        db_filtered["ensembl_gene_id"],
+        db_filtered["Tumor_Sample_Barcode"],
+    )
 
     present = (present > 0).astype(int)
 
@@ -104,8 +111,9 @@ def compute_genes_present(db, scope=None):
     return present
 
 
-def filter_silent_variants(variants_df: pd.DataFrame,
-                           db: pd.DataFrame) -> pd.Index:
+def filter_silent_variants(
+    variants_df: pd.DataFrame, db: pd.DataFrame
+) -> pd.Index:
     """Return variants (as an Index) that are annotated as 'Silent' in `db`.
 
     Parameters
@@ -126,8 +134,9 @@ def filter_silent_variants(variants_df: pd.DataFrame,
     # All variants labeled 'Silent' in the MAF-like table
     silent_in_db = pd.Index(
         db.loc[db["Variant_Classification"].eq("Silent"), "variant"]
-          .dropna()
-          .unique())
+        .dropna()
+        .unique()
+    )
 
     # Keep only those present in variants_df, preserving its order
     return variants_df.index[variants_df.index.isin(silent_in_db)]
@@ -150,21 +159,21 @@ def filter_passenger_genes(db):
         Array of passenger gene names.
 
     """
-    census = pd.read_csv(location_cancer_gene_census,
-                         sep="\t")
+    census = pd.read_csv(location_cancer_gene_census, sep="\t")
 
     cancer_genes = census["Gene Symbol"].unique()
 
-    passenger_genes = (
-        db[~db["gene"].isin(cancer_genes) & db["variant"].notna()]["gene"]
-        .unique())
+    passenger_genes = db[
+        ~db["gene"].isin(cancer_genes) & db["variant"].notna()
+    ]["gene"].unique()
     return passenger_genes
 
 
 def filter_passenger_genes_ensembl(
-        db: pd.DataFrame | pd.Series | pd.Index | Sequence[str],
-        *,
-        strip_version: bool = True) -> np.ndarray:
+    db: pd.DataFrame | pd.Series | pd.Index | Sequence[str],
+    *,
+    strip_version: bool = True,
+) -> np.ndarray:
     """Return Ensembl IDs of passenger genes in `db`.
 
     Works in two modes:
@@ -214,43 +223,61 @@ def filter_passenger_genes_ensembl(
 
     """
     # ---- Load CGC ---------------------------------------------------
-    census = pd.read_csv(location_cancer_gene_census,
-                         sep="\t", dtype=str)
+    census = pd.read_csv(
+        location_cancer_gene_census, sep="\t", dtype=str
+    )
 
-    ens_candidates = [c for c in census.columns
-                      if re.search(r'ensembl', c, flags=re.I)]
+    ens_candidates = [
+        c
+        for c in census.columns
+        if re.search(r"ensembl", c, flags=re.I)
+    ]
     if ens_candidates:
         ens_col = ens_candidates[0]
         cgc_ids = census[ens_col].dropna().astype(str)
     else:
-        if 'Synonyms' not in census.columns:
-            raise KeyError("CGC lacks an Ensembl column and 'Synonyms'.")
-        cgc_ids = (census['Synonyms'].dropna().astype(str)
-                   .str.findall(r'ENSG\d+(?:\.\d+)?')
-                   .explode()
-                   .dropna())
+        if "Synonyms" not in census.columns:
+            raise KeyError(
+                "CGC lacks an Ensembl column and 'Synonyms'."
+            )
+        cgc_ids = (
+            census["Synonyms"]
+            .dropna()
+            .astype(str)
+            .str.findall(r"ENSG\d+(?:\.\d+)?")
+            .explode()
+            .dropna()
+        )
 
     if strip_version:
-        cgc_ids = cgc_ids.str.replace(r'\.\d+$', '', regex=True)
+        cgc_ids = cgc_ids.str.replace(r"\.\d+$", "", regex=True)
     cgc_set = set(cgc_ids.tolist())
 
     # ---- Collection mode --------------------------------------------
     if not isinstance(db, pd.DataFrame):
         ids = pd.Index(db).astype(str)
-        ids_norm = (ids.str.replace(r'\.\d+$', '', regex=True)
-                    if strip_version else ids)
+        ids_norm = (
+            ids.str.replace(r"\.\d+$", "", regex=True)
+            if strip_version
+            else ids
+        )
         mask = ~ids_norm.isin(cgc_set)
         return ids[mask].unique()
 
     # ---- DataFrame mode ---------------------------------------------
-    if 'ensembl_gene_id' not in db.columns:
-        raise KeyError("db must contain 'ensembl_gene_id' (DataFrame).")
-    if 'variant' not in db.columns:
+    if "ensembl_gene_id" not in db.columns:
+        raise KeyError(
+            "db must contain 'ensembl_gene_id' (DataFrame)."
+        )
+    if "variant" not in db.columns:
         raise KeyError("db must contain 'variant' (DataFrame).")
 
-    db_ids = db['ensembl_gene_id'].astype(str)
-    db_ids_norm = (db_ids.str.replace(r'\.\d+$', '', regex=True)
-                   if strip_version else db_ids)
+    db_ids = db["ensembl_gene_id"].astype(str)
+    db_ids_norm = (
+        db_ids.str.replace(r"\.\d+$", "", regex=True)
+        if strip_version
+        else db_ids
+    )
 
-    mask = (~db_ids_norm.isin(cgc_set)) & (db['variant'].notna())
-    return db.loc[mask, 'ensembl_gene_id'].unique()
+    mask = (~db_ids_norm.isin(cgc_set)) & (db["variant"].notna())
+    return db.loc[mask, "ensembl_gene_id"].unique()

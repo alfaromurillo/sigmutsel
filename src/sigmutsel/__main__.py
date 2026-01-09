@@ -25,10 +25,12 @@ def main():
         # Remove command from argv so setup.main() can parse args
         sys.argv = [sys.argv[0]] + sys.argv[2:]
         from sigmutsel.setup import main as setup_main
+
         return setup_main()
 
     elif command == "check-data":
         from sigmutsel.locations import print_data_status
+
         print_data_status()
         return 0
 

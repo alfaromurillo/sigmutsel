@@ -14,10 +14,7 @@ from pathlib import Path
 _PKG_DATA_DIR = Path(__file__).parent / "data"
 
 # Allow override via environment variable
-DATA_DIR = Path(os.environ.get(
-    'SIGMUTSEL_DATA_DIR',
-    _PKG_DATA_DIR
-))
+DATA_DIR = Path(os.environ.get("SIGMUTSEL_DATA_DIR", _PKG_DATA_DIR))
 
 
 # ============================================================
@@ -25,10 +22,12 @@ DATA_DIR = Path(os.environ.get(
 # ============================================================
 
 location_exclusion_signatures_matrix = (
-    DATA_DIR / "exclusion_signatures_matrix_by_cancer_type.txt")
+    DATA_DIR / "exclusion_signatures_matrix_by_cancer_type.txt"
+)
 
 location_inclusion_signatures_matrix = (
-    DATA_DIR / "inclusion_signatures_matrix_by_cancer_type.txt")
+    DATA_DIR / "inclusion_signatures_matrix_by_cancer_type.txt"
+)
 
 
 # ============================================================
@@ -38,23 +37,28 @@ location_inclusion_signatures_matrix = (
 location_hgnc_complete_set = DATA_DIR / "hgnc_complete_set.txt"
 
 location_cancer_gene_census = (
-    DATA_DIR / "Census_allFri May 30 16_47_00 2025.tsv")
+    DATA_DIR / "Census_allFri May 30 16_47_00 2025.tsv"
+)
 
 location_cosmic_cancer_gene_census = (
-    DATA_DIR / "Cosmic_CancerGeneCensus_v101_GRCh38.tsv")
+    DATA_DIR / "Cosmic_CancerGeneCensus_v101_GRCh38.tsv"
+)
 
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
 location_gencode38_annotation = (
-    DATA_DIR / "gencode.v38.annotation.gtf.gz")
+    DATA_DIR / "gencode.v38.annotation.gtf.gz"
+)
 
 location_gencode19_annotation = (
-    DATA_DIR / "gencode.v19.annotation.gtf.gz")
+    DATA_DIR / "gencode.v19.annotation.gtf.gz"
+)
 
 
 # ============================================================
 # Helper functions
 # ============================================================
+
 
 def get_data_dir() -> Path:
     """Get the package data directory.
@@ -100,7 +104,8 @@ def check_data_file(file_path: Path, name: str = None) -> Path:
             f"{name} not found at {file_path}.\n"
             f"Download it using:\n"
             f"    python -m sigmutsel setup\n"
-            f"Or manually download and place in: {DATA_DIR}")
+            f"Or manually download and place in: {DATA_DIR}"
+        )
     return file_path
 
 
@@ -113,14 +118,11 @@ def list_data_files() -> dict[str, bool]:
         Mapping of file name to whether it exists
     """
     files = {
-        "exclusion_signatures_matrix":
-            location_exclusion_signatures_matrix,
-        "inclusion_signatures_matrix":
-            location_inclusion_signatures_matrix,
+        "exclusion_signatures_matrix": location_exclusion_signatures_matrix,
+        "inclusion_signatures_matrix": location_inclusion_signatures_matrix,
         "hgnc_complete_set": location_hgnc_complete_set,
         "cancer_gene_census": location_cancer_gene_census,
-        "cosmic_cancer_gene_census":
-            location_cosmic_cancer_gene_census,
+        "cosmic_cancer_gene_census": location_cosmic_cancer_gene_census,
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,

@@ -16,44 +16,119 @@ L_high = 500
 # SBS signatures canonical order. These come directly from COSMIC
 # https://cancer.sanger.ac.uk/signatures/downloads/
 # Current release v3.4
-sbs_signatures = ["SBS1", "SBS2", "SBS3", "SBS4", "SBS5", "SBS6",
-                  "SBS7a", "SBS7b", "SBS7c", "SBS7d", "SBS8", "SBS9",
-                  "SBS10a", "SBS10b", "SBS10c", "SBS10d", "SBS11",
-                  "SBS12", "SBS13", "SBS14", "SBS15", "SBS16",
-                  "SBS17a", "SBS17b", "SBS18", "SBS19", "SBS20",
-                  "SBS21", "SBS22a", "SBS22b", "SBS23", "SBS24",
-                  "SBS25", "SBS26", "SBS27", "SBS28", "SBS29",
-                  "SBS30", "SBS31", "SBS32", "SBS33", "SBS34",
-                  "SBS35", "SBS36", "SBS37", "SBS38", "SBS39",
-                  "SBS40a", "SBS40b", "SBS40c", "SBS41", "SBS42",
-                  "SBS43", "SBS44", "SBS45", "SBS46", "SBS47",
-                  "SBS48", "SBS49", "SBS50", "SBS51", "SBS52",
-                  "SBS53", "SBS54", "SBS55", "SBS56", "SBS57",
-                  "SBS58", "SBS59", "SBS60", "SBS84", "SBS85",
-                  "SBS86", "SBS87", "SBS88", "SBS89", "SBS90",
-                  "SBS91", "SBS92", "SBS93", "SBS94", "SBS95",
-                  "SBS96", "SBS97", "SBS98", "SBS99"]
+sbs_signatures = [
+    "SBS1",
+    "SBS2",
+    "SBS3",
+    "SBS4",
+    "SBS5",
+    "SBS6",
+    "SBS7a",
+    "SBS7b",
+    "SBS7c",
+    "SBS7d",
+    "SBS8",
+    "SBS9",
+    "SBS10a",
+    "SBS10b",
+    "SBS10c",
+    "SBS10d",
+    "SBS11",
+    "SBS12",
+    "SBS13",
+    "SBS14",
+    "SBS15",
+    "SBS16",
+    "SBS17a",
+    "SBS17b",
+    "SBS18",
+    "SBS19",
+    "SBS20",
+    "SBS21",
+    "SBS22a",
+    "SBS22b",
+    "SBS23",
+    "SBS24",
+    "SBS25",
+    "SBS26",
+    "SBS27",
+    "SBS28",
+    "SBS29",
+    "SBS30",
+    "SBS31",
+    "SBS32",
+    "SBS33",
+    "SBS34",
+    "SBS35",
+    "SBS36",
+    "SBS37",
+    "SBS38",
+    "SBS39",
+    "SBS40a",
+    "SBS40b",
+    "SBS40c",
+    "SBS41",
+    "SBS42",
+    "SBS43",
+    "SBS44",
+    "SBS45",
+    "SBS46",
+    "SBS47",
+    "SBS48",
+    "SBS49",
+    "SBS50",
+    "SBS51",
+    "SBS52",
+    "SBS53",
+    "SBS54",
+    "SBS55",
+    "SBS56",
+    "SBS57",
+    "SBS58",
+    "SBS59",
+    "SBS60",
+    "SBS84",
+    "SBS85",
+    "SBS86",
+    "SBS87",
+    "SBS88",
+    "SBS89",
+    "SBS90",
+    "SBS91",
+    "SBS92",
+    "SBS93",
+    "SBS94",
+    "SBS95",
+    "SBS96",
+    "SBS97",
+    "SBS98",
+    "SBS99",
+]
 
 # Chromosomes
 chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY"]
 
 # Nucleotides
-nucleotides = ['A', 'C', 'G', 'T']
+nucleotides = ["A", "C", "G", "T"]
 
 
 # Trinucleotide contexts canonical order. Order first by mutation,
 # then by previous nucleotide and then by next nucleotide.
-canonical_types_order = [f"{first}[{mid_from}>{mid_to}]{third}"
-                         for mid_from in "CT"
-                         for mid_to in "ACGT".replace(mid_from, "")
-                         for first in "ACGT"
-                         for third in "ACGT"]
+canonical_types_order = [
+    f"{first}[{mid_from}>{mid_to}]{third}"
+    for mid_from in "CT"
+    for mid_to in "ACGT".replace(mid_from, "")
+    for first in "ACGT"
+    for third in "ACGT"
+]
 
 # Following previous order but for contexts
-canonical_contexts_order = [f"{first}{mid}{third}"
-                            for mid in "CT"
-                            for first in "ACGT"
-                            for third in "ACGT"]
+canonical_contexts_order = [
+    f"{first}{mid}{third}"
+    for mid in "CT"
+    for first in "ACGT"
+    for third in "ACGT"
+]
 
 
 def reverse_complement(seq):
@@ -93,8 +168,10 @@ tcga_study_codes = {
     "BLCA": "Bladder Urothelial Carcinoma",
     "LGG": "Brain Lower Grade Glioma",
     "BRCA": "Breast invasive carcinoma",
-    "CESC": ("Cervical squamous cell carcinoma and endocervical "
-             "adenocarcinoma"),
+    "CESC": (
+        "Cervical squamous cell carcinoma and endocervical "
+        "adenocarcinoma"
+    ),
     "CHOL": "Cholangiocarcinoma",
     "LCML": "Chronic Myelogenous Leukemia",
     "COAD": "Colon adenocarcinoma",
@@ -109,8 +186,7 @@ tcga_study_codes = {
     "LIHC": "Liver hepatocellular carcinoma",
     "LUAD": "Lung adenocarcinoma",
     "LUSC": "Lung squamous cell carcinoma",
-    "DLBC": ("Lymphoid Neoplasm Diffuse Large B-cell "
-             "Lymphoma"),
+    "DLBC": ("Lymphoid Neoplasm Diffuse Large B-cell " "Lymphoma"),
     "MESO": "Mesothelioma",
     "MISC": "Miscellaneous",
     "OV": "Ovarian serous cystadenocarcinoma",
@@ -126,7 +202,8 @@ tcga_study_codes = {
     "THCA": "Thyroid carcinoma",
     "UCS": "Uterine Carcinosarcoma",
     "UCEC": "Uterine Corpus Endometrial Carcinoma",
-    "UVM": "Uveal Melanoma"}
+    "UVM": "Uveal Melanoma",
+}
 
 # These are the columns of a TCGA MAF file, descriptions from:
 # https://docs.gdc.cancer.gov/Data/File_Formats/MAF_Format/ and
@@ -271,5 +348,5 @@ maf_column_descriptions = {
     "RNA_depth": "Total RNA-seq read depth",
     "RNA_ref_count": "RNA-seq reference reads",
     "RNA_alt_count": "RNA-seq variant reads",
-    "callers": "Variant callers used (e.g., MuTect, VarScan)"
+    "callers": "Variant callers used (e.g., MuTect, VarScan)",
 }

@@ -12,6 +12,7 @@ try:
 except ImportError:
     try:
         from importlib.metadata import version
+
         __version__ = version("sigmutsel")
     except Exception:
         __version__ = "unknown"

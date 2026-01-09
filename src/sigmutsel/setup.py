@@ -64,17 +64,17 @@ def download_file(url: str, dest: Path, decompress: bool = False):
     logger.info(f"  from {url}")
 
     # Download to temporary file first
-    temp_file = dest.with_suffix(dest.suffix + '.tmp')
+    temp_file = dest.with_suffix(dest.suffix + ".tmp")
 
     try:
         urllib.request.urlretrieve(url, temp_file)
 
         # Handle gzipped files
-        if decompress and str(dest).endswith('.gz'):
+        if decompress and str(dest).endswith(".gz"):
             logger.info(f"  Decompressing...")
-            final_dest = dest.with_suffix('')  # Remove .gz
-            with gzip.open(temp_file, 'rb') as f_in:
-                with open(final_dest, 'wb') as f_out:
+            final_dest = dest.with_suffix("")  # Remove .gz
+            with gzip.open(temp_file, "rb") as f_in:
+                with open(final_dest, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
             temp_file.unlink()  # Remove compressed temp file
             logger.info(f"  Saved to {final_dest}")
@@ -90,7 +90,8 @@ def download_file(url: str, dest: Path, decompress: bool = False):
         if temp_file.exists():
             temp_file.unlink()
         raise RuntimeError(
-            f"Failed to download {dest.name}: {e}") from e
+            f"Failed to download {dest.name}: {e}"
+        ) from e
 
 
 def download_hgnc(force: bool = False) -> Path:
@@ -116,8 +117,8 @@ def download_hgnc(force: bool = False) -> Path:
 
 
 def download_cds_fasta(
-        force: bool = False,
-        decompress: bool = True) -> Path:
+    force: bool = False, decompress: bool = True
+) -> Path:
     """Download Ensembl CDS FASTA file.
 
     Parameters
@@ -140,7 +141,9 @@ def download_cds_fasta(
     else:
         dest = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa.gz"
         if dest.exists() and not force:
-            logger.info(f"CDS FASTA (compressed) already exists at {dest}")
+            logger.info(
+                f"CDS FASTA (compressed) already exists at {dest}"
+            )
             return dest
 
     url = DOWNLOAD_URLS["Homo_sapiens.GRCh38.cds.all.fa.gz"]
@@ -149,9 +152,10 @@ def download_cds_fasta(
 
 
 def download_gencode_gtf(
-        version: str = "38",
-        force: bool = False,
-        keep_compressed: bool = True) -> Path:
+    version: str = "38",
+    force: bool = False,
+    keep_compressed: bool = True,
+) -> Path:
     """Download GENCODE GTF annotation file.
 
     Parameters
@@ -175,10 +179,12 @@ def download_gencode_gtf(
     if keep_compressed:
         final_dest = dest
     else:
-        final_dest = dest.with_suffix('')  # Remove .gz
+        final_dest = dest.with_suffix("")  # Remove .gz
 
     if final_dest.exists() and not force:
-        logger.info(f"GENCODE v{version} already exists at {final_dest}")
+        logger.info(
+            f"GENCODE v{version} already exists at {final_dest}"
+        )
         return final_dest
 
     url = DOWNLOAD_URLS[filename]
@@ -186,9 +192,10 @@ def download_gencode_gtf(
 
 
 def download_all(
-        force: bool = False,
-        decompress_fasta: bool = True,
-        keep_gtf_compressed: bool = True):
+    force: bool = False,
+    decompress_fasta: bool = True,
+    keep_gtf_compressed: bool = True,
+):
     """Download all required reference files.
 
     Parameters
@@ -217,27 +224,29 @@ def download_all(
     try:
         # Download HGNC
         logger.info("\n1. HGNC Complete Set")
-        downloaded['hgnc'] = download_hgnc(force=force)
+        downloaded["hgnc"] = download_hgnc(force=force)
 
         # Download CDS FASTA
         logger.info("\n2. Ensembl CDS FASTA (GRCh38)")
-        downloaded['cds_fasta'] = download_cds_fasta(
-            force=force,
-            decompress=decompress_fasta)
+        downloaded["cds_fasta"] = download_cds_fasta(
+            force=force, decompress=decompress_fasta
+        )
 
         # Download GENCODE GTF v38
         logger.info("\n3. GENCODE v38 Annotation")
-        downloaded['gencode38'] = download_gencode_gtf(
+        downloaded["gencode38"] = download_gencode_gtf(
             version="38",
             force=force,
-            keep_compressed=keep_gtf_compressed)
+            keep_compressed=keep_gtf_compressed,
+        )
 
         # Download GENCODE GTF v19
         logger.info("\n4. GENCODE v19 Annotation")
-        downloaded['gencode19'] = download_gencode_gtf(
+        downloaded["gencode19"] = download_gencode_gtf(
             version="19",
             force=force,
-            keep_compressed=keep_gtf_compressed)
+            keep_compressed=keep_gtf_compressed,
+        )
 
         logger.info("\n" + "=" * 60)
         logger.info("All reference files downloaded successfully!")
@@ -248,7 +257,8 @@ def download_all(
     except Exception as e:
         logger.error(f"\nDownload failed: {e}")
         logger.error(
-            "\nYou can manually download files and place them in:")
+            "\nYou can manually download files and place them in:"
+        )
         logger.error(f"  {DATA_DIR}")
         raise
 
@@ -273,43 +283,42 @@ Examples:
 
   # Decompress GTF files
   python -m sigmutsel setup --decompress-gtf
-        """
+        """,
     )
 
     parser.add_argument(
-        '--force', '-f',
-        action='store_true',
-        help='Re-download even if files exist'
+        "--force",
+        "-f",
+        action="store_true",
+        help="Re-download even if files exist",
     )
     parser.add_argument(
-        '--keep-fasta-compressed',
-        action='store_true',
-        help='Keep FASTA file compressed (.fa.gz)'
+        "--keep-fasta-compressed",
+        action="store_true",
+        help="Keep FASTA file compressed (.fa.gz)",
     )
     parser.add_argument(
-        '--decompress-gtf',
-        action='store_true',
-        help='Decompress GTF files (default: keep compressed)'
+        "--decompress-gtf",
+        action="store_true",
+        help="Decompress GTF files (default: keep compressed)",
     )
     parser.add_argument(
-        '--data-dir',
+        "--data-dir",
         type=Path,
-        help='Custom data directory (default: package data dir)'
+        help="Custom data directory (default: package data dir)",
     )
 
     args = parser.parse_args()
 
     # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     # Set custom data directory if specified
     if args.data_dir:
         global DATA_DIR
         DATA_DIR = args.data_dir
         from sigmutsel import locations
+
         locations.DATA_DIR = args.data_dir
 
     # Download files
@@ -317,7 +326,7 @@ Examples:
         download_all(
             force=args.force,
             decompress_fasta=not args.keep_fasta_compressed,
-            keep_gtf_compressed=not args.decompress_gtf
+            keep_gtf_compressed=not args.decompress_gtf,
         )
     except Exception as e:
         logger.error(f"\nError: {e}")
@@ -328,4 +337,5 @@ Examples:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

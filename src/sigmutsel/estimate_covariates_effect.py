@@ -31,17 +31,17 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_covariates_effect(
-        mus: np.ndarray | dict[int | str, np.ndarray],
-        presence_matrix: np.ndarray,
-        cov_matrix: np.ndarray,
-        draws: int = 4000,
-        lower_bounds_c: float | np.ndarray | None = -2,
-        upper_bounds_c: float | np.ndarray = 2,
-        burn: int = 1000,
-        chains: int = 4,
-        save_path: str | Path | None = None,
-        kwargs: dict | None = None
-        ) -> az.InferenceData | dict:
+    mus: np.ndarray | dict[int | str, np.ndarray],
+    presence_matrix: np.ndarray,
+    cov_matrix: np.ndarray,
+    draws: int = 4000,
+    lower_bounds_c: float | np.ndarray | None = -2,
+    upper_bounds_c: float | np.ndarray = 2,
+    burn: int = 1000,
+    chains: int = 4,
+    save_path: str | Path | None = None,
+    kwargs: dict | None = None,
+) -> az.InferenceData | dict:
     """Estimate covariate effects (with intercept) in a Bernoulli model.
 
     Builds a per-gene linear predictor:
@@ -161,16 +161,19 @@ def estimate_covariates_effect(
                 raise ValueError(
                     f"All mus arrays must have shape "
                     f"({n_tumors}, {n_genes}), but mus[{sigma}] "
-                    f"has shape {mus[sigma].shape}")
+                    f"has shape {mus[sigma].shape}"
+                )
         logger.info(
             f"Multi-signature mode: {len(signatures)} signatures, "
-            f"{n_tumors} tumors, {n_genes} genes")
+            f"{n_tumors} tumors, {n_genes} genes"
+        )
     else:
         signatures = None
         n_tumors, n_genes = mus.shape
         logger.info(
             f"Signature-independent mode: "
-            f"{n_tumors} tumors, {n_genes} genes")
+            f"{n_tumors} tumors, {n_genes} genes"
+        )
 
     if cov_matrix.shape[0] != n_genes:
         raise ValueError("cov_matrix must have n_genes rows.")
@@ -178,7 +181,8 @@ def estimate_covariates_effect(
     # Build cov_extended: [1, cov1, cov2, ...]
     ones = np.ones((n_genes, 1), dtype=np.float32)
     cov_ext = np.concatenate(
-        [ones, np.asarray(cov_matrix, dtype=np.float32)], axis=1)
+        [ones, np.asarray(cov_matrix, dtype=np.float32)], axis=1
+    )
 
     n_coeffs = cov_ext.shape[1]
 
@@ -187,15 +191,18 @@ def estimate_covariates_effect(
 
     # Validate bounds shapes in multi-signature mode
     if signatures is not None:
-        for bounds_name, bounds in [('upper_bounds_c', upper_bounds_c),
-                                    ('lower_bounds_c', lower_bounds_c)]:
+        for bounds_name, bounds in [
+            ("upper_bounds_c", upper_bounds_c),
+            ("lower_bounds_c", lower_bounds_c),
+        ]:
             if isinstance(bounds, np.ndarray) and bounds.ndim == 2:
                 if bounds.shape != (len(signatures), n_coeffs):
                     raise ValueError(
                         f"{bounds_name} has shape {bounds.shape} but "
                         f"expected ({len(signatures)}, {n_coeffs}) for "
                         f"multi-signature mode with {len(signatures)} "
-                        f"signatures and {n_coeffs} coefficients")
+                        f"signatures and {n_coeffs} coefficients"
+                    )
 
     with pm.Model():
         cov32 = pm.Data("cov_ext", cov_ext.astype("float32"))
@@ -207,11 +214,12 @@ def estimate_covariates_effect(
                 name="c",
                 lower=lower_bounds_c,
                 upper=upper_bounds_c,
-                shape=n_coeffs)
+                shape=n_coeffs,
+            )
 
             mus32 = pm.Data(
-                "mus",
-                np.clip(mus.astype("float32"), 1e-12, np.inf))
+                "mus", np.clip(mus.astype("float32"), 1e-12, np.inf)
+            )
 
             eta_gene = tt.dot(cov32, c)
             eta = eta_gene.dimshuffle("x", 0)
@@ -222,10 +230,12 @@ def estimate_covariates_effect(
             # Stack all signature baselines into 3D array
             # Shape: (n_signatures, n_tumors, n_genes)
             mus_stacked = np.stack(
-                [mus[sigma] for sigma in signatures], axis=0)
+                [mus[sigma] for sigma in signatures], axis=0
+            )
             mus_data = pm.Data(
                 "mus",
-                np.clip(mus_stacked.astype("float32"), 1e-12, np.inf))
+                np.clip(mus_stacked.astype("float32"), 1e-12, np.inf),
+            )
 
             # Batched coefficient matrix
             # Shape: (n_signatures, n_coeffs)
@@ -233,7 +243,8 @@ def estimate_covariates_effect(
                 name="c",
                 lower=lower_bounds_c,
                 upper=upper_bounds_c,
-                shape=(len(signatures), n_coeffs))
+                shape=(len(signatures), n_coeffs),
+            )
 
             # Batched matrix multiply: eta[s,g] = sum_k(cov[g,k] * c[s,k])
             # Use einsum: 'sk,gk->sg' (s=sigs, g=genes, k=coeffs)
@@ -252,28 +263,28 @@ def estimate_covariates_effect(
 
         # Bernoulli likelihood (shared between modes)
         Ps = tt.clip(1.0 - tt.exp(-mus_full), 1e-10, 1.0 - 1e-10)
-        pm.Bernoulli(
-            name="genes_observed",
-            p=Ps,
-            observed=pres8)
+        pm.Bernoulli(name="genes_observed", p=Ps, observed=pres8)
 
         if draws == 1:
             logger.info(
-                f"Finding MAP estimate for {n_coeffs} coefficient(s)")
+                f"Finding MAP estimate for {n_coeffs} coefficient(s)"
+            )
             results = pm.find_MAP(**kwargs)
             logger.info("MAP optimization completed")
         else:
             logger.info(
                 f"Sampling posterior: {draws} draws across "
                 f"{chains} chains ({int(draws/chains)} per chain), "
-                f"{burn} tuning steps")
+                f"{burn} tuning steps"
+            )
             results = pmjax.sample_numpyro_nuts(
                 draws=int(draws / chains),
                 chain_method="parallel",
                 tune=burn,
                 chains=chains,
                 target_accept=0.9,
-                **kwargs)
+                **kwargs,
+            )
             logger.info("MCMC sampling completed")
 
     if save_path is not None:
@@ -288,24 +299,26 @@ def estimate_covariates_effect(
 
 
 def estimate_all_cov_effects(
-        mus: pd.DataFrame | dict[int | str, pd.DataFrame],
-        presence_matrix: pd.DataFrame,
-        cov_matrix: pd.DataFrame,
-        sample: int | str = "MAP",
-        subset_sizes: int | list[int] | str = "all",
-        sequential: bool = False,
-        column_restriction: str | list[str] | None = None,
-        restrict_to_passenger: bool = True,
-        lower_bounds_c: float
+    mus: pd.DataFrame | dict[int | str, pd.DataFrame],
+    presence_matrix: pd.DataFrame,
+    cov_matrix: pd.DataFrame,
+    sample: int | str = "MAP",
+    subset_sizes: int | list[int] | str = "all",
+    sequential: bool = False,
+    column_restriction: str | list[str] | None = None,
+    restrict_to_passenger: bool = True,
+    lower_bounds_c: (
+        float
         | np.ndarray
         | dict[tuple[str, ...], float | np.ndarray]
-        | None = -1,
-        upper_bounds_c: float
-        | np.ndarray
-        | dict[tuple[str, ...], float | np.ndarray] = 1.5,
-        save_results: str | bool = True,
-        results_dir: str | Path | None = None) -> dict[
-            tuple[str, ...], np.ndarray | az.InferenceData]:
+        | None
+    ) = -1,
+    upper_bounds_c: (
+        float | np.ndarray | dict[tuple[str, ...], float | np.ndarray]
+    ) = 1.5,
+    save_results: str | bool = True,
+    results_dir: str | Path | None = None,
+) -> dict[tuple[str, ...], np.ndarray | az.InferenceData]:
     """Estimate covariate-effect over all (or selected) covariates.
 
     For each chosen subset_size `k` and each `k`-combination of
@@ -475,14 +488,16 @@ def estimate_all_cov_effects(
     # To avoid typos, check that required covariates exist
     missing_required = [c for c in required if c not in covs]
     if missing_required:
-        raise KeyError("column_restriction contains unknown "
-                       f"covariates: {missing_required}")
+        raise KeyError(
+            "column_restriction contains unknown "
+            f"covariates: {missing_required}"
+        )
 
     if sequential:
         order = tuple(covs)
         # Only sizes that can be built sequentially
         if subset_sizes == "all":
-            sizes_list = [n for n in range(1, len(order)+1)]
+            sizes_list = [n for n in range(1, len(order) + 1)]
         elif isinstance(subset_sizes, int):
             sizes_list = [subset_sizes]
         else:
@@ -490,7 +505,7 @@ def estimate_all_cov_effects(
         size_iter = sizes_list
     else:
         if subset_sizes == "all":
-            sizes_list = [n for n in range(1, len(covs)+1)]
+            sizes_list = [n for n in range(1, len(covs) + 1)]
         elif isinstance(subset_sizes, int):
             sizes_list = [subset_sizes]
         else:
@@ -507,30 +522,36 @@ def estimate_all_cov_effects(
                 continue
             logger.info(f"Running estimation for covariates: {combo}")
             restrict_matrix = cov_matrix.loc[:, combo]
-            restrict_matrix = restrict_matrix[restrict_matrix
-                                              .notna()
-                                              .all(axis=1)]
+            restrict_matrix = restrict_matrix[
+                restrict_matrix.notna().all(axis=1)
+            ]
             genes_to_consider = mus_index.intersection(
-                presence_matrix.index).intersection(
-                    restrict_matrix.index)
+                presence_matrix.index
+            ).intersection(restrict_matrix.index)
 
             if restrict_to_passenger:
                 genes_to_consider = filter_passenger_genes_ensembl(
-                    genes_to_consider)
+                    genes_to_consider
+                )
 
             if draws > 1 and isinstance(sample, int):
                 # then we restrict to only `sample` random genes
-                genes_to_consider = pd.Index(genes_to_consider
-                                             .to_series()
-                                             .sample(sample,
-                                                     random_state=random_seed))
+                genes_to_consider = pd.Index(
+                    genes_to_consider.to_series().sample(
+                        sample, random_state=random_seed
+                    )
+                )
 
             if save_results:
                 if results_dir is None:
                     raise ValueError(
-                        "results_dir must be provided when save_results is True.")
+                        "results_dir must be provided when save_results is True."
+                    )
                 save_name = "cov_effect_"
-                if isinstance(save_results, str) and save_results is not True:
+                if (
+                    isinstance(save_results, str)
+                    and save_results is not True
+                ):
                     save_name = f"{save_name}{save_results}_"
                 save_name = save_name + "+".join(combo)
                 save_path = Path(results_dir) / save_name
@@ -538,8 +559,13 @@ def estimate_all_cov_effects(
                 save_path = None
 
             # Resolve lower/upper bounds for this combo
-            def _resolve_template(bounds, combo, default_scalar, sign=+1,
-                                  signatures=None):
+            def _resolve_template(
+                bounds,
+                combo,
+                default_scalar,
+                sign=+1,
+                signatures=None,
+            ):
                 # scalar/array passthrough
                 if not isinstance(bounds, dict):
                     return bounds
@@ -550,8 +576,8 @@ def estimate_all_cov_effects(
                 # Multi-signature mode: build 2D array (n_signatures, n_coeffs)
                 if signatures is not None:
                     tmpl = dict(bounds)
-                    if 'other' in tmpl and 'cs' not in tmpl:
-                        tmpl['cs'] = tmpl['other']
+                    if "other" in tmpl and "cs" not in tmpl:
+                        tmpl["cs"] = tmpl["other"]
 
                     result = []
                     for sigma in signatures:
@@ -559,17 +585,17 @@ def estimate_all_cov_effects(
                         vec = []
 
                         # Intercept: check ('c0', sigma), then 'c0', then default
-                        c0_key = ('c0', sigma)
+                        c0_key = ("c0", sigma)
                         if c0_key in tmpl:
                             c0_val = tmpl[c0_key]
-                        elif 'c0' in tmpl:
-                            c0_val = tmpl['c0']
+                        elif "c0" in tmpl:
+                            c0_val = tmpl["c0"]
                         else:
                             c0_val = default_scalar
                         vec.append(float(sign * float(c0_val)))
 
                         # Covariates: check (cov, sigma), then cov, then 'cs'/'other', then default
-                        cs_val = tmpl.get('cs', default_scalar)
+                        cs_val = tmpl.get("cs", default_scalar)
                         for cov in combo:
                             cov_sig_key = (cov, sigma)
                             if cov_sig_key in tmpl:
@@ -578,7 +604,9 @@ def estimate_all_cov_effects(
                                 val = tmpl[cov]
                             elif isinstance(cs_val, dict):
                                 if cs_val:
-                                    fallback = next(iter(cs_val.values()))
+                                    fallback = next(
+                                        iter(cs_val.values())
+                                    )
                                 else:
                                     fallback = default_scalar
                                 val = cs_val.get(cov, fallback)
@@ -592,10 +620,10 @@ def estimate_all_cov_effects(
 
                 # Signature independent mode: template dict (original logic)
                 tmpl = dict(bounds)
-                if 'other' in tmpl and 'cs' not in tmpl:
-                    tmpl['cs'] = tmpl['other']
-                c0_val = tmpl.get('c0', default_scalar)
-                cs_val = tmpl.get('cs', default_scalar)
+                if "other" in tmpl and "cs" not in tmpl:
+                    tmpl["cs"] = tmpl["other"]
+                c0_val = tmpl.get("c0", default_scalar)
+                cs_val = tmpl.get("cs", default_scalar)
                 vec = [float(sign * float(c0_val))]
                 for cov in combo:
                     if cov in tmpl:
@@ -605,8 +633,12 @@ def estimate_all_cov_effects(
                             fallback = next(iter(cs_val.values()))
                         else:
                             fallback = default_scalar
-                        vec.append(float(sign *
-                                         float(cs_val.get(cov, fallback))))
+                        vec.append(
+                            float(
+                                sign
+                                * float(cs_val.get(cov, fallback))
+                            )
+                        )
                     else:
                         vec.append(float(sign * float(cs_val)))
                 return np.asarray(vec, dtype=float)
@@ -622,7 +654,8 @@ def estimate_all_cov_effects(
                 combo,
                 _ub_default,
                 +1,
-                signatures=signatures if is_multi_sig else None)
+                signatures=signatures if is_multi_sig else None,
+            )
 
             # Lower bounds: mirror upper if None; apply same template rules
             if lower_bounds_c is None:
@@ -631,7 +664,8 @@ def estimate_all_cov_effects(
                     combo,
                     _ub_default,
                     -1,
-                    signatures=signatures if is_multi_sig else None)
+                    signatures=signatures if is_multi_sig else None,
+                )
             else:
                 if isinstance(lower_bounds_c, (int, float)):
                     _lb_default = float(lower_bounds_c)
@@ -642,7 +676,8 @@ def estimate_all_cov_effects(
                     combo,
                     _lb_default,
                     +1,
-                    signatures=signatures if is_multi_sig else None)
+                    signatures=signatures if is_multi_sig else None,
+                )
 
             # Prepare mus input based on mode
             if is_multi_sig:
@@ -662,9 +697,10 @@ def estimate_all_cov_effects(
                 draws=draws,
                 lower_bounds_c=low_bound,
                 upper_bounds_c=upp_bound,
-                save_path=save_path)
+                save_path=save_path,
+            )
             if draws == 1:
-                results[combo] = estimation['c']
+                results[combo] = estimation["c"]
             else:
                 results[combo] = estimation
             genes_considered[combo] = genes_to_consider
@@ -674,25 +710,27 @@ def estimate_all_cov_effects(
 
 
 def load_or_estimate_all_cov_effects(
-        mus: pd.DataFrame | dict[int | str, pd.DataFrame],
-        presence_matrix: pd.DataFrame,
-        cov_matrix: pd.DataFrame,
-        sample: int | str = "MAP",
-        subset_sizes: int | list[int] | str = "all",
-        sequential: bool = False,
-        column_restriction: str | list[str] | None = None,
-        restrict_to_passenger: bool = True,
-        lower_bounds_c: float
+    mus: pd.DataFrame | dict[int | str, pd.DataFrame],
+    presence_matrix: pd.DataFrame,
+    cov_matrix: pd.DataFrame,
+    sample: int | str = "MAP",
+    subset_sizes: int | list[int] | str = "all",
+    sequential: bool = False,
+    column_restriction: str | list[str] | None = None,
+    restrict_to_passenger: bool = True,
+    lower_bounds_c: (
+        float
         | np.ndarray
         | dict[tuple[str, ...], float | np.ndarray]
-        | None = -1,
-        upper_bounds_c: float
-        | np.ndarray
-        | dict[tuple[str, ...], float | np.ndarray] = 1.5,
-        save_results: str | bool = True,
-        results_dir: str | Path | None = None,
-        force_generation: bool = False) -> dict[
-            tuple[str, ...], np.ndarray | az.InferenceData]:
+        | None
+    ) = -1,
+    upper_bounds_c: (
+        float | np.ndarray | dict[tuple[str, ...], float | np.ndarray]
+    ) = 1.5,
+    save_results: str | bool = True,
+    results_dir: str | Path | None = None,
+    force_generation: bool = False,
+) -> dict[tuple[str, ...], np.ndarray | az.InferenceData]:
     """
     Load or estimate covariate effects with caching support.
 
@@ -738,12 +776,12 @@ def load_or_estimate_all_cov_effects(
     logger = logging.getLogger(__name__)
 
     # Determine if we can/should try loading
-    can_load = (save_results is not False and
-                not force_generation)
+    can_load = save_results is not False and not force_generation
 
     if save_results is not False and results_dir is None:
         raise ValueError(
-            "results_dir must be provided when save_results is enabled.")
+            "results_dir must be provided when save_results is enabled."
+        )
 
     if not can_load:
         # Generate without loading attempt
@@ -759,7 +797,8 @@ def load_or_estimate_all_cov_effects(
             lower_bounds_c=lower_bounds_c,
             upper_bounds_c=upper_bounds_c,
             save_results=save_results,
-            results_dir=results_dir)
+            results_dir=results_dir,
+        )
 
     # Build expected file names
     covs = list(cov_matrix.columns)
@@ -788,13 +827,15 @@ def load_or_estimate_all_cov_effects(
             restriction_set = set(column_restriction)
 
         expected_combos = [
-            combo for combo in expected_combos
-            if restriction_set.issubset(set(combo))]
+            combo
+            for combo in expected_combos
+            if restriction_set.issubset(set(combo))
+        ]
 
     # Determine file extension based on sample mode
     if isinstance(sample, int) or (
-            isinstance(sample, str) and
-            sample.lower() == "full"):
+        isinstance(sample, str) and sample.lower() == "full"
+    ):
         file_ext = ".nc"
         is_mcmc = True
     else:
@@ -819,14 +860,15 @@ def load_or_estimate_all_cov_effects(
         # Load results
         logger.info(
             f"Loading covariate effects from saved {file_ext} "
-            f"files...")
+            f"files..."
+        )
         results = {}
         for combo, file_path in file_paths:
             if is_mcmc:
                 results[combo] = az.from_netcdf(str(file_path))
             else:
                 data = np.load(file_path)
-                results[combo] = data['c']
+                results[combo] = data["c"]
         logger.info("... done loading covariate effects.")
         return results
     else:
@@ -843,4 +885,5 @@ def load_or_estimate_all_cov_effects(
             lower_bounds_c=lower_bounds_c,
             upper_bounds_c=upper_bounds_c,
             save_results=save_results,
-            results_dir=results_dir)
+            results_dir=results_dir,
+        )

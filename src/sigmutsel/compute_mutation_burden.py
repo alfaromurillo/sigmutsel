@@ -42,22 +42,30 @@ def count_mutation_burden(db):
             Number of synonymous (silent) mutations in each sample.
 
     """
-    total_counts = db.groupby(
-        'Tumor_Sample_Barcode').size().rename('total_mutations')
+    total_counts = (
+        db.groupby("Tumor_Sample_Barcode")
+        .size()
+        .rename("total_mutations")
+    )
 
-    silent_db = db[db['Variant_Classification'] == 'Silent']
+    silent_db = db[db["Variant_Classification"] == "Silent"]
 
-    silent_counts = silent_db.groupby(
-        'Tumor_Sample_Barcode').size().rename('synonymous_mutations')
+    silent_counts = (
+        silent_db.groupby("Tumor_Sample_Barcode")
+        .size()
+        .rename("synonymous_mutations")
+    )
 
-    mutation_counts = pd.concat([total_counts,
-                                 silent_counts], axis=1).fillna(0).astype(int)
+    mutation_counts = (
+        pd.concat([total_counts, silent_counts], axis=1)
+        .fillna(0)
+        .astype(int)
+    )
 
     return mutation_counts
 
 
-def estimate_ell_hats(df, L_low, L_high, *,
-                      cut_at_L_low=False):
+def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
     """Estimate adjusted mutation burdens (ell_hat) per sample.
 
     This function uses the total or expected mutation burden per
@@ -94,29 +102,31 @@ def estimate_ell_hats(df, L_low, L_high, *,
         Estimated burdens, indexed by Tumor_Sample_Barcode.
 
     """
-    if all(col in df.columns for col in ['total_mutations',
-                                         'synonymous_mutations']):
+    if all(
+        col in df.columns
+        for col in ["total_mutations", "synonymous_mutations"]
+    ):
         mb = df.copy()
 
     else:
         mb = count_mutation_burden(df)
 
-    ells = mb['total_mutations']
+    ells = mb["total_mutations"]
     L_low_star = L_low
 
-    samples_low = mb['total_mutations'] < L_low
+    samples_low = mb["total_mutations"] < L_low
     samples_not_low = ~samples_low
 
     if cut_at_L_low:
-        ell_hats = pd.Series(L_low_star,
-                             index=mb.index[samples_low])
+        ell_hats = pd.Series(L_low_star, index=mb.index[samples_low])
     else:
-        ells_low = mb['total_mutations'][samples_low]
-        ell_hats = ((ells_low / L_low) * L_low_star
-                    + (1 - ells_low / L_low) * ells[samples_low])
+        ells_low = mb["total_mutations"][samples_low]
+        ell_hats = (ells_low / L_low) * L_low_star + (
+            1 - ells_low / L_low
+        ) * ells[samples_low]
 
     ell_hats = pd.concat([ell_hats, ells[samples_not_low]])
     ell_hats = ell_hats.reindex(mb.index)
-    ell_hats = ell_hats.rename('ell_hats')
+    ell_hats = ell_hats.rename("ell_hats")
 
     return ell_hats

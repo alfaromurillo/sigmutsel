@@ -23,13 +23,15 @@ from .estimate_presence import filter_passenger_genes_ensembl
 logger = logging.getLogger(__name__)
 
 
-def compute_mu_tau_per_tumor(db,
-                             location_signature_matrix,
-                             assignments,
-                             L_low=None,
-                             L_high=None,
-                             cut_at_L_low=False,
-                             separate_per_sigma=False):
+def compute_mu_tau_per_tumor(
+    db,
+    location_signature_matrix,
+    assignments,
+    L_low=None,
+    L_high=None,
+    cut_at_L_low=False,
+    separate_per_sigma=False,
+):
     r"""Compute per-tumor per-type baseline mutation rates.
 
     Without considering covariates, the baseline mutation rate
@@ -133,15 +135,15 @@ def compute_mu_tau_per_tumor(db,
 
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 
-    ell_hats = estimate_ell_hats(db, L_low, L_high,
-                                 cut_at_L_low=cut_at_L_low)
+    ell_hats = estimate_ell_hats(
+        db, L_low, L_high, cut_at_L_low=cut_at_L_low
+    )
 
     sig_matrix = load_signature_matrix(location_signature_matrix)
 
     # Filter sig_matrix to only include signatures in assignments
     # (in case assignments was filtered to exclude signatures)
-    common_sigs = sig_matrix.columns.intersection(
-        assignments.columns)
+    common_sigs = sig_matrix.columns.intersection(assignments.columns)
     sig_matrix = sig_matrix[common_sigs]
     alphas = alphas[common_sigs]
 
@@ -158,17 +160,19 @@ def compute_mu_tau_per_tumor(db,
                 (ell_hats * alphas[sigma]).values[:, None]
                 @ sig_matrix[sigma].values[None, :],
                 index=alphas.index,
-                columns=sig_matrix.index)
-            for sigma in sig_matrix.columns}
+                columns=sig_matrix.index,
+            )
+            for sigma in sig_matrix.columns
+        }
 
         return mus_per_sigma
 
 
 def compute_mu_g_per_tumor(
-        mu_taus: pd.DataFrame | dict[int | str, pd.DataFrame],
-        contexts_by_gene,
-        prob_g_tau_tau_independent=False
-        ) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
+    mu_taus: pd.DataFrame | dict[int | str, pd.DataFrame],
+    contexts_by_gene,
+    prob_g_tau_tau_independent=False,
+) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
     """Compute baseline per-gene expected mutation rate per tumor.
 
     Compute a Genes × Tumors matrix of expected mutation rates by
@@ -268,16 +272,20 @@ def compute_mu_g_per_tumor(
     """
     # Check if mu_taus is a dictionary (signature-separated mode)
     if isinstance(mu_taus, dict):
-        return {sigma: compute_mu_g_per_tumor(
-            mu_taus=mu_tau_sigma,
-            contexts_by_gene=contexts_by_gene,
-            prob_g_tau_tau_independent=prob_g_tau_tau_independent)
-                for sigma, mu_tau_sigma in mu_taus.items()}
+        return {
+            sigma: compute_mu_g_per_tumor(
+                mu_taus=mu_tau_sigma,
+                contexts_by_gene=contexts_by_gene,
+                prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+            )
+            for sigma, mu_tau_sigma in mu_taus.items()
+        }
 
     # Original single-DataFrame logic
     if prob_g_tau_tau_independent:
-        probs_g = (contexts_by_gene.sum(axis=1)
-                   / np.sum(contexts_by_gene.values))
+        probs_g = contexts_by_gene.sum(axis=1) / np.sum(
+            contexts_by_gene.values
+        )
 
         mu_tumor = mu_taus.sum(axis=1)
 
@@ -287,15 +295,18 @@ def compute_mu_g_per_tumor(
         from .constants import canonical_types_order
         from .constants import extract_context
 
-        probs_g_context = (contexts_by_gene/contexts_by_gene.sum(axis=0))
+        probs_g_context = contexts_by_gene / contexts_by_gene.sum(
+            axis=0
+        )
 
-        probs_g_tau = probs_g_context[[extract_context(x)
-                                       for x in canonical_types_order]]
+        probs_g_tau = probs_g_context[
+            [extract_context(x) for x in canonical_types_order]
+        ]
         probs_g_tau.columns = canonical_types_order
 
         out = probs_g_tau.dot(mu_taus[canonical_types_order].T)
 
-    out.index.name = 'ensembl_gene_id'
+    out.index.name = "ensembl_gene_id"
 
     return out
 
@@ -340,12 +351,16 @@ def compute_n_taus(contexts_by_gene_or_db):
     """
     from .constants import canonical_contexts_order
 
-    if (set(canonical_contexts_order) == set(contexts_by_gene_or_db.columns)):
+    if set(canonical_contexts_order) == set(
+        contexts_by_gene_or_db.columns
+    ):
         # case where it is contexts_by_gene
         from .constants import canonical_types_order
 
-        repeated_contexts = [f"{context[0]}{context[2]}{context[-1]}"
-                             for context in canonical_types_order]
+        repeated_contexts = [
+            f"{context[0]}{context[2]}{context[-1]}"
+            for context in canonical_types_order
+        ]
 
         counts_per_context = contexts_by_gene_or_db.sum(axis=0)
 
@@ -355,19 +370,21 @@ def compute_n_taus(contexts_by_gene_or_db):
 
     else:
         # if not, then it should come from a MAF with mutations
-        counts_per_type = contexts_by_gene_or_db.groupby('type').size()
+        counts_per_type = contexts_by_gene_or_db.groupby(
+            "type"
+        ).size()
 
     return counts_per_type
 
 
 def compute_mus_per_gene_per_sample(
-        db,
-        base_mus: pd.DataFrame | dict[int | str, pd.DataFrame],
-        cov_effect: dict | np.ndarray | Sequence[float] | None,
-        cov_matrix: pd.DataFrame | None = None,
-        restrict_to_passenger: bool = False,
-        separate_mus_per_model: bool = False
-        ) -> pd.DataFrame | dict[tuple[str, ...], pd.DataFrame]:
+    db,
+    base_mus: pd.DataFrame | dict[int | str, pd.DataFrame],
+    cov_effect: dict | np.ndarray | Sequence[float] | None,
+    cov_matrix: pd.DataFrame | None = None,
+    restrict_to_passenger: bool = False,
+    separate_mus_per_model: bool = False,
+) -> pd.DataFrame | dict[tuple[str, ...], pd.DataFrame]:
     """Return per-gene, per-sample mutation rates.
 
     Scale the baseline `base_mus` by covariate effects when provided,
@@ -467,33 +484,43 @@ def compute_mus_per_gene_per_sample(
             if restrict_to_passenger:
                 ids_pass = filter_passenger_genes_ensembl(db)
                 return base_mus_summed.loc[
-                    base_mus_summed.index.intersection(ids_pass)]
+                    base_mus_summed.index.intersection(ids_pass)
+                ]
             return base_mus_summed
 
         # Check if cov_effect is from estimate_all_cov_effects with multiple models
         if isinstance(cov_effect, dict):
-            tuple_keys = [k for k in cov_effect.keys() if isinstance(k, tuple)]
+            tuple_keys = [
+                k for k in cov_effect.keys() if isinstance(k, tuple)
+            ]
 
             # Multiple models case: separate_mus_per_model must be True
-            if len(tuple_keys) > 1 or (len(tuple_keys) == 1 and separate_mus_per_model):
+            if len(tuple_keys) > 1 or (
+                len(tuple_keys) == 1 and separate_mus_per_model
+            ):
                 if not separate_mus_per_model:
                     raise ValueError(
                         "Multi-signature mode with multiple models in cov_effect "
-                        "requires separate_mus_per_model=True")
+                        "requires separate_mus_per_model=True"
+                    )
 
                 # Process each model separately
                 results = {}
                 for covs_tuple in tuple_keys:
-                    c_model = np.asarray(cov_effect[covs_tuple], dtype=np.float32)
+                    c_model = np.asarray(
+                        cov_effect[covs_tuple], dtype=np.float32
+                    )
 
                     # Validate shape
                     if c_model.ndim != 2:
                         raise ValueError(
-                            f"Model {covs_tuple}: expected 2D array, got shape {c_model.shape}")
+                            f"Model {covs_tuple}: expected 2D array, got shape {c_model.shape}"
+                        )
                     if c_model.shape[0] != len(signatures):
                         raise ValueError(
                             f"Model {covs_tuple}: has {c_model.shape[0]} rows but "
-                            f"base_mus has {len(signatures)} signatures")
+                            f"base_mus has {len(signatures)} signatures"
+                        )
 
                     # Get gene set for this model
                     first_df = next(iter(base_mus.values()))
@@ -504,8 +531,9 @@ def compute_mus_per_gene_per_sample(
 
                     # Filter to genes with non-missing covariates
                     cov_subset = cov_matrix.loc[:, list(covs_tuple)]
-                    ids = first_df.index.intersection(ids_pass).intersection(
-                        cov_subset.index)
+                    ids = first_df.index.intersection(
+                        ids_pass
+                    ).intersection(cov_subset.index)
                     ids = ids[cov_subset.loc[ids].notna().all(axis=1)]
 
                     # Ensure all signatures have same genes
@@ -518,13 +546,16 @@ def compute_mus_per_gene_per_sample(
                     # Build design matrix for this model
                     cov_df = cov_subset.loc[ids]
                     X_cov = cov_df.to_numpy(dtype=np.float32)
-                    ones = np.ones((X_cov.shape[0], 1), dtype=np.float32)
+                    ones = np.ones(
+                        (X_cov.shape[0], 1), dtype=np.float32
+                    )
                     X = np.concatenate([ones, X_cov], axis=1)
 
                     if c_model.shape[1] != X.shape[1]:
                         raise ValueError(
                             f"Model {covs_tuple}: has {c_model.shape[1]} coefficients "
-                            f"but needs {X.shape[1]} (including intercept)")
+                            f"but needs {X.shape[1]} (including intercept)"
+                        )
 
                     # Compute signature-specific scaling and sum
                     eta = X @ c_model.T  # (n_genes, n_signatures)
@@ -533,7 +564,9 @@ def compute_mus_per_gene_per_sample(
                     mus_full = None
                     for s_idx, sigma in enumerate(signatures):
                         mus_sigma = base_mus[sigma].loc[ids]
-                        mus_scaled = mus_sigma.mul(scale[:, s_idx], axis=0)
+                        mus_scaled = mus_sigma.mul(
+                            scale[:, s_idx], axis=0
+                        )
 
                         if mus_full is None:
                             mus_full = mus_scaled
@@ -545,14 +578,17 @@ def compute_mus_per_gene_per_sample(
                 return results
 
             # Single model from dict: extract coefficient array
-            if 'c' in cov_effect:
-                c = np.asarray(cov_effect['c'], dtype=np.float32)
+            if "c" in cov_effect:
+                c = np.asarray(cov_effect["c"], dtype=np.float32)
             elif tuple_keys:
-                c = np.asarray(cov_effect[tuple_keys[0]], dtype=np.float32)
+                c = np.asarray(
+                    cov_effect[tuple_keys[0]], dtype=np.float32
+                )
             else:
                 raise ValueError(
                     "Multi-signature mode with dict cov_effect "
-                    "requires either 'c' key or tuple keys")
+                    "requires either 'c' key or tuple keys"
+                )
         else:
             c = np.asarray(cov_effect, dtype=np.float32)
 
@@ -560,16 +596,19 @@ def compute_mus_per_gene_per_sample(
         if c.ndim != 2:
             raise ValueError(
                 "In multi-signature mode, cov_effect must be a 2D array "
-                f"with shape (n_signatures, n_coeffs), got shape {c.shape}")
+                f"with shape (n_signatures, n_coeffs), got shape {c.shape}"
+            )
 
         if c.shape[0] != len(signatures):
             raise ValueError(
                 f"cov_effect has {c.shape[0]} rows but base_mus has "
-                f"{len(signatures)} signatures")
+                f"{len(signatures)} signatures"
+            )
 
         if cov_matrix is None:
             raise ValueError(
-                "cov_matrix must be provided when cov_effect is not None")
+                "cov_matrix must be provided when cov_effect is not None"
+            )
 
         # Get gene set
         first_df = next(iter(base_mus.values()))
@@ -579,7 +618,8 @@ def compute_mus_per_gene_per_sample(
             ids_pass = pd.Index(first_df.index)
 
         ids = first_df.index.intersection(ids_pass).intersection(
-            cov_matrix.index)
+            cov_matrix.index
+        )
 
         # Ensure all signatures have same genes
         for sigma, df in base_mus.items():
@@ -588,23 +628,29 @@ def compute_mus_per_gene_per_sample(
         if len(ids) == 0:
             raise ValueError(
                 "No overlapping genes between base_mus signatures, "
-                "cov_matrix, and passenger set")
+                "cov_matrix, and passenger set"
+            )
 
         # Build design matrix
         cov_df = cov_matrix.loc[ids]
         X_cov = cov_df.to_numpy(dtype=np.float32)
         ones = np.ones((X_cov.shape[0], 1), dtype=np.float32)
-        X = np.concatenate([ones, X_cov], axis=1)  # (n_genes, n_coeffs)
+        X = np.concatenate(
+            [ones, X_cov], axis=1
+        )  # (n_genes, n_coeffs)
 
         if c.shape[1] != X.shape[1]:
             raise ValueError(
                 f"cov_effect has {c.shape[1]} coefficients but "
-                f"cov_matrix has {X.shape[1]} (including intercept)")
+                f"cov_matrix has {X.shape[1]} (including intercept)"
+            )
 
         # Compute signature-specific scaling and sum
         # eta[s, g] = X[g, :] @ c[s, :]
         eta = X @ c.T  # (n_genes, n_signatures)
-        scale = np.exp(eta).astype(np.float32)  # (n_genes, n_signatures)
+        scale = np.exp(eta).astype(
+            np.float32
+        )  # (n_genes, n_signatures)
 
         # Sum: mus_full[g, t] = sum_s(base_mus[s][g, t] * scale[g, s])
         mus_full = None
@@ -631,25 +677,32 @@ def compute_mus_per_gene_per_sample(
 
     if cov_effect is None:
         if len(ids) == 0:
-            raise ValueError("No overlapping genes between base_mus "
-                             "and passenger set.")
+            raise ValueError(
+                "No overlapping genes between base_mus "
+                "and passenger set."
+            )
         return base_mus.loc[ids]
 
     if cov_matrix is None:
-        raise ValueError("cov_matrix must be provided when cov_effect is not None.")
+        raise ValueError(
+            "cov_matrix must be provided when cov_effect is not None."
+        )
 
     ids = ids.intersection(cov_matrix.index)
     if len(ids) == 0:
-        raise ValueError("No overlapping genes between "
-                         "base_mus, cov_matrix, and passenger set.")
+        raise ValueError(
+            "No overlapping genes between "
+            "base_mus, cov_matrix, and passenger set."
+        )
 
     mus = base_mus.loc[ids]
     cov_df = cov_matrix.loc[ids]
 
     # ---------- single-model path ----------
-    if (not isinstance(cov_effect, dict)
-        or (isinstance(cov_effect, dict)
-            and set(cov_effect.keys()) == {"c"})):
+    if not isinstance(cov_effect, dict) or (
+        isinstance(cov_effect, dict)
+        and set(cov_effect.keys()) == {"c"}
+    ):
         if isinstance(cov_effect, dict):
             c = np.asarray(cov_effect["c"], dtype=np.float32)
         else:
@@ -660,8 +713,10 @@ def compute_mus_per_gene_per_sample(
         X = np.concatenate([ones, X_cov], axis=1)
 
         if c.ndim != 1 or c.shape[0] != X.shape[1]:
-            raise ValueError("Length of cov_effect does not match cov_matrix "
-                             f"(got {c.shape[0]} vs {X.shape[1]}).")
+            raise ValueError(
+                "Length of cov_effect does not match cov_matrix "
+                f"(got {c.shape[0]} vs {X.shape[1]})."
+            )
 
         eta = X @ c
         scale = np.exp(eta).astype(np.float32)
@@ -677,9 +732,11 @@ def compute_mus_per_gene_per_sample(
         covs = (key,) if isinstance(key, str) else tuple(key)
         coef = np.asarray(coef, dtype=np.float32)
         if coef.ndim != 1 or coef.shape[0] != 1 + len(covs):
-            raise ValueError("Coefficient length mismatch for model "
-                             f"{covs}: expected {1 + len(covs)}, "
-                             f"got {coef.shape[0]}.")
+            raise ValueError(
+                "Coefficient length mismatch for model "
+                f"{covs}: expected {1 + len(covs)}, "
+                f"got {coef.shape[0]}."
+            )
         if any(cov not in cov_df.columns for cov in covs):
             # skip models referring to covariates not present at all
             continue
@@ -732,10 +789,11 @@ def compute_mus_per_gene_per_sample(
 
 
 def compute_mu_m_per_tumor(
-        variants_df: pd.DataFrame,
-        mu_g_j: pd.DataFrame | dict[int | str, pd.DataFrame],
-        contexts_by_gene: pd.DataFrame,
-        prob_g_tau_tau_independent=False) -> pd.DataFrame:
+    variants_df: pd.DataFrame,
+    mu_g_j: pd.DataFrame | dict[int | str, pd.DataFrame],
+    contexts_by_gene: pd.DataFrame,
+    prob_g_tau_tau_independent=False,
+) -> pd.DataFrame:
     """Compute per-variant expected mutation rate per tumor.
 
     Transform gene-level mutation rates into variant-level rates by
@@ -829,7 +887,8 @@ def compute_mu_m_per_tumor(
     if isinstance(mu_g_j, dict):
         logger.info(
             "Multi-signature mode detected: summing mutation rates "
-            f"across {len(mu_g_j)} signatures...")
+            f"across {len(mu_g_j)} signatures..."
+        )
         # Sum all signature-specific DataFrames
         mu_g_j = sum(mu_g_j.values())
 
@@ -846,8 +905,9 @@ def compute_mu_m_per_tumor(
         else:
             return None
 
-    variants['contexts'] = (
-        variants['mut_types'].apply(extract_contexts))
+    variants["contexts"] = variants["mut_types"].apply(
+        extract_contexts
+    )
 
     # When prob_g_tau_tau_independent=True, reconstruct contexts_by_gene
     # by redistributing each gene's total contexts according to
@@ -857,21 +917,26 @@ def compute_mu_m_per_tumor(
     if prob_g_tau_tau_independent:
         contexts_by_gene = (
             pd.DataFrame(contexts_by_gene.sum(axis=1))
-            @ pd.DataFrame(contexts_by_gene.sum(axis=0)
-                           / contexts_by_gene.values.sum()).T)
+            @ pd.DataFrame(
+                contexts_by_gene.sum(axis=0)
+                / contexts_by_gene.values.sum()
+            ).T
+        )
 
     # Pre-compute sets for O(1) membership checks
     valid_genes = set(contexts_by_gene.index)
     valid_contexts = set(contexts_by_gene.columns)
 
     # Separate single-context from multi-context variants
-    is_string = variants['contexts'].apply(
-        lambda x: isinstance(x, str))
-    is_list = variants['contexts'].apply(
-        lambda x: isinstance(x, list))
+    is_string = variants["contexts"].apply(
+        lambda x: isinstance(x, str)
+    )
+    is_list = variants["contexts"].apply(
+        lambda x: isinstance(x, list)
+    )
 
     # Initialize all with floating zeros to allow fractional counts
-    variants['n_contexts'] = 0.0
+    variants["n_contexts"] = 0.0
 
     # Handle single-context variants (most common case)
     single_mask = is_string
@@ -880,38 +945,43 @@ def compute_mu_m_per_tumor(
 
         # Use pandas get() method for safe lookups
         def lookup_single(row):
-            gene_id = row['ensembl_gene_id']
-            ctx = row['contexts']
+            gene_id = row["ensembl_gene_id"]
+            ctx = row["contexts"]
             if gene_id in valid_genes and ctx in valid_contexts:
                 return contexts_by_gene.at[gene_id, ctx]
             return 0
 
-        variants.loc[single_mask, 'n_contexts'] = (
-            single_vars.apply(lookup_single, axis=1))
+        variants.loc[single_mask, "n_contexts"] = single_vars.apply(
+            lookup_single, axis=1
+        )
 
     # Handle multi-context variants (rare)
     if is_list.any():
+
         def sum_multi_contexts(row):
-            gene_id = row['ensembl_gene_id']
+            gene_id = row["ensembl_gene_id"]
             if gene_id not in valid_genes:
                 return 0
 
-            contexts = row['contexts']
-            return (sum(
+            contexts = row["contexts"]
+            return sum(
                 contexts_by_gene.at[gene_id, ctx]
-                for ctx in contexts if ctx in valid_contexts))
+                for ctx in contexts
+                if ctx in valid_contexts
+            )
 
-        variants.loc[is_list, 'n_contexts'] = (
-            variants[is_list].apply(sum_multi_contexts, axis=1))
+        variants.loc[is_list, "n_contexts"] = variants[is_list].apply(
+            sum_multi_contexts, axis=1
+        )
 
     # Build variants × tumors matrix using vectorized operations
     # Reindex mu_g_j by the gene_ids from variants to align rows
-    gene_ids = variants['ensembl_gene_id']
+    gene_ids = variants["ensembl_gene_id"]
     mu_genes_aligned = mu_g_j.reindex(gene_ids)
     mu_genes_aligned.index = variants.index
 
     # Divide by n_contexts (broadcasting across columns)
-    n_contexts = variants['n_contexts'].replace(0, np.nan)
+    n_contexts = variants["n_contexts"].replace(0, np.nan)
     mu_m_j = mu_genes_aligned.div(n_contexts, axis=0)
 
     # Fill NaN with 0 (for missing genes or zero contexts)

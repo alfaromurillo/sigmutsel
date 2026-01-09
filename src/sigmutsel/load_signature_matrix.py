@@ -64,8 +64,10 @@ def load_signature_matrix(location: str) -> pd.DataFrame:
     elif "Type" in df.columns:
         df = df.set_index("Type")
     else:
-        msg = ("Signature matrix must contain either a 'MutationType' "
-               "or 'Type' column.")
+        msg = (
+            "Signature matrix must contain either a 'MutationType' "
+            "or 'Type' column."
+        )
         logger.error(msg)
         raise ValueError(msg)
 

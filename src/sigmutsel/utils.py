@@ -10,13 +10,14 @@ from sklearn.decomposition import PCA
 
 
 def run_pca_on_covariates(
-        cov_df: pd.DataFrame,
-        columns: list[str] | None = None,
-        n_components: int | None = None,
-        *,
-        standardize: bool = True,
-        dropna: str = "any",
-        **pca_kwargs) -> pd.DataFrame:
+    cov_df: pd.DataFrame,
+    columns: list[str] | None = None,
+    n_components: int | None = None,
+    *,
+    standardize: bool = True,
+    dropna: str = "any",
+    **pca_kwargs,
+) -> pd.DataFrame:
     """Compute PCA over gene-level covariates and return scores.
 
     Parameters
@@ -71,8 +72,11 @@ def run_pca_on_covariates(
     """
     if columns is None:
         # keep only numeric columns
-        cols = [c for c in cov_df.columns
-                if pd.api.types.is_numeric_dtype(cov_df[c])]
+        cols = [
+            c
+            for c in cov_df.columns
+            if pd.api.types.is_numeric_dtype(cov_df[c])
+        ]
     else:
         cols = columns
 
@@ -88,7 +92,8 @@ def run_pca_on_covariates(
         X = X.fillna(X.mean())
     else:
         raise ValueError(
-            f"dropna must be 'any', 'all', or 'none', got {dropna!r}")
+            f"dropna must be 'any', 'all', or 'none', got {dropna!r}"
+        )
 
     # standardize features if requested
     if standardize:
@@ -105,7 +110,8 @@ def run_pca_on_covariates(
 
     # attach metadata
     result.attrs["explained_variance_ratio"] = (
-        pca.explained_variance_ratio_)
+        pca.explained_variance_ratio_
+    )
     result.attrs["components"] = pca.components_
 
     return result

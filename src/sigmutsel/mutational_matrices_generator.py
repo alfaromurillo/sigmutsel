@@ -5,7 +5,8 @@ import shutil
 from pathlib import Path
 
 from SigProfilerMatrixGenerator.scripts import (
-    SigProfilerMatrixGeneratorFunc)
+    SigProfilerMatrixGeneratorFunc,
+)
 from SigProfilerMatrixGenerator import install as genInstall
 
 
@@ -13,18 +14,19 @@ logger = logging.getLogger(__name__)
 
 
 def run_mutational_matrices_generator(
-        path_to_input_files,
-        reference_genome,
-        *,
-        exome=True,
-        bed_file=None,
-        chrom_based=False,
-        plot=False,
-        tsb_stat=False,
-        seqInfo=True,
-        cushion=100,
-        gs=False,
-        volume=None):
+    path_to_input_files,
+    reference_genome,
+    *,
+    exome=True,
+    bed_file=None,
+    chrom_based=False,
+    plot=False,
+    tsb_stat=False,
+    seqInfo=True,
+    cushion=100,
+    gs=False,
+    volume=None,
+):
     """Generate mutational matrices.
 
     This function generates context-dependent mutational matrices for
@@ -171,11 +173,11 @@ def run_mutational_matrices_generator(
     # Ensure path_to_input_files is a string
     path_to_input_files = str(path_to_input_files)
 
-    logger.info(
-        "Generating mutational matrices...")
+    logger.info("Generating mutational matrices...")
     logger.info(
         f"Reference genome: {reference_genome}, exome: {exome}, "
-        f"seqInfo: {seqInfo}")
+        f"seqInfo: {seqInfo}"
+    )
 
     try:
         SigProfilerMatrixGeneratorFunc.SigProfilerMatrixGeneratorFunc(
@@ -190,25 +192,35 @@ def run_mutational_matrices_generator(
             seqInfo=seqInfo,
             cushion=cushion,
             gs=gs,
-            volume=volume)
+            volume=volume,
+        )
     except Exception as e:
         # Check if error is related to missing reference genome
         error_msg = str(e).lower()
-        if 'reference' in error_msg or 'install' in error_msg or \
-           'genome' in error_msg or 'not found' in error_msg:
+        if (
+            "reference" in error_msg
+            or "install" in error_msg
+            or "genome" in error_msg
+            or "not found" in error_msg
+        ):
             logger.warning(
                 f"Reference genome {reference_genome} data not "
-                f"available. Installing now...")
+                f"available. Installing now..."
+            )
             logger.info(
                 f"Installing {reference_genome} reference genome "
-                f"(this may take several minutes)...")
+                f"(this may take several minutes)..."
+            )
 
             # Install the reference genome
-            genInstall.install(reference_genome, rsync=False, bash=True)
+            genInstall.install(
+                reference_genome, rsync=False, bash=True
+            )
 
             logger.info(
                 f"{reference_genome} installation complete. "
-                f"Retrying matrix generation...")
+                f"Retrying matrix generation..."
+            )
 
             # Retry the matrix generation
             SigProfilerMatrixGeneratorFunc.SigProfilerMatrixGeneratorFunc(
@@ -223,7 +235,8 @@ def run_mutational_matrices_generator(
                 seqInfo=seqInfo,
                 cushion=cushion,
                 gs=gs,
-                volume=volume)
+                volume=volume,
+            )
         else:
             # Re-raise if it's a different error
             raise
@@ -232,10 +245,11 @@ def run_mutational_matrices_generator(
 
 
 def mutational_matrices_generation(
-        path_to_input_files,
-        reference_genome='GRCh38',
-        force_generation=False,
-        **kwargs):
+    path_to_input_files,
+    reference_genome="GRCh38",
+    force_generation=False,
+    **kwargs,
+):
     """Load or generate mutational matrices from MAF/VCF files.
 
     Checks if mutational matrices already exist in the output
@@ -286,17 +300,18 @@ def mutational_matrices_generation(
     output_path = path_to_input_files / "output"
 
     if force_generation and output_path.exists():
-        logger.info(
-            f"Deleting previous matrices from {output_path}")
+        logger.info(f"Deleting previous matrices from {output_path}")
         shutil.rmtree(output_path)
 
     if not output_path.exists():
         run_mutational_matrices_generator(
             path_to_input_files=str(path_to_input_files),
             reference_genome=reference_genome,
-            **kwargs)
+            **kwargs,
+        )
     else:
         logger.info(
-            f"Mutational matrices already exist at {output_path}")
+            f"Mutational matrices already exist at {output_path}"
+        )
 
     return output_path

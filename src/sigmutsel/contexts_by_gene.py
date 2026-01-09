@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 def compute_contexts_by_gene(
     fasta_files: str | Path | list[str | Path] | None = None,
-    restrict_to_db: pd.DataFrame | Iterable[str] | None = None) -> pd.DataFrame:
+    restrict_to_db: pd.DataFrame | Iterable[str] | None = None,
+) -> pd.DataFrame:
     """Build a 32-context table for the longest transcript of each gene.
 
     The routine scans one or more Ensembl FASTA files (cDNA, ncRNA,
@@ -52,7 +53,9 @@ def compute_contexts_by_gene(
         Index → stable Ensembl gene ID (version stripped)
         Columns → 32 context counts (ACA … TTT)
     """
-    logger.info("Build a 32-context table for the longest transcript of each gene....")
+    logger.info(
+        "Build a 32-context table for the longest transcript of each gene...."
+    )
     # ---- normalise inputs ------------------------------------------------
     if fasta_files is None:
         fasta_files = location_cds_fasta
@@ -67,18 +70,24 @@ def compute_contexts_by_gene(
 
     elif isinstance(restrict_to_db, pd.DataFrame):
         # keep rows that have both a variant name *and* a gene ID
-        mask = (restrict_to_db["variant"].notna()
-                & restrict_to_db["ensembl_gene_id"].notna())
-        keep_ids = set(restrict_to_db.loc[mask, "ensembl_gene_id"].astype(str))
+        mask = (
+            restrict_to_db["variant"].notna()
+            & restrict_to_db["ensembl_gene_id"].notna()
+        )
+        keep_ids = set(
+            restrict_to_db.loc[mask, "ensembl_gene_id"].astype(str)
+        )
 
     else:
         keep_ids = set(map(str, restrict_to_db))
 
     # ---- precompute helpers ---------------------------------------------
-    contexts32 = [first + second + third
-                  for second in "CT"
-                  for first in "ACGT"
-                  for third in "ACGT"]
+    contexts32 = [
+        first + second + third
+        for second in "CT"
+        for first in "ACGT"
+        for third in "ACGT"
+    ]
     comp = str.maketrans("ACGT", "TGCA")
     valid = set("ACGT")
 
@@ -102,8 +111,10 @@ def compute_contexts_by_gene(
         for rec in SeqIO.parse(fasta, "fasta"):
             ensg = extract_ensg(rec.description)
             if ensg is None:
-                logger.warning("Header without Ensembl gene ID skipped: "
-                               f"{rec.id}")
+                logger.warning(
+                    "Header without Ensembl gene ID skipped: "
+                    f"{rec.id}"
+                )
                 continue
 
             if keep_ids is not None and ensg not in keep_ids:
@@ -118,7 +129,7 @@ def compute_contexts_by_gene(
     for ensg, seq in best_seq.items():
         cnt = {ctx: 0 for ctx in contexts32}
         for i in range(len(seq) - 2):
-            tri = seq[i:i + 3]
+            tri = seq[i : i + 3]
             if set(tri) - valid:
                 continue
             if tri[1] in "CT":
@@ -127,9 +138,11 @@ def compute_contexts_by_gene(
                 cnt[tri.translate(comp)[::-1]] += 1
         rows.append((ensg, cnt))
 
-    df = (pd.DataFrame.from_dict(dict(rows), orient="index")
-            .astype(int)
-            .sort_index())
+    df = (
+        pd.DataFrame.from_dict(dict(rows), orient="index")
+        .astype(int)
+        .sort_index()
+    )
 
     logger.info("...done.")
     print("")
@@ -137,10 +150,11 @@ def compute_contexts_by_gene(
 
 
 def load_or_generate_contexts_by_gene(
-        location_contexts_df: str | Path,
-        fastas: str | Path | list,
-        restrict_to_db: pd.DataFrame | Iterable[str] | None = None,
-        force_generation: bool = False) -> pd.DataFrame:
+    location_contexts_df: str | Path,
+    fastas: str | Path | list,
+    restrict_to_db: pd.DataFrame | Iterable[str] | None = None,
+    force_generation: bool = False,
+) -> pd.DataFrame:
     """Load or generate trinucleotide context counts by gene.
 
     Loads a pre-computed table of trinucleotide context counts per
@@ -239,13 +253,13 @@ def load_or_generate_contexts_by_gene(
 
     if location_contexts_df.exists() and not force_generation:
         logger.info(
-            f"Loading context table from {location_contexts_df}")
+            f"Loading context table from {location_contexts_df}"
+        )
         df = pd.read_csv(location_contexts_df, index_col=0)
         logger.info("... done.")
         return df
 
-    logger.info(
-        f"Generating context table from {fastas}")
+    logger.info(f"Generating context table from {fastas}")
 
     df = compute_contexts_by_gene(fastas, restrict_to_db)
 

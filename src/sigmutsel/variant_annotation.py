@@ -16,9 +16,9 @@ from .constants import sbs_signatures
 logger = logging.getLogger(__name__)
 
 
-def extract_variants_from_db(db: pd.DataFrame,
-                             position_tolerance: int = 3
-                             ) -> pd.DataFrame:
+def extract_variants_from_db(
+    db: pd.DataFrame, position_tolerance: int = 3
+) -> pd.DataFrame:
     """Extract unique variants from a mutation DataFrame.
 
     Ensures that each variant maps to exactly one gene, chromosome,
@@ -65,7 +65,8 @@ def extract_variants_from_db(db: pd.DataFrame,
             raise ValueError(
                 f"Variant {variant!r} maps to multiple genes or "
                 f"chromosomes:\n  Genes: {genes}\n  Chromosomes: "
-                f"{chroms}")
+                f"{chroms}"
+            )
 
         # ── Ensembl ID: keep most frequent, warn on ties ────────────
         gene_id_counts = group["ensembl_gene_id"].value_counts()
@@ -73,42 +74,46 @@ def extract_variants_from_db(db: pd.DataFrame,
         if len(gene_id_counts) > 1:
             logger.warning(
                 f"Variant {variant!r} maps to multiple Ensembl IDs "
-                f"{list(gene_id_counts.index)}; using {ensembl_id}")
+                f"{list(gene_id_counts.index)}; using {ensembl_id}"
+            )
 
         # ── Start position handling ────────────────────────────────
-        mean_start: float | int = np.nan          # <- always defined
+        mean_start: float | int = np.nan  # <- always defined
 
         if np.ptp(starts) > position_tolerance:
             logger.warning(
                 f"Variant {variant!r} shows {len(starts)} distinct "
                 f"Start_Positions across {len(group)} tumors that "
                 f"exceed the ±{position_tolerance} bp tolerance: "
-                f"{starts}.  Assigning NaN.")
+                f"{starts}.  Assigning NaN."
+            )
         else:
             if len(starts) > 1:
                 logger.info(
                     f"Variant {variant!r} has {len(starts)} "
                     f"Start_Positions within tolerance "
                     f"(±{position_tolerance} bp): {starts}.  "
-                    f"Using mean.")
+                    f"Using mean."
+                )
             # compute safely even if all values are NaN
             pos_mean = np.nanmean(starts)
             if not np.isnan(pos_mean):
                 mean_start = int(round(pos_mean))
 
-        records.append((variant,
-                        genes[0],
-                        ensembl_id,
-                        chroms[0],
-                        mean_start))
+        records.append(
+            (variant, genes[0], ensembl_id, chroms[0], mean_start)
+        )
 
-    result = (pd.DataFrame(records,
-                           columns=["variant",
-                                    "gene",
-                                    "ensembl_gene_id",
-                                    "Chromosome",
-                                    "Start_Position"])
-              .set_index("variant"))
+    result = pd.DataFrame(
+        records,
+        columns=[
+            "variant",
+            "gene",
+            "ensembl_gene_id",
+            "Chromosome",
+            "Start_Position",
+        ],
+    ).set_index("variant")
 
     logger.info("... done.")
     print("")
@@ -116,8 +121,8 @@ def extract_variants_from_db(db: pd.DataFrame,
 
 
 def annotate_variants_with_types(
-        variants_df: "pd.DataFrame",
-        db: "pd.DataFrame") -> "pd.DataFrame":
+    variants_df: "pd.DataFrame", db: "pd.DataFrame"
+) -> "pd.DataFrame":
     """Annotate variants with the mutational type(s).
 
     For each variant in `variants_df` adds the type(s) observed for
@@ -152,12 +157,13 @@ def annotate_variants_with_types(
 
     # Collapse to string OR list (for variants with multiple types)
     tidy_types = uniq_types.map(
-        lambda arr: arr[0] if len(arr) == 1 else list(arr))
+        lambda arr: arr[0] if len(arr) == 1 else list(arr)
+    )
 
     # 3. align and add
     if "variant" in out.columns:
         key = out["variant"]
-    else:                              # index is the key
+    else:  # index is the key
         key = out.index
 
     out["mut_types"] = tidy_types.reindex(key).values
@@ -168,9 +174,8 @@ def annotate_variants_with_types(
 
 
 def load_or_generate_variants_with_types(
-        location_df: str,
-        db: pd.DataFrame,
-        force_generation: bool = False) -> pd.DataFrame:
+    location_df: str, db: pd.DataFrame, force_generation: bool = False
+) -> pd.DataFrame:
     """Load or generate a DataFrame of unique variants with type annotations.
 
     Loads a preprocessed variant database with annotated mutation
@@ -256,32 +261,29 @@ def load_or_generate_variants_with_types(
         all_variants = extract_variants_from_db(db)
         all_variants = annotate_variants_with_types(all_variants, db)
         all_variants.to_csv(location_df, index=True)
-        logger.info(
-            f"Saved variants data frame to {location_df}")
+        logger.info(f"Saved variants data frame to {location_df}")
         logger.info("... done.")
     else:
         logger.info(
             "Loading data frame with all variants and their types "
-            f"from {location_df}")
+            f"from {location_df}"
+        )
         all_variants = pd.read_csv(location_df, index_col=0)
         logger.info("... done.")
-        if len(all_variants) != db['variant'].nunique():
+        if len(all_variants) != db["variant"].nunique():
             logger.info(
                 f"Number of variants loaded from {location_df} "
-                "does not match those of `db`, forcing generation...")
+                "does not match those of `db`, forcing generation..."
+            )
             all_variants = load_or_generate_variants_with_types(
-                location_df,
-                db,
-                True)
+                location_df, db, True
+            )
 
     return all_variants
 
 
-
 def build_arrays_for_cov_effect_estimation(
-        mu_j_m: np.ndarray,
-        db: pd.DataFrame,
-        covariates_df: pd.DataFrame
+    mu_j_m: np.ndarray, db: pd.DataFrame, covariates_df: pd.DataFrame
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build arrays needed for the covariates regression.
 
@@ -332,17 +334,23 @@ def build_arrays_for_cov_effect_estimation(
 
     """
     # Variants that are Silent in the main database
-    silent_set = set(db.loc[db["Variant_Classification"] == "Silent",
-                            "variant"])
+    silent_set = set(
+        db.loc[db["Variant_Classification"] == "Silent", "variant"]
+    )
 
     # Rows that have any non-NaN cov_ value
-    cov_cols = [c for c in covariates_df.columns if c.startswith("cov_")]
+    cov_cols = [
+        c for c in covariates_df.columns if c.startswith("cov_")
+    ]
     has_cov = ~covariates_df[cov_cols].isna().all(axis=1)
 
     # Final selection: silent AND has_cov
-    variants_order = sorted(covariates_df.index)  # assumes alphabetical
-    keep_mask = [(v in silent_set) and has_cov[v]
-                 for v in variants_order]
+    variants_order = sorted(
+        covariates_df.index
+    )  # assumes alphabetical
+    keep_mask = [
+        (v in silent_set) and has_cov[v] for v in variants_order
+    ]
     variant_keep = [v for v, k in zip(variants_order, keep_mask) if k]
 
     # Slice arrays / frames
@@ -354,13 +362,16 @@ def build_arrays_for_cov_effect_estimation(
     tumour_to_row = {t: i for i, t in enumerate(tumour_order)}
     variant_to_col = {v: j for j, v in enumerate(variant_keep)}
 
-    presence = np.zeros((len(tumour_order), len(variant_keep)),
-                        dtype=np.int8)
+    presence = np.zeros(
+        (len(tumour_order), len(variant_keep)), dtype=np.int8
+    )
 
     sub_db = db[db["variant"].isin(variant_keep)]
-    for t, v in (sub_db[["Tumor_Sample_Barcode", "variant"]]
-                 .drop_duplicates()
-                 .itertuples(index=False)):
+    for t, v in (
+        sub_db[["Tumor_Sample_Barcode", "variant"]]
+        .drop_duplicates()
+        .itertuples(index=False)
+    ):
         presence[tumour_to_row[t], variant_to_col[v]] = 1
 
     return mu_restricted, cov_matrix, presence

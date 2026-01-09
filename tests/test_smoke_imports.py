@@ -1,5 +1,6 @@
 """Smoke tests for importability and basic public API."""
 
+
 def test_import_sigmutsel():
     """Import the top-level package."""
     import sigmutsel  # noqa: F401

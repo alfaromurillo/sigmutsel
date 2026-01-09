@@ -78,7 +78,6 @@ def plot_posteriors_vs_counts(
 
     """
     import numpy as np
-    import matplotlib
     from matplotlib import pyplot as plt
     import matplotlib.ticker as mticker
     import seaborn as sns
@@ -248,7 +247,6 @@ def comparison_with_observed(
     import numpy as np
     import pandas as pd
     from sklearn.metrics import r2_score
-    import matplotlib
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator, AutoMinorLocator
 
@@ -392,7 +390,6 @@ def plot_signature_correlations(
     """
     from .signature_attribution import assign_signatures_per_gene_id
     import matplotlib.pyplot as plt
-    import matplotlib
     import numpy as np
 
     # Compute signature attribution per gene
@@ -514,14 +511,13 @@ def plot_signature_correlations(
     ax2.tick_params(axis="y", labelcolor="DimGray", labelsize=7)
 
     # Add a simple legend entry for mutations
-    mutations_line = ax2.plot(
+    ax2.plot(
         [],
         [],
         color="DimGray",
         linewidth=1.5,
         alpha=0.7,
-        label="Mutations",
-    )[0]
+        label="Mutations")[0]
 
     # Set legend text color to DimGray
     ax2_legend = ax2.legend(

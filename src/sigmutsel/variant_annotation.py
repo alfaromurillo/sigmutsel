@@ -11,7 +11,6 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .constants import sbs_signatures
 
 logger = logging.getLogger(__name__)
 

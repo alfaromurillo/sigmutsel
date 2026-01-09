@@ -195,7 +195,6 @@ class MutationDataset:
 
     def save_dataset(self, directory):
         """Persist loaded dataset artifacts to a directory."""
-        import json
 
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
@@ -325,7 +324,6 @@ class MutationDataset:
     @classmethod
     def load_dataset(cls, directory):
         """Load dataset artifacts from a directory created by save_dataset."""
-        import json
 
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
@@ -2227,7 +2225,6 @@ class Model:
         >>> # Explicit level specification
         >>> model.estimate_gamma("BRAF", level='gene', non_silent=True)
         """
-        from .estimate_gammas import estimate_gamma_from_mus
 
         # Auto-detect level if not specified
         if level is None:
@@ -2861,7 +2858,6 @@ class Model:
         --------
         load_model : Reload a saved model from disk
         """
-        import json
         from pathlib import Path
 
         directory = Path(directory)
@@ -3068,7 +3064,6 @@ class Model:
     @classmethod
     def load_model(cls, directory):
         """Load a Model from a directory created by save_model()."""
-        import json
         from pathlib import Path
 
         directory = Path(directory)

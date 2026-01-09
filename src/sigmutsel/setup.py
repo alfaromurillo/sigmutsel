@@ -71,7 +71,7 @@ def download_file(url: str, dest: Path, decompress: bool = False):
 
         # Handle gzipped files
         if decompress and str(dest).endswith(".gz"):
-            logger.info(f"  Decompressing...")
+            logger.info("  Decompressing...")
             final_dest = dest.with_suffix("")  # Remove .gz
             with gzip.open(temp_file, "rb") as f_in:
                 with open(final_dest, "wb") as f_out:

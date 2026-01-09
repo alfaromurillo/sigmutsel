@@ -144,5 +144,5 @@ def print_data_status():
 
     missing = [name for name, exists in status.items() if not exists]
     if missing:
-        print(f"\nTo download missing files, run:")
-        print(f"    python -m sigmutsel setup")
+        print("\nTo download missing files, run:")
+        print("    python -m sigmutsel setup")

@@ -331,8 +331,6 @@ def run_signature_decomposition(
         and isinstance(include_signature_subgroups, tuple)
         and len(include_signature_subgroups) == 2
     ):
-        import pandas as pd
-        from pathlib import Path
 
         location, cancer_type = include_signature_subgroups
         location = Path(location)

@@ -32,6 +32,12 @@ class MutationDataset:
         - "CN": Copy number signatures
         - "SV": Structural variant signatures
         - "RNA-SBS": RNA single base substitution signatures
+    source_maf : str or pathlib.Path, optional
+        Path to a single multi-sample MAF file. If provided and
+        ``location_maf_files`` does not yet contain per-sample
+        ``.maf`` files, the file is split automatically on
+        dataset creation. Skipped if per-sample files already
+        exist.
     mutation_db : pd.DataFrame or None
         Mutation database with individual mutation records.
         Columns include: gene, tumor_sample_barcode,
@@ -128,6 +134,7 @@ class MutationDataset:
 
     location_maf_files: str
     signature_class: str = "SBS"
+    source_maf: str | None = None
 
     # Lazy-loaded attributes
     _mutation_db: pd.DataFrame = None
@@ -145,6 +152,22 @@ class MutationDataset:
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
+
+    def __post_init__(self):
+        """Split source MAF or warn if MAF directory is empty."""
+        maf_dir = Path(self.location_maf_files)
+        maf_files_exist = (
+            maf_dir.exists() and any(maf_dir.glob("*.maf")))
+
+        if self.source_maf is not None:
+            from sigmutsel.split_maf_file import split_maf_file
+            split_maf_file(self.source_maf, maf_dir)
+        elif not maf_files_exist:
+            logger.warning(
+                f"No .maf files found in {maf_dir}. "
+                "If you have a single multi-sample MAF file, "
+                "pass it as source_maf='path/to/file.maf' "
+                "when creating the dataset.")
 
     def __repr__(self):
         """Show loaded status of lazy attributes (custom repr)."""
@@ -309,6 +332,9 @@ class MutationDataset:
             "version": 1,
             "signature_class": self.signature_class,
             "location_maf_files": str(self.location_maf_files),
+            "source_maf": (
+                str(self.source_maf)
+                if self.source_maf is not None else None),
             "files": saved_files,
             "signature_parameters": {
                 "reference_genome": self._signature_reference_genome,
@@ -337,6 +363,7 @@ class MutationDataset:
         dataset = cls(
             location_maf_files=manifest.get("location_maf_files"),
             signature_class=manifest.get("signature_class", "SBS"),
+            source_maf=manifest.get("source_maf"),
         )
 
         for attr_name, info in manifest.get("files", {}).items():

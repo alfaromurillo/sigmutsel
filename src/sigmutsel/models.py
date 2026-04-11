@@ -156,18 +156,21 @@ class MutationDataset:
     def __post_init__(self):
         """Split source MAF or warn if MAF directory is empty."""
         maf_dir = Path(self.location_maf_files)
-        maf_files_exist = (
-            maf_dir.exists() and any(maf_dir.glob("*.maf")))
+        maf_files_exist = maf_dir.exists() and any(
+            maf_dir.glob("*.maf")
+        )
 
         if self.source_maf is not None:
             from sigmutsel.split_maf_file import split_maf_file
+
             split_maf_file(self.source_maf, maf_dir)
         elif not maf_files_exist:
             logger.warning(
                 f"No .maf files found in {maf_dir}. "
                 "If you have a single multi-sample MAF file, "
                 "pass it as source_maf='path/to/file.maf' "
-                "when creating the dataset.")
+                "when creating the dataset."
+            )
 
     def __repr__(self):
         """Show loaded status of lazy attributes (custom repr)."""
@@ -334,7 +337,9 @@ class MutationDataset:
             "location_maf_files": str(self.location_maf_files),
             "source_maf": (
                 str(self.source_maf)
-                if self.source_maf is not None else None),
+                if self.source_maf is not None
+                else None
+            ),
             "files": saved_files,
             "signature_parameters": {
                 "reference_genome": self._signature_reference_genome,

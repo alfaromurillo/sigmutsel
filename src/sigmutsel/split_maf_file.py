@@ -8,7 +8,6 @@ are preserved verbatim in every output file.
 
 import logging
 import shutil
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -17,10 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 def split_maf_file(
-        maf_file: str | Path,
-        output_dir: str | Path,
-        *,
-        force_generation: bool = False) -> Path:
+    maf_file: str | Path,
+    output_dir: str | Path,
+    *,
+    force_generation: bool = False,
+) -> Path:
     """Split a multi-sample MAF file into per-sample MAF files.
 
     Reads a tab-delimited MAF file that may contain an arbitrary
@@ -59,7 +59,9 @@ def split_maf_file(
     output_dir = Path(output_dir)
 
     if force_generation and output_dir.exists():
-        logger.info(f"Deleting previous split files from {output_dir}")
+        logger.info(
+            f"Deleting previous split files from {output_dir}"
+        )
         shutil.rmtree(output_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +69,8 @@ def split_maf_file(
     if not force_generation and any(output_dir.glob("*.maf")):
         logger.info(
             f"Per-sample MAF files already present in "
-            f"{output_dir}, skipping split.")
+            f"{output_dir}, skipping split."
+        )
         return output_dir
 
     # Capture leading comment lines before pandas discards them.
@@ -82,17 +85,20 @@ def split_maf_file(
 
     logger.info(f"Reading MAF file: {maf_file}")
     df = pd.read_csv(
-        maf_file, sep="\t", comment="#", low_memory=False)
+        maf_file, sep="\t", comment="#", low_memory=False
+    )
 
     if "Tumor_Sample_Barcode" not in df.columns:
         raise KeyError(
             "Column 'Tumor_Sample_Barcode' not found in "
-            f"{maf_file.name}. Cannot split.")
+            f"{maf_file.name}. Cannot split."
+        )
 
     n_samples = df["Tumor_Sample_Barcode"].nunique()
     logger.info(
         f"Loaded {len(df):,} mutations across "
-        f"{n_samples} samples.")
+        f"{n_samples} samples."
+    )
 
     n_written = 0
     for sample, sample_df in df.groupby("Tumor_Sample_Barcode"):
@@ -104,10 +110,12 @@ def split_maf_file(
 
         logger.debug(
             f"Wrote {len(sample_df):,} mutations for "
-            f"{sample} -> {out_path.name}")
+            f"{sample} -> {out_path.name}"
+        )
         n_written += 1
 
     logger.info(
         f"Done: {n_written}/{n_samples} sample files written "
-        f"to {output_dir}.")
+        f"to {output_dir}."
+    )
     return output_dir

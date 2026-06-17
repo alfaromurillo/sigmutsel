@@ -167,15 +167,25 @@ def plot_posteriors_vs_counts(
         ax.set_yticks(np.power(10, np.arange(0, 3 + 1)))
         ax.set_ylim(0.9, 10**3)
 
-    xmax = max_shift_x or df["count"].max() * 1.02
-    xmin = min_shift_x or df["count"].min() * 0.98
+    xmax = (
+        max_shift_x
+        if max_shift_x is not None
+        else df["count"].max() * 1.02
+    )
+    xmin = (
+        min_shift_x
+        if min_shift_x is not None
+        else df["count"].min() * 0.98
+    )
     ax.set_xlim(xmin, xmax)
     major = 50 if level == "gene" else 10
-    minor = 10 if level == "gene" else 1
-    ax.set_xticks(np.arange(50, xmax + minor, major))
-    ax.set_xticks(np.arange(xmin, xmax, minor), minor=True)
+    minor = 10 if level == "gene" else 5
+    tick_start = int(np.ceil(xmin / major)) * major if major else xmin
+    ax.set_xticks(np.arange(tick_start, xmax + major, major))
+    ax.set_xticks(np.arange(xmin, xmax + minor, minor), minor=True)
     ax.set_xticklabels(
-        np.arange(50, xmax + minor, major).astype(int), fontsize=6
+        np.arange(tick_start, xmax + major, major).astype(int),
+        fontsize=6,
     )
     ax.plot([xmin, xmax], [1, 1], "--", color="gray", lw=1)
 

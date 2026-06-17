@@ -591,3 +591,195 @@ def plot_signature_correlations(
         plt.close("all")
 
     return fig, ax1, ax2
+
+
+def plot_sig_decomposition_with_burden(
+    df,
+    assignments,
+    L_low=None,
+    L_high=None,
+    corrected=False,
+    save=None,
+    show=False,
+):
+    """Heatmap of signature attribution probabilities ordered by burden.
+
+    Left panel: horizontal log-scale bar chart of mutation burden per
+    sample. Right panel: heatmap of per-sample signature attribution
+    probabilities (alpha), with samples sorted by ascending burden.
+
+    Parameters
+    ----------
+    df : pd.DataFrame or pd.Series
+        Mutation database with a 'Tumor_Sample_Barcode' column, or a
+        pre-computed burden Series indexed by sample ID.
+    assignments : pd.DataFrame
+        Raw signature assignment counts (rows: samples, cols: sigs).
+    L_low : float or None
+        Lower burden threshold. When provided together with L_high,
+        adds purple dashed lines on both panels at L_low and L_high.
+    L_high : float or None
+        Upper burden threshold.
+    corrected : bool, default False
+        If True, apply the low-burden correction from
+        :func:`compute_alphas.estimate_alphas`, which blends
+        low-burden sample alphas toward the population mean alpha_bar
+        computed from intermediate-burden samples.
+    save : str or Path or None
+        File path to save the figure (PNG at 600 dpi). Not saved if
+        None.
+    show : bool, default False
+        Whether to call plt.show().
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    from .compute_mutation_burden import count_mutation_burden
+    from .compute_alphas import estimate_alphas
+
+    # Compute or extract burden
+    if isinstance(df, pd.DataFrame):
+        mb = count_mutation_burden(df)
+        burden = mb["total_mutations"]
+    else:
+        burden = df.copy()
+        burden.name = "total_mutations"
+        mb = burden.to_frame()
+
+    # Sort samples by ascending burden; restrict to shared index
+    sorted_burden = burden.sort_values()
+    common = sorted_burden.index.intersection(assignments.index)
+    sorted_burden = sorted_burden.loc[common]
+
+    # Compute alphas (raw or corrected)
+    if corrected and L_low is not None:
+        alphas = estimate_alphas(
+            mb, assignments, L_low=L_low, L_high=L_high
+        )
+        alphas = alphas.loc[sorted_burden.index]
+    else:
+        denom = sorted_burden.replace(0.0, float("nan"))
+        alphas = (
+            assignments.loc[sorted_burden.index]
+            .div(denom, axis=0)
+            .fillna(0.0)
+        )
+
+    # Beamer slide dimensions
+    max_w = 307.28987 / 72.27
+    max_h = 0.8 * 224.14662 / 72.27
+
+    fig, (ax_bar, ax_hm) = plt.subplots(
+        1,
+        2,
+        figsize=(max_w, max_h),
+        gridspec_kw={"width_ratios": [1, 10]},
+        sharey=True,
+    )
+
+    # Left panel: horizontal log10-burden bars
+    log_b = np.log10(sorted_burden.clip(lower=1).values)
+    ax_bar.barh(
+        np.arange(len(sorted_burden)),
+        log_b,
+        height=0.5,
+        color="gray",
+        edgecolor=None,
+    )
+    ax_bar.invert_xaxis()
+    ax_bar.set_yticks([])
+    ax_bar.set_xlabel("Burden", fontsize=7)
+
+    if L_low is not None and L_high is not None:
+        xtick_vals = np.log10([1, L_low, L_high, 10000])
+        xtick_labels = ["0", f"{L_low}", f"{L_high}", "10K"]
+        for val in [L_low, L_high]:
+            ax_bar.axvline(
+                np.log10(val),
+                color="purple",
+                linestyle="--",
+                linewidth=0.5,
+            )
+    else:
+        xtick_vals = np.log10([1, 10, 100, 1000, 10000])
+        xtick_labels = ["0", "10", "100", "1K", "10K"]
+    ax_bar.set_xticks(xtick_vals)
+    ax_bar.set_xticklabels(xtick_labels, fontsize=5, rotation=90)
+
+    # Right panel: alpha heatmap
+    vmax = alphas.values.max()
+    norm = mcolors.Normalize(vmin=0, vmax=vmax)
+
+    hm = ax_hm.imshow(
+        alphas.values,
+        aspect="auto",
+        interpolation="none",
+        cmap="Reds",
+        norm=norm,
+    )
+
+    # Label only the top-10 signatures by mean alpha
+    top_sigs = (
+        alphas.mean(axis=0).sort_values().tail(10).index.tolist()
+    )
+    all_pos = np.arange(len(alphas.columns))
+    top_pos = [
+        i for i, c in enumerate(alphas.columns) if c in top_sigs
+    ]
+    ax_hm.set_xticks(top_pos)
+    ax_hm.set_xticklabels(
+        [alphas.columns[i] for i in top_pos], rotation=90, fontsize=5
+    )
+    ax_hm.set_xticks(all_pos, minor=True)
+
+    # Dashed horizontal lines at L_low / L_high row boundaries
+    if L_low is not None and L_high is not None:
+        idx = np.arange(len(sorted_burden))
+        low_rows = idx[sorted_burden.values < L_low]
+        if len(low_rows):
+            ax_hm.axhline(
+                low_rows.max() + 0.5,
+                color="purple",
+                linestyle="--",
+                linewidth=0.5,
+            )
+        high_rows = idx[sorted_burden.values < L_high]
+        if len(high_rows):
+            ax_hm.axhline(
+                high_rows.max() + 0.5,
+                color="purple",
+                linestyle="--",
+                linewidth=0.5,
+            )
+
+    # Colorbar
+    cbar = fig.colorbar(hm, ax=ax_hm, pad=0.02)
+    ax_hm.text(
+        1.0,
+        -0.1,
+        "Probability",
+        transform=ax_hm.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=7,
+    )
+    tick_pcts = range(0, 93, 25)
+    cbar.set_ticks([p / 100 for p in tick_pcts])
+    cbar.set_ticklabels([f"{p}%" for p in tick_pcts], fontsize=5)
+
+    plt.tight_layout(pad=0.25)
+
+    if save is not None:
+        fig.savefig(str(save), dpi=600)
+
+    if show:
+        plt.show()
+    else:
+        plt.close("all")
+
+    return fig

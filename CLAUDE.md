@@ -42,6 +42,12 @@ pytest tests/              # smoke tests
 
 ## Non-obvious rules
 
+- **`model.gammas` keys**: gene results stored by ENSG ID
+  (e.g., `"ENSG00000141510"`), variant results by display string with
+  spaces (e.g., `"KRAS p.G12D"`). To map gene keys back to symbols:
+  `mutation_db[["gene","ensembl_gene_id"]].drop_duplicates("ensembl_gene_id").set_index("ensembl_gene_id")["gene"]`
+- **Optional numeric parameters**: use `if value is not None` not
+  `if value` — 0 is a valid axis-limit value and is falsy
 - **No titles in matplotlib figures** — titles go in captions
 - Results cached as `.npy`/`.parquet`/`.nc`; use
   `force_produce_results=True` or `force_generation=True` to recompute

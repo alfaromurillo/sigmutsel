@@ -95,7 +95,7 @@ def plot_posteriors_vs_counts(
     for lbl, idata in results.items():
         g = idata.posterior["gamma"].values.flatten()
         mean = g.mean()
-        hdi_low, hdi_high = az.hdi(g, hdi_prob=0.94)
+        hdi_low, hdi_high = az.hdi(g, prob=0.94)
         rows.append(
             dict(
                 label=lbl,

@@ -2905,6 +2905,9 @@ class Model:
 
         def _save_dataframe(df, filename):
             path = directory / filename
+            if df.attrs:
+                df = df.copy()
+                df.attrs = {}
             df.to_parquet(path)
             return filename
 

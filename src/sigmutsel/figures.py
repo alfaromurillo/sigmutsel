@@ -187,7 +187,7 @@ def plot_posteriors_vs_counts(
         np.arange(tick_start, xmax + major, major).astype(int),
         fontsize=6,
     )
-    ax.plot([xmin, xmax], [1, 1], "--", color="gray", lw=1)
+    ax.axhline(1, color="gray", linestyle="--", lw=1)
 
     # legend -------------------------------------------------------------
     title = "Gene" if level == "gene" else "Variant"

@@ -73,9 +73,9 @@ def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
     minimum threshold `L_low`.
 
     If `cut_at_L_low` is True, samples with fewer than `L_low`
-    mutations are clipped to a fixed value. Otherwise, a smoothed
-    adjustment is applied:
-        ell_hat = ell + (1 - ell / L_low) * ell
+    mutations are clipped to a fixed value. Otherwise, a weighted
+    blend is applied:
+        ell_hat = (ell / L_low) * ell + (1 - ell / L_low) * L_low
 
     Parameters
     ----------
@@ -121,9 +121,9 @@ def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
         ell_hats = pd.Series(L_low_star, index=mb.index[samples_low])
     else:
         ells_low = mb["total_mutations"][samples_low]
-        ell_hats = (ells_low / L_low) * L_low_star + (
+        ell_hats = (ells_low / L_low) * ells_low + (
             1 - ells_low / L_low
-        ) * ells[samples_low]
+        ) * L_low_star
 
     ell_hats = pd.concat([ell_hats, ells[samples_not_low]])
     ell_hats = ell_hats.reindex(mb.index)

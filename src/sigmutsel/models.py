@@ -1860,13 +1860,18 @@ class Model:
         return None
 
     def assign_cov_matrix(
-        self, cov_matrix, run_pca=False, pca_kwargs=None
+        self,
+        cov_matrix,
+        run_pca=False,
+        pca_kwargs=None,
+        dr_method=None,
+        dr_kwargs=None,
     ):
         """Assign covariate matrix, restricting to dataset genes.
 
         This method assigns a covariate matrix to the model after
         reindexing it to match the genes in contexts_by_gene.
-        Optionally runs PCA on the covariates to reduce dimensionality.
+        Optionally applies dimensionality reduction to the covariates.
 
         Note: This method is automatically called during Model
         initialization if a cov_matrix is provided to the constructor
@@ -1876,7 +1881,8 @@ class Model:
         1. Only genes with context information are included
         2. Gene order matches dataset.contexts_by_gene.index
         3. Missing genes are handled appropriately
-        4. (Optional) Covariates are transformed to principal components
+        4. (Optional) Covariates are transformed via PCA or
+           Riemannian STATS
 
         Parameters
         ----------
@@ -1884,18 +1890,32 @@ class Model:
             Covariate matrix with genes as index and covariates as
             columns. Index should be Ensembl gene IDs.
         run_pca : bool, default False
-            If True, run PCA on the reindexed covariate matrix to
-            reduce dimensionality. The resulting principal components
-            replace the original covariates.
+            Deprecated shorthand for ``dr_method='pca'``. If True
+            and ``dr_method`` is None, PCA is used.
         pca_kwargs : dict or None, default None
-            Keyword arguments passed to
-            :func:`covariates_utilities.run_pca_on_covariates`.
-            Common options:
-            - n_components : int, number of PCs to keep
-            - columns : list[str], subset of columns to include in PCA
-            - standardize : bool, default True, z-score before PCA
-            - dropna : str, default 'any', how to handle NaNs
-            - **kwargs for sklearn.decomposition.PCA
+            Deprecated. Use ``dr_kwargs`` instead. Forwarded to
+            :func:`utils.run_pca_on_covariates` when ``run_pca=True``
+            and ``dr_kwargs`` is None.
+        dr_method : str or None, default None
+            Dimensionality reduction method. Options:
+
+            - ``'pca'``: sklearn PCA (see
+              :func:`utils.run_pca_on_covariates`)
+            - ``'riemannian_stats'``: Riemannian STATS (see
+              :func:`utils.run_riemannian_stats_on_covariates`)
+            - ``None``: no reduction, use covariates as-is
+
+        dr_kwargs : dict or None, default None
+            Keyword arguments forwarded to the chosen DR function.
+            Common options for both methods:
+            - n_components : int, number of components to keep
+            - columns : list[str], subset of columns to include
+            - standardize : bool, default True
+            - dropna : str, default 'any'
+            Riemannian-only:
+            - n_neighbors : int, default 15
+            - min_dist : float, default 0.1
+            - metric : str, default 'euclidean'
 
         Returns
         -------
@@ -2006,15 +2026,26 @@ class Model:
             self.dataset.contexts_by_gene.index
         )
 
-        # Optionally run PCA
-        if run_pca:
+        # backwards-compat: run_pca=True maps to dr_method='pca'
+        if run_pca and dr_method is None:
+            dr_method = "pca"
+
+        if dr_method == "pca":
             from .utils import run_pca_on_covariates
 
-            if pca_kwargs is None:
-                pca_kwargs = {}
-
+            kwargs = (
+                dr_kwargs
+                if dr_kwargs is not None
+                else (pca_kwargs or {})
+            )
             self.cov_matrix = run_pca_on_covariates(
-                reindexed, **pca_kwargs
+                reindexed, **kwargs
+            )
+        elif dr_method == "riemannian_stats":
+            from .utils import run_riemannian_stats_on_covariates
+
+            self.cov_matrix = run_riemannian_stats_on_covariates(
+                reindexed, **(dr_kwargs or {})
             )
         else:
             self.cov_matrix = reindexed

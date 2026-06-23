@@ -8,6 +8,118 @@ import pandas as pd
 from sklearn.decomposition import PCA
 
 
+def run_riemannian_stats_on_covariates(
+    cov_df: pd.DataFrame,
+    columns: list[str] | None = None,
+    n_components: int | None = None,
+    *,
+    standardize: bool = True,
+    dropna: str = "any",
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+    metric: str = "euclidean",
+) -> pd.DataFrame:
+    """Compute Riemannian principal components over gene covariates.
+
+    Uses the riemannian-stats package (UMAP-geometry-aware PCA
+    analog) to reduce dimensionality of gene-level covariates.
+
+    Parameters
+    ----------
+    cov_df : pandas.DataFrame
+        Gene-indexed covariates (index = ensembl_gene_id).
+    columns : list[str] | None
+        Subset of columns to include. If None, use all numeric cols.
+    n_components : int | None, default None
+        Number of Riemannian components to return. If None, returns
+        all components (equal to the number of input features).
+    standardize : bool, default True
+        If True, z-score features before decomposition.
+    dropna : {'any','all','none'}, default 'any'
+        How to handle NaNs across selected columns.
+    n_neighbors : int, default 15
+        Number of neighbors for the UMAP graph. Larger values
+        capture more global structure. Default 15 is UMAP's
+        conventional recommendation for gene-scale data (the
+        package default of 3 is designed for small datasets).
+    min_dist : float, default 0.1
+        UMAP minimum distance parameter.
+    metric : str, default 'euclidean'
+        Distance metric for UMAP.
+
+    Returns
+    -------
+    scores : pandas.DataFrame
+        Gene-indexed Riemannian component scores with columns
+        'RC1', 'RC2', ...
+
+        The returned DataFrame contains metadata in ``scores.attrs``:
+        - ``explained_inertia_pc1_pc2`` : float
+          Fraction of inertia explained by the first two components.
+
+    """
+    import warnings
+
+    if columns is None:
+        cols = [
+            c
+            for c in cov_df.columns
+            if pd.api.types.is_numeric_dtype(cov_df[c])
+        ]
+    else:
+        cols = columns
+
+    X = cov_df[cols].copy()
+
+    if dropna == "any":
+        X = X.dropna(how="any")
+    elif dropna == "all":
+        X = X.dropna(how="all")
+    elif dropna == "none":
+        X = X.fillna(X.mean())
+    else:
+        raise ValueError(
+            f"dropna must be 'any', 'all', or 'none', got {dropna!r}"
+        )
+
+    if standardize:
+        X = (X - X.mean()) / X.std()
+
+    # riemannian_analysis requires a DataFrame (not bare numpy)
+    X_df = pd.DataFrame(X.values, columns=cols)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from riemannian_stats import riemannian_analysis, utilities
+
+    analysis = riemannian_analysis(
+        X_df,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        metric=metric,
+    )
+    corr = analysis.riemannian_correlation_matrix()
+    all_comps = (
+        analysis.riemannian_components_from_data_and_correlation(corr)
+    )
+
+    k = (
+        n_components
+        if n_components is not None
+        else all_comps.shape[1]
+    )
+    scores = all_comps[:, :k]
+
+    rc_names = [f"RC{i+1}" for i in range(k)]
+    result = pd.DataFrame(scores, index=X.index, columns=rc_names)
+
+    result.attrs["explained_inertia_pc1_pc2"] = (
+        utilities.pca_inertia_by_components(corr, 0, 1)
+    )
+
+    return result
+
+
 def run_pca_on_covariates(
     cov_df: pd.DataFrame,
     columns: list[str] | None = None,

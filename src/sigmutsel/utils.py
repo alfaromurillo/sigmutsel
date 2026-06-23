@@ -21,8 +21,17 @@ def run_riemannian_stats_on_covariates(
 ) -> pd.DataFrame:
     """Compute Riemannian principal components over gene covariates.
 
-    Uses the riemannian-stats package (UMAP-geometry-aware PCA
-    analog) to reduce dimensionality of gene-level covariates.
+    Implements the riemannian-stats algorithm (Rodriguez et al.):
+    UMAP-geometry-aware PCA where the centering and standardization
+    are done with respect to the Riemannian mean (the point with
+    minimum total UMAP-weighted distance to all others) and
+    pairwise differences are scaled by rho = 1 - UMAP_similarity.
+
+    This implementation avoids the O(n²·p) memory bottleneck of the
+    reference package by computing the Riemannian covariance without
+    materialising the (n, n, p) difference tensor. Memory usage is
+    O(n²) for the UMAP graph and O(n·p) for the data, which is
+    feasible at genome scale.
 
     Parameters
     ----------
@@ -32,16 +41,15 @@ def run_riemannian_stats_on_covariates(
         Subset of columns to include. If None, use all numeric cols.
     n_components : int | None, default None
         Number of Riemannian components to return. If None, returns
-        all components (equal to the number of input features).
+        all p components.
     standardize : bool, default True
         If True, z-score features before decomposition.
     dropna : {'any','all','none'}, default 'any'
         How to handle NaNs across selected columns.
     n_neighbors : int, default 15
-        Number of neighbors for the UMAP graph. Larger values
-        capture more global structure. Default 15 is UMAP's
+        Number of neighbors for the UMAP graph. 15 is UMAP's
         conventional recommendation for gene-scale data (the
-        package default of 3 is designed for small datasets).
+        riemannian-stats package default of 3 suits iris-size data).
     min_dist : float, default 0.1
         UMAP minimum distance parameter.
     metric : str, default 'euclidean'
@@ -53,12 +61,12 @@ def run_riemannian_stats_on_covariates(
         Gene-indexed Riemannian component scores with columns
         'RC1', 'RC2', ...
 
-        The returned DataFrame contains metadata in ``scores.attrs``:
-        - ``explained_inertia_pc1_pc2`` : float
-          Fraction of inertia explained by the first two components.
+        ``scores.attrs["explained_inertia"]`` : ndarray of shape (k,)
+          Fraction of total Riemannian inertia per component.
 
     """
     import warnings
+    import numpy as np
 
     if columns is None:
         cols = [
@@ -85,36 +93,71 @@ def run_riemannian_stats_on_covariates(
     if standardize:
         X = (X - X.mean()) / X.std()
 
-    # riemannian_analysis requires a DataFrame (not bare numpy)
-    X_df = pd.DataFrame(X.values, columns=cols)
+    X_vals = X.values.astype(float)
+    n, p = X_vals.shape
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        from riemannian_stats import riemannian_analysis, utilities
+        import umap as _umap
 
-    analysis = riemannian_analysis(
-        X_df,
+    # Build UMAP sparse graph → rho = 1 - similarity
+    reducer = _umap.UMAP(
         n_neighbors=n_neighbors,
         min_dist=min_dist,
         metric=metric,
     )
-    corr = analysis.riemannian_correlation_matrix()
-    all_comps = (
-        analysis.riemannian_components_from_data_and_correlation(corr)
+    reducer.fit(X_vals)
+    sim_sparse = reducer.graph_
+
+    # Find Riemannian mean: argmin of sum_j rho[i,j]*||x_i - x_j||
+    # = sum_j ||x_i-x_j|| - sum_{j in nbrs(i)} sim[i,j]*||x_i-x_j||
+    # Compute sum_j ||x_i - x_j|| row by row to keep memory at O(n·p)
+    row_dist_sums = np.zeros(n)
+    for i in range(n):
+        row_dist_sums[i] = np.linalg.norm(
+            X_vals[i] - X_vals, axis=1
+        ).sum()
+
+    # Sparse correction for the neighbor-similarity term
+    sim_coo = sim_sparse.tocoo()
+    for i, j, s in zip(sim_coo.row, sim_coo.col, sim_coo.data):
+        row_dist_sums[i] -= s * np.linalg.norm(X_vals[i] - X_vals[j])
+
+    mean_idx = int(np.argmin(row_dist_sums))
+
+    # rho column at mean_idx (sparse → dense; mostly 1s)
+    rho_col = (
+        1.0
+        - np.array(sim_sparse.getcol(mean_idx).todense()).flatten()
     )
 
-    k = (
-        n_components
-        if n_components is not None
-        else all_comps.shape[1]
+    # Riemannian-mean-centred data: shape (n, p)
+    centered = rho_col[:, None] * (X_vals - X_vals[mean_idx])
+
+    # Riemannian covariance and correlation (p × p)
+    cov = (centered.T @ centered) / n
+    d = np.sqrt(np.diag(cov))
+    corr = cov / np.outer(d, d)
+
+    # Eigendecomposition (eigh exploits symmetry)
+    eigenvalues, eigenvectors = np.linalg.eigh(corr)
+    order = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+
+    # Riemannian standardise then project
+    riemannian_std = np.sqrt((centered**2).sum(axis=0) / n)
+    scores_all = (centered / riemannian_std) @ eigenvectors
+
+    k = n_components if n_components is not None else p
+    rc_names = [f"RC{i + 1}" for i in range(k)]
+    result = pd.DataFrame(
+        scores_all[:, :k].real, index=X.index, columns=rc_names
     )
-    scores = all_comps[:, :k]
 
-    rc_names = [f"RC{i+1}" for i in range(k)]
-    result = pd.DataFrame(scores, index=X.index, columns=rc_names)
-
-    result.attrs["explained_inertia_pc1_pc2"] = (
-        utilities.pca_inertia_by_components(corr, 0, 1)
+    total = np.abs(eigenvalues).sum()
+    result.attrs["explained_inertia"] = (
+        np.abs(eigenvalues[:k]) / total
     )
 
     return result

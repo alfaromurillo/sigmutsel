@@ -38,10 +38,18 @@ pytest tests/              # smoke tests
 | `constants.py` | Central parameters (SBS96 types, chr list) |
 | `locations.py` | Data file paths; respects `SIGMUTSEL_DATA_DIR` |
 | `figures.py` | γ posterior scatter plots; **no titles** |
-| `utils.py` | `run_pca_on_covariates` and other helpers |
+| `utils.py` | `run_pca_on_covariates`, `run_riemannian_stats_on_covariates` |
 
 ## Non-obvious rules
 
+- `assign_cov_matrix` accepts `dr_method='pca'|'riemannian_stats'` and
+  `dr_kwargs={}`; `run_pca=True` still works as a backwards-compat alias
+- Riemannian STATS requires `pip install riemannian-stats` (optional dep,
+  `sigmutsel[riemannian]`); import is lazy so the package is not required
+  at load time
+- The `riemannian-stats` PyPI package has an O(n²·p) memory bottleneck;
+  `run_riemannian_stats_on_covariates` reimplements the same algorithm
+  without that tensor — safe at genome scale (n~18k, p~223)
 - **`model.gammas` keys**: gene results stored by ENSG ID
   (e.g., `"ENSG00000141510"`), variant results by display string with
   spaces (e.g., `"KRAS p.G12D"`). To map gene keys back to symbols:

@@ -7,6 +7,8 @@ package, including PCA operations and data transformations.
 import pandas as pd
 from sklearn.decomposition import PCA
 
+from . import constants
+
 
 def run_riemannian_stats_on_covariates(
     cov_df: pd.DataFrame,
@@ -105,6 +107,7 @@ def run_riemannian_stats_on_covariates(
         n_neighbors=n_neighbors,
         min_dist=min_dist,
         metric=metric,
+        random_state=constants.random_seed,
     )
     reducer.fit(X_vals)
     sim_sparse = reducer.graph_

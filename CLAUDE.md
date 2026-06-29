@@ -66,6 +66,22 @@ pytest tests/              # smoke tests
   uses `False` (type-dependent), the baseline model uses `True`
 - `cov_effects_per_sigma=True` enables per-signature covariate
   effects; this is experimental and requires `signature_selection`
+- `constants.random_seed` controls UMAP reproducibility in
+  `run_riemannian_stats_on_covariates`; default is `None` (stochastic).
+  Callers override at runtime via `import sigmutsel.constants;
+  sigmutsel.constants.random_seed = 777` — do NOT use
+  `from sigmutsel.constants import random_seed; random_seed = 777`
+  (that only rebinds a local name and has no effect)
+- Riemannian components are nested when seed is fixed: RC1..RC_k from
+  an nc=k run are bit-identical to the first k columns of an nc=N (N>k)
+  run. Without a seed, separate calls produce different UMAP graphs and
+  thus different components
+- UMAP `n_neighbors` has negligible effect on passenger-gene R² across
+  the range [5,50]; `n_components` is the lever that matters (R² rises
+  from 0.648 at nc=5 to 0.693 at nc=30, knee at nc≈20)
+- Explained inertia of `cov_matrix_full` has a sharp elbow: RC1=52%,
+  RC2=22%, RC3=3% — but predictive R² keeps improving well past nc=3,
+  so inertia and R² tell different stories
 
 ## Testing
 

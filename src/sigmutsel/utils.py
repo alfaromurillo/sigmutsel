@@ -49,9 +49,10 @@ def run_riemannian_stats_on_covariates(
     dropna : {'any','all','none'}, default 'any'
         How to handle NaNs across selected columns.
     n_neighbors : int, default 15
-        Number of neighbors for the UMAP graph. 15 is UMAP's
-        conventional recommendation for gene-scale data (the
-        riemannian-stats package default of 3 suits iris-size data).
+        Number of neighbors for the UMAP graph. 15 is the umap-learn
+        library default (the riemannian-stats package uses 3, calibrated
+        for iris-size data). Grid search on COAD showed n_neighbors has
+        negligible effect on R² across [5, 50]; n_components matters more.
     min_dist : float, default 0.1
         UMAP minimum distance parameter.
     metric : str, default 'euclidean'

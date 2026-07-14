@@ -59,8 +59,11 @@ pytest tests/              # smoke tests
 - **No titles in matplotlib figures** — titles go in captions
 - Results cached as `.npy`/`.parquet`/`.nc`; use
   `force_produce_results=True` or `force_generation=True` to recompute
-- `cancer_epistasis` uses μ values from this pipeline — do not
-  change `mu_gs` column names or array shapes
+- `cancer_epistasis`'s current code does **not** read this
+  pipeline's μ output — it hardcodes 5 LUAD genes' rates from
+  cancereffectsizeR (`cancer_epistasis/code/mutation_rates.py`).
+  Don't assume a live handoff exists until that integration is
+  actually built.
 - The `prob_g_tau_tau_independent` flag selects between two
   mathematical paths in `compute_mu_g_per_tumor`; the COAD analysis
   uses `False` (type-dependent), the baseline model uses `True`

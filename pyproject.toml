@@ -45,7 +45,7 @@ dev = [
     "black==25.12.0",
     "ruff>=0.1.0",
 ]
-riemannian = ["riemannian-stats"]
+riemannian = ["riemannian-stats", "umap-learn>=0.5.7"]
 
 [project.scripts]
 sigmutsel-setup = "sigmutsel.setup:main"

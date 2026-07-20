@@ -8,12 +8,15 @@ Cancer Gene Census.
 
 import re
 
-from collections.abc import Sequence
+from pathlib import Path
+from collections.abc import Iterable, Sequence
 
 import pandas as pd
 import numpy as np
 
-from .locations import location_cancer_gene_census
+from Bio import SeqIO
+
+from .locations import location_cancer_gene_census, location_cds_fasta
 
 import logging
 
@@ -281,3 +284,98 @@ def filter_passenger_genes_ensembl(
 
     mask = (~db_ids_norm.isin(cgc_set)) & (db["variant"].notna())
     return db.loc[mask, "ensembl_gene_id"].unique()
+
+
+def filter_giant_non_driver_genes(
+    genes: Iterable[str] | None = None,
+    threshold_bp: int = 20_000,
+    fasta_files: str | Path | list[str | Path] | None = None,
+) -> np.ndarray:
+    """Return giant genes with no evidence of being cancer drivers.
+
+    Very long genes (e.g. TTN, OBSCN, SYNE1) accumulate large numbers
+    of passenger mutations simply because they present more coding
+    sequence to hit, independent of selection. In per-gene selection
+    models this can make the highest mutation-count genes dominated
+    by such length-driven outliers rather than true drivers, and can
+    even destabilize inference (e.g. degenerate posteriors, MCMC
+    sampling failures) for genes whose mutation counts stem from size
+    rather than biology.
+
+    A gene is flagged when the longest annotated transcript for its
+    symbol has a CDS at least `threshold_bp` long **and** the symbol
+    is absent from the Cancer Gene Census -- large genes that *are*
+    census-listed drivers (e.g. MUC16, MUC4, KMT2D) are kept.
+
+    The 20 kb default is an empirical cutoff (not read off a single
+    published number), chosen because it separates exactly this kind
+    of size-driven outlier from the rest of the genome in practice.
+    It is consistent with the literature documenting the artifact:
+    Lawrence et al. 2013, Nature, "Mutational heterogeneity in cancer
+    and the search for new cancer-associated genes" (flags TTN,
+    MUC16, OBSCN and similar giant genes as recurrent false
+    positives from a length/replication-timing-driven background
+    rate); and Shyr et al. 2014, BMC Genomics, "FLAGS: a flexible and
+    adaptable statistical method to generate a list of frequently
+    mutated genes for driver discovery" (a curated, citable list of
+    such genes, also dominated by giant genes like TTN and the
+    mucins).
+
+    Parameters
+    ----------
+    genes : iterable of str, optional
+        Gene symbols to check. If None, every gene symbol found in
+        `fasta_files` is considered.
+    threshold_bp : int, default 20_000
+        Minimum longest-transcript CDS length, in base pairs (i.e.
+        ~20 kb by default), for a gene to be flagged as "giant".
+    fasta_files : str, Path, or list, optional
+        FASTA file(s) to read gene lengths from. Defaults to
+        `locations.location_cds_fasta`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Gene symbols that are both longer than `threshold_bp` and
+        absent from the Cancer Gene Census.
+    """
+    if fasta_files is None:
+        fasta_files = location_cds_fasta
+    if isinstance(fasta_files, (str, Path)):
+        fasta_files = [fasta_files]
+    fasta_paths = [Path(p) for p in fasta_files]
+
+    keep = None if genes is None else set(genes)
+
+    longest_bp: dict[str, int] = {}
+    for fasta in fasta_paths:
+        for rec in SeqIO.parse(fasta, "fasta"):
+            symbol = None
+            is_protein_coding = False
+            for tok in rec.description.split():
+                if tok.startswith("gene_symbol:"):
+                    symbol = tok.split(":", 1)[1]
+                elif tok == "transcript_biotype:protein_coding":
+                    is_protein_coding = True
+            if symbol is None or not is_protein_coding:
+                # Non-protein-coding biotypes (e.g. nonsense_mediated_
+                # decay) can carry retained-intron sequence annotated
+                # as "CDS", inflating length well past the real ORF.
+                continue
+            if keep is not None and symbol not in keep:
+                continue
+
+            length = len(rec.seq)
+            if length > longest_bp.get(symbol, 0):
+                longest_bp[symbol] = length
+
+    giant = {
+        symbol
+        for symbol, length in longest_bp.items()
+        if length >= threshold_bp
+    }
+
+    census = pd.read_csv(location_cancer_gene_census, sep="\t")
+    cancer_genes = set(census["Gene Symbol"].unique())
+
+    return np.array(sorted(giant - cancer_genes))

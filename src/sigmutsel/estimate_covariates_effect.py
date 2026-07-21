@@ -25,7 +25,7 @@ import logging
 
 from .estimate_presence import filter_passenger_genes_ensembl
 
-from .constants import random_seed
+from . import constants
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +269,9 @@ def estimate_covariates_effect(
             logger.info(
                 f"Finding MAP estimate for {n_coeffs} coefficient(s)"
             )
-            results = pm.find_MAP(**kwargs)
+            results = pm.find_MAP(
+                seed=constants.random_seed, **kwargs
+            )
             logger.info("MAP optimization completed")
         else:
             logger.info(
@@ -283,6 +285,7 @@ def estimate_covariates_effect(
                 tune=burn,
                 chains=chains,
                 target_accept=0.9,
+                random_seed=constants.random_seed,
                 **kwargs,
             )
             logger.info("MCMC sampling completed")
@@ -538,7 +541,7 @@ def estimate_all_cov_effects(
                 # then we restrict to only `sample` random genes
                 genes_to_consider = pd.Index(
                     genes_to_consider.to_series().sample(
-                        sample, random_state=random_seed
+                        sample, random_state=constants.random_seed
                     )
                 )
 

@@ -17,7 +17,7 @@ import arviz as az
 
 import logging
 
-from .constants import random_seed
+from . import constants
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +69,6 @@ def estimate_gamma_from_mus(
     save_name : str or None, default=None
         If provided, saves the posterior trace to this path.
 
-    random_seed : int, default=777
-        Seed used to control randomness for reproducibility.
-
     kwargs : dict or None, default=None
         Additional arguments to pass to :func:`pymc.sample` or
         :func:`pymc.find_MAP`.
@@ -91,6 +88,13 @@ def estimate_gamma_from_mus(
     ------
     RuntimeError
         If sampling fails after all retries.
+
+    Notes
+    -----
+    Uses ``sigmutsel.constants.random_seed`` for reproducibility.
+    Left unset (``None``) by default; set it explicitly (e.g. in the
+    calling application, before running the pipeline) to make
+    sampling reproducible across runs and machines.
 
     """
     mus_all = np.concatenate([mus_yes, mus_no])
@@ -119,13 +123,15 @@ def estimate_gamma_from_mus(
                 )
 
                 if draws == 1:
-                    results = pm.find_MAP(**kwargs)
+                    results = pm.find_MAP(
+                        seed=constants.random_seed, **kwargs
+                    )
                 else:
                     results = pm.sample(
                         draws=int(draws / chains),
                         chains=chains,
                         tune=burn,
-                        random_seed=random_seed,
+                        random_seed=constants.random_seed,
                         **kwargs,
                     )
 

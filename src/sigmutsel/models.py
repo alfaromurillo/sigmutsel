@@ -1381,6 +1381,76 @@ class MutationDataset:
         print("")
 
 
+def _aggregate_signature_dict(
+    sig_dict, signature_selection, include_other=False
+):
+    """Aggregate a {signature: DataFrame} dict per signature_selection.
+
+    Shared grouping logic behind :meth:`Model.aggregate_signatures`,
+    factored out so it can also be applied to ``mu_taus`` (not just
+    ``base_mus``) when a model was built with ``signature_selection``
+    --- summation commutes with the later gene/type mixing, so
+    aggregating raw per-signature ``mu_taus`` first gives the same
+    result as aggregating the derived per-signature ``base_mus``.
+    See :meth:`Model.aggregate_signatures` for the grouping rules.
+    """
+    aggregated = {}
+    matched_signatures = set()
+
+    for item in signature_selection:
+        if isinstance(item, (tuple, list)):
+            group_name = "+".join(item)
+            group_sum = None
+            for sig in item:
+                if sig in sig_dict:
+                    matched_signatures.add(sig)
+                    if group_sum is None:
+                        group_sum = sig_dict[sig].copy()
+                    else:
+                        group_sum += sig_dict[sig]
+            if group_sum is not None:
+                aggregated[group_name] = group_sum
+
+        elif isinstance(item, str):
+            if item in sig_dict:
+                aggregated[item] = sig_dict[item].copy()
+                matched_signatures.add(item)
+            else:
+                matching_sigs = [
+                    sig
+                    for sig in sig_dict.keys()
+                    if sig.startswith(item)
+                ]
+
+                if matching_sigs:
+                    agg_sum = None
+                    for sig in matching_sigs:
+                        matched_signatures.add(sig)
+                        if agg_sum is None:
+                            agg_sum = sig_dict[sig].copy()
+                        else:
+                            agg_sum += sig_dict[sig]
+                    aggregated[item] = agg_sum
+
+    if include_other:
+        other_sigs = [
+            sig
+            for sig in sig_dict.keys()
+            if sig not in matched_signatures
+        ]
+
+        if other_sigs:
+            other_sum = None
+            for sig in other_sigs:
+                if other_sum is None:
+                    other_sum = sig_dict[sig].copy()
+                else:
+                    other_sum += sig_dict[sig]
+            aggregated["other"] = other_sum
+
+    return aggregated
+
+
 @dataclass(repr=False, init=False)
 class Model:
     """Signature based, mutation and selection model.
@@ -2792,6 +2862,123 @@ class Model:
             show=show,
         )
 
+    def _compute_mu_g_taus(self, use_cov_effects=True):
+        """Compute per-gene, per-type, per-sample mutation rates.
+
+        Mirrors :meth:`compute_mu_gs`, but keeps mutation type τ as
+        a separate axis instead of summing over it: this is
+        ``mu_{g,tau}^{j}``, the quantity :meth:`compute_mu_ms`
+        needs (and divides by ``n_{g,c(tau)}``) to derive
+        variant-level rates. Using the gene *total* (summed over
+        all 96 types, as ``mu_gs`` is) there would be wrong --- it
+        would divide an all-type total by a single type's context
+        count.
+
+        Returns
+        -------
+        dict[str, pd.DataFrame]
+            Mapping from mutation type τ (from
+            ``constants.canonical_types_order``) to a Genes ×
+            Tumors DataFrame of ``mu_{g,tau}^{j}``, covariate-scaled
+            when ``use_cov_effects`` and covariate effects are
+            available (same scaling ``compute_mu_gs`` applies, just
+            not yet summed over τ).
+        """
+        from .constants import canonical_types_order
+        from .estimate_mus import compute_mu_g_per_tumor
+        from .estimate_mus import compute_mus_per_gene_per_sample
+
+        signature_separated = isinstance(self._mu_taus, dict)
+
+        # self._base_mus may have been aggregated (e.g. 30 raw
+        # signatures -> 5 signature_selection groups, via
+        # aggregate_signatures), while self._mu_taus stays
+        # un-aggregated -- cov_effects is fit against the aggregated
+        # groups, so it must be applied to per-tau mu_taus grouped
+        # the same way. Summation commutes with the later gene/type
+        # mixing, so aggregating raw mu_taus first is equivalent to
+        # aggregating the derived base_mus, as aggregate_signatures
+        # does.
+        mu_taus_for_g_taus = self._mu_taus
+        if signature_separated and isinstance(self._base_mus, dict):
+            if set(self._mu_taus.keys()) != set(
+                self._base_mus.keys()
+            ):
+                # _auto_signature_selection is a construction-time
+                # convenience field and isn't restored by
+                # load_model(), so prefer it when available (it may
+                # carry tuple/'+' groupings) but fall back to
+                # reconstructing the grouping from base_mus' own
+                # keys, splitting any "sigA+sigB" name back into a
+                # tuple. This matches what aggregate_signatures
+                # would have been called with, since base_mus'
+                # keys *are* the resulting group names.
+                selection = self._auto_signature_selection or [
+                    tuple(key.split("+")) if "+" in key else key
+                    for key in self._base_mus.keys()
+                ]
+                mu_taus_for_g_taus = _aggregate_signature_dict(
+                    self._mu_taus, selection
+                )
+
+        use_cov = (
+            use_cov_effects
+            and self.cov_effects is not None
+            and self.cov_matrix is not None
+        )
+
+        # Computed one tau at a time (not separate_per_tau=True for
+        # all 96 at once): a full genes x tumors x 96-types x
+        # n_signatures tensor can be tens of GB for realistic gene
+        # and sample counts, so each tau's baseline is built,
+        # covariate-scaled, and freed before moving to the next.
+        result = {}
+        for tau in canonical_types_order:
+            base_g_tau = compute_mu_g_per_tumor(
+                mu_taus=mu_taus_for_g_taus,
+                contexts_by_gene=self.dataset.contexts_by_gene,
+                prob_g_tau_tau_independent=(
+                    self.prob_g_tau_tau_independent
+                ),
+                separate_per_tau=[tau],
+            )
+
+            if signature_separated:
+                baseline_tau = {
+                    sigma: base_g_tau[sigma][tau]
+                    for sigma in base_g_tau
+                }
+                baseline_total = sum(baseline_tau.values())
+            else:
+                baseline_tau = base_g_tau[tau]
+                baseline_total = baseline_tau
+
+            if not use_cov:
+                result[tau] = baseline_total
+                continue
+
+            scaled = compute_mus_per_gene_per_sample(
+                db=self.dataset.mutation_db,
+                base_mus=baseline_tau,
+                cov_effect=self.cov_effects,
+                cov_matrix=self.cov_matrix,
+            )
+
+            # Genes without covariate coverage keep their baseline
+            # rate, mirroring compute_mu_gs's
+            # assign_base_mus_to_rest behavior.
+            missing_genes = baseline_total.index.difference(
+                scaled.index
+            )
+            if missing_genes.any():
+                scaled = pd.concat(
+                    [scaled, baseline_total.loc[missing_genes]]
+                )
+
+            result[tau] = scaled
+
+        return result
+
     def compute_mu_ms(self, use_cov_effects=True, **kwargs):
         """Compute per-variant mutation rates per sample.
 
@@ -2857,15 +3044,16 @@ class Model:
                 "Call compute_base_mus() first."
             )
 
-        # Choose which mutation rates to use
-        if use_cov_effects and self._mu_gs is not None:
-            mu_g_j = self._mu_gs
-        else:
-            mu_g_j = self.base_mus
+        # Per-type gene rates: mu_ms needs the type-tau-specific share
+        # of each gene's rate, not the gene total (self.mu_gs / self.
+        # base_mus), so that dividing by n_{g,c(tau)} is correct.
+        mu_g_tau_j = self._compute_mu_g_taus(
+            use_cov_effects=use_cov_effects
+        )
 
         self.mu_ms = compute_mu_m_per_tumor(
             variants_df=self.dataset.variant_db,
-            mu_g_j=mu_g_j,
+            mu_g_tau_j=mu_g_tau_j,
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
             **kwargs,
@@ -5000,67 +5188,11 @@ class Model:
                 "before compute_base_mus()."
             )
 
-        aggregated = {}
-        matched_signatures = set()
-
-        # Process each item in signature_selection
-        for item in signature_selection:
-            # Case 1: Tuple/list - explicit grouping
-            if isinstance(item, (tuple, list)):
-                group_name = "+".join(item)
-                group_sum = None
-                for sig in item:
-                    if sig in self._base_mus:
-                        matched_signatures.add(sig)
-                        if group_sum is None:
-                            group_sum = self._base_mus[sig].copy()
-                        else:
-                            group_sum += self._base_mus[sig]
-                if group_sum is not None:
-                    aggregated[group_name] = group_sum
-
-            # Case 2: String - exact match or prefix aggregation
-            elif isinstance(item, str):
-                # Try exact match first
-                if item in self._base_mus:
-                    aggregated[item] = self._base_mus[item].copy()
-                    matched_signatures.add(item)
-                else:
-                    # Prefix aggregation
-                    matching_sigs = [
-                        sig
-                        for sig in self._base_mus.keys()
-                        if sig.startswith(item)
-                    ]
-
-                    if matching_sigs:
-                        agg_sum = None
-                        for sig in matching_sigs:
-                            matched_signatures.add(sig)
-                            if agg_sum is None:
-                                agg_sum = self._base_mus[sig].copy()
-                            else:
-                                agg_sum += self._base_mus[sig]
-                        aggregated[item] = agg_sum
-
-        # Add 'other' category if requested
-        if include_other:
-            other_sigs = [
-                sig
-                for sig in self._base_mus.keys()
-                if sig not in matched_signatures
-            ]
-
-            if other_sigs:
-                other_sum = None
-                for sig in other_sigs:
-                    if other_sum is None:
-                        other_sum = self._base_mus[sig].copy()
-                    else:
-                        other_sum += self._base_mus[sig]
-                aggregated["other"] = other_sum
-
         # Replace base_mus with aggregated version
-        self._base_mus = aggregated
+        self._base_mus = _aggregate_signature_dict(
+            self._base_mus,
+            signature_selection,
+            include_other=include_other,
+        )
 
         return self._base_mus

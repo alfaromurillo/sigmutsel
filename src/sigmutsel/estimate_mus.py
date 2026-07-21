@@ -172,6 +172,7 @@ def compute_mu_g_per_tumor(
     mu_taus: pd.DataFrame | dict[int | str, pd.DataFrame],
     contexts_by_gene,
     prob_g_tau_tau_independent=False,
+    separate_per_tau=False,
 ) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
     """Compute baseline per-gene expected mutation rate per tumor.
 
@@ -236,19 +237,40 @@ def compute_mu_g_per_tumor(
         tumor total rate ``sum_tau mu_{j,tau}``.
         If False, compute type-specific ``p(g | tau)`` by normalizing
         context counts *per column* and mix with ``mu_{j,tau}``.
+    separate_per_tau : bool | Sequence[str], default False
+        If True, do not sum over mutation types τ: return the
+        per-type gene rate ``mu_{g,tau}^{j}`` needed by
+        :func:`compute_mu_m_per_tumor` to correctly derive
+        variant-level rates. See Returns.
+        Materializing all 96 types at once is O(genes × tumors ×
+        96) (× n_signatures in dict mode), which can exhaust memory
+        for large gene/tumor counts. Pass a subset of
+        ``constants.canonical_types_order`` (e.g. a single τ) to
+        compute just those types and bound memory --- the intended
+        use is to loop over types one (or a few) at a time.
 
     Returns
     -------
     pandas.DataFrame | dict[int | str, pandas.DataFrame]
-        **When mu_taus is a DataFrame:**
+        **When mu_taus is a DataFrame and separate_per_tau=False:**
             Single DataFrame with Genes × Tumors. Index =
             ``ensembl_gene_id``, columns = tumor barcodes. Each cell
             is the expected mutation rate for that gene in that tumor.
 
-        **When mu_taus is a dict:**
+        **When mu_taus is a dict and separate_per_tau=False:**
             Dictionary mapping signature identifiers to DataFrames,
             each shaped (genes × tumors), containing per-gene
             mutation rates attributable to that signature alone.
+
+        **When mu_taus is a DataFrame and separate_per_tau=True:**
+            Dictionary mapping each mutation type τ (from
+            ``constants.canonical_types_order``) to a Genes × Tumors
+            DataFrame of ``mu_{g,tau}^{j}``, i.e. the type-τ share of
+            gene g's rate --- *not* summed over τ.
+
+        **When mu_taus is a dict and separate_per_tau=True:**
+            Nested dictionary: signature -> {τ: Genes × Tumors
+            DataFrame}, i.e. the per-signature version of the above.
 
     Notes
     -----
@@ -260,6 +282,13 @@ def compute_mu_g_per_tumor(
         ``out[g, j] = sum_tau mu_{j,tau} * p(g | tau)``,
         where ``p(g | tau)`` is the gene's share of opportunities for
         the trinucleotide underlying ``tau``.
+
+    With ``separate_per_tau=True``, the summand ``mu_{j,tau} * p(g |
+    tau)`` (or ``mu_{j,tau} * p(g)`` in the τ-independent case) is
+    returned per τ instead of summed --- this is ``mu_{g,tau}^{j}``,
+    the quantity :func:`compute_mu_m_per_tumor` divides by
+    ``n_{g,c(tau)}`` to get the per-variant rate. Summing the
+    per-τ dict over τ recovers the ``separate_per_tau=False`` result.
 
     The function expects ``mu_taus`` columns (or dictionary values'
     columns) to match ``constants.canonical_types_order`` exactly.
@@ -277,9 +306,19 @@ def compute_mu_g_per_tumor(
                 mu_taus=mu_tau_sigma,
                 contexts_by_gene=contexts_by_gene,
                 prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+                separate_per_tau=separate_per_tau,
             )
             for sigma, mu_tau_sigma in mu_taus.items()
         }
+
+    from .constants import canonical_types_order
+    from .constants import extract_context
+
+    tau_list = (
+        canonical_types_order
+        if separate_per_tau is True
+        else list(separate_per_tau) if separate_per_tau else None
+    )
 
     # Original single-DataFrame logic
     if prob_g_tau_tau_independent:
@@ -287,14 +326,18 @@ def compute_mu_g_per_tumor(
             contexts_by_gene.values
         )
 
-        mu_tumor = mu_taus.sum(axis=1)
-
-        out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
+        if tau_list is not None:
+            out = {
+                tau: probs_g.to_frame(0).dot(
+                    mu_taus[tau].to_frame(0).T
+                )
+                for tau in tau_list
+            }
+        else:
+            mu_tumor = mu_taus.sum(axis=1)
+            out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
 
     else:
-        from .constants import canonical_types_order
-        from .constants import extract_context
-
         probs_g_context = contexts_by_gene / contexts_by_gene.sum(
             axis=0
         )
@@ -304,9 +347,21 @@ def compute_mu_g_per_tumor(
         ]
         probs_g_tau.columns = canonical_types_order
 
-        out = probs_g_tau.dot(mu_taus[canonical_types_order].T)
+        if tau_list is not None:
+            out = {
+                tau: probs_g_tau[tau]
+                .to_frame(0)
+                .dot(mu_taus[tau].to_frame(0).T)
+                for tau in tau_list
+            }
+        else:
+            out = probs_g_tau.dot(mu_taus[canonical_types_order].T)
 
-    out.index.name = "ensembl_gene_id"
+    if tau_list is not None:
+        for tau_out in out.values():
+            tau_out.index.name = "ensembl_gene_id"
+    else:
+        out.index.name = "ensembl_gene_id"
 
     return out
 
@@ -790,15 +845,17 @@ def compute_mus_per_gene_per_sample(
 
 def compute_mu_m_per_tumor(
     variants_df: pd.DataFrame,
-    mu_g_j: pd.DataFrame | dict[int | str, pd.DataFrame],
+    mu_g_tau_j: dict[str, pd.DataFrame],
     contexts_by_gene: pd.DataFrame,
     prob_g_tau_tau_independent=False,
 ) -> pd.DataFrame:
-    """Compute per-variant expected mutation rate per tumor.
+    r"""Compute per-variant expected mutation rate per tumor.
 
-    Transform gene-level mutation rates into variant-level rates by
-    accounting for the number of mutational opportunities (contexts)
-    each variant has within its gene.
+    Transform gene-level, per-type mutation rates into variant-level
+    rates: for variant m of type τ in gene g,
+    ``μ_{m}^{j} = μ_{g,tau}^{j} / n_{g,c(tau)}``, i.e. the type-τ
+    share of gene g's rate, split evenly across the ``n_{g,c(tau)}``
+    occurrences of τ's source context in gene g.
 
     Parameters
     ----------
@@ -810,13 +867,16 @@ def compute_mu_m_per_tumor(
         - 'gene': gene symbol
         Index should be variant identifiers (e.g., 'KRAS p.G12D').
 
-    mu_g_j : pd.DataFrame or dict[int | str, pd.DataFrame]
-        Genes × tumors matrix of mutation rates, or dictionary of
-        such matrices (one per signature in multi-signature mode).
-        When dict: mutation rates are summed across all signatures.
+    mu_g_tau_j : dict[str, pandas.DataFrame]
+        Mapping from mutation type τ (as in
+        ``constants.canonical_types_order``) to a Genes × Tumors
+        DataFrame of ``μ_{g,tau}^{j}`` --- the type-τ share of each
+        gene's rate, *not* summed over τ. As returned by
+        :func:`compute_mu_g_per_tumor` with ``separate_per_tau=True``
+        (dict-of-signature input there must already be summed over
+        signature per τ before being passed here).
         Index: Ensembl gene IDs (e.g., 'ENSG00000133703').
         Columns: tumor barcodes (e.g., 'TCGA-5M-A8F6-...').
-        Values: expected mutation rate for each gene in each tumor.
 
     contexts_by_gene : pandas.DataFrame
         Gene-level trinucleotide context counts.
@@ -832,82 +892,47 @@ def compute_mu_m_per_tumor(
         the data of gene-specific context counts may not reflect the
         mutation data calling. If False (default), uses gene-specific
         context counts for each mutation type. This setting should
-        reflect that one used to compute the mu_g_j, when using
-        :func:`compute_mu_g_per_tumor`
+        match the one used to compute ``mu_g_tau_j``, via
+        :func:`compute_mu_g_per_tumor`.
 
     Returns
     -------
     pandas.DataFrame
         Variants × tumors matrix.
         Index: variant identifiers from ``variants_df.index``.
-        Columns: tumor barcodes (same as ``mu_g_j.columns``).
+        Columns: tumor barcodes (same as the ``mu_g_tau_j`` values').
         Values: expected mutation rate for each variant in each tumor.
 
     Notes
     -----
     The calculation proceeds in three steps:
 
-    1. Extract trinucleotide contexts from mutation types:
-       'G[C>T]G' → 'GCG'
+    1. Extract the trinucleotide context from each variant's
+       mutation type(s): 'G[C>T]G' → 'GCG'.
 
-    2. Count context opportunities per variant:
+    2. Look up ``n_{g,c(tau)}``, the number of occurrences of that
+       context in the variant's gene (from ``contexts_by_gene``, or
+       from a genome-wide-redistributed version of it when
+       ``prob_g_tau_tau_independent=True``).
 
-       **When prob_g_tau_tau_independent=True:**
-           First, reconstruct ``contexts_by_gene`` by redistributing
-           each gene's total contexts according to genome-wide
-           proportions:
+    3. Divide the τ-specific gene rate by that count:
+       ``μ_{m}^{j} = μ_{g,tau}^{j} / n_{g,c(tau)}``.
 
-           ``contexts_by_gene'[g, τ] = (Σ_τ contexts[g, τ]) × (Σ_g contexts[g, τ] / Σ_g,τ contexts[g, τ])``
-
-           Then compute ``n_contexts[m]`` from the reconstructed
-           matrix using the variant's specific context type(s). This
-           assumes all genes have the same relative distribution of
-           context types.
-
-       **When prob_g_tau_tau_independent=False (default):**
-           For variant m in gene g with context(s) τ:
-           ``n_contexts[m] = sum_τ contexts_by_gene[g, τ]``
-           Uses gene-specific context counts matching the mutation
-           type(s).
-
-    3. Normalize gene rates to variant rates:
-       ``μ_{m,j} = μ_{g,j} / n_contexts[m]``
-
-    For variants with multiple mutation types (rare), context counts
-    are summed across all relevant types.
+    For variants with multiple mutation types (rare), the per-type
+    terms are computed and summed separately: ``μ_m^j = Σ_tau
+    μ_{g,tau}^{j} / n_{g,c(tau)}``.
 
     See Also
     --------
-    compute_mu_g_per_tumor : Per-gene expected rate per tumor.
+    compute_mu_g_per_tumor : Per-gene, per-type expected rate per
+        tumor.
 
     """
     logger.info("Computing per-variant mutation rates per tumor...")
 
-    # Handle multi-signature mode: sum across all signatures
-    if isinstance(mu_g_j, dict):
-        logger.info(
-            "Multi-signature mode detected: summing mutation rates "
-            f"across {len(mu_g_j)} signatures..."
-        )
-        # Sum all signature-specific DataFrames
-        mu_g_j = sum(mu_g_j.values())
-
     from .constants import extract_context
 
     variants = variants_df.copy()
-
-    def extract_contexts(mut_types):
-        """Extract context(s) from mut_types (string or list)."""
-        if isinstance(mut_types, str):
-            return extract_context(mut_types)
-        elif isinstance(mut_types, list):
-            return [extract_context(t) for t in mut_types]
-        else:
-            return None
-
-    variants["contexts"] = variants["mut_types"].apply(
-        extract_contexts
-    )
 
     # When prob_g_tau_tau_independent=True, reconstruct contexts_by_gene
     # by redistributing each gene's total contexts according to
@@ -923,68 +948,84 @@ def compute_mu_m_per_tumor(
             ).T
         )
 
-    # Pre-compute sets for O(1) membership checks
     valid_genes = set(contexts_by_gene.index)
     valid_contexts = set(contexts_by_gene.columns)
 
-    # Separate single-context from multi-context variants
-    is_string = variants["contexts"].apply(
+    tumors = next(iter(mu_g_tau_j.values())).columns
+    mu_m_j = pd.DataFrame(
+        0.0, index=variants.index, columns=tumors, dtype=float
+    )
+    # Track which variants got at least one valid (gene, tau) term,
+    # so the rest can be filled with NaN -> 0, matching the
+    # zero-contexts/missing-gene fallback of the previous
+    # implementation.
+    any_term = pd.Series(False, index=variants.index)
+
+    is_string = variants["mut_types"].apply(
         lambda x: isinstance(x, str)
     )
-    is_list = variants["contexts"].apply(
+    is_list = variants["mut_types"].apply(
         lambda x: isinstance(x, list)
     )
 
-    # Initialize all with floating zeros to allow fractional counts
-    variants["n_contexts"] = 0.0
+    # Single-type variants (the common case): vectorized per type.
+    if is_string.any():
+        for tau, group in variants[is_string].groupby("mut_types"):
+            if tau not in mu_g_tau_j:
+                continue
+            context = extract_context(tau)
+            if context not in valid_contexts:
+                continue
 
-    # Handle single-context variants (most common case)
-    single_mask = is_string
-    if single_mask.any():
-        single_vars = variants[single_mask].copy()
-
-        # Use pandas get() method for safe lookups
-        def lookup_single(row):
-            gene_id = row["ensembl_gene_id"]
-            ctx = row["contexts"]
-            if gene_id in valid_genes and ctx in valid_contexts:
-                return contexts_by_gene.at[gene_id, ctx]
-            return 0
-
-        variants.loc[single_mask, "n_contexts"] = single_vars.apply(
-            lookup_single, axis=1
-        )
-
-    # Handle multi-context variants (rare)
-    if is_list.any():
-
-        def sum_multi_contexts(row):
-            gene_id = row["ensembl_gene_id"]
-            if gene_id not in valid_genes:
-                return 0
-
-            contexts = row["contexts"]
-            return sum(
-                contexts_by_gene.at[gene_id, ctx]
-                for ctx in contexts
-                if ctx in valid_contexts
+            gene_ids = group["ensembl_gene_id"]
+            n_contexts = gene_ids.map(
+                lambda g: (
+                    contexts_by_gene.at[g, context]
+                    if g in valid_genes
+                    else np.nan
+                )
             )
+            n_contexts.index = group.index
+            n_contexts = n_contexts.replace(0, np.nan)
 
-        variants.loc[is_list, "n_contexts"] = variants[is_list].apply(
-            sum_multi_contexts, axis=1
-        )
+            mu_genes_aligned = mu_g_tau_j[tau].reindex(gene_ids)
+            mu_genes_aligned.index = group.index
 
-    # Build variants × tumors matrix using vectorized operations
-    # Reindex mu_g_j by the gene_ids from variants to align rows
-    gene_ids = variants["ensembl_gene_id"]
-    mu_genes_aligned = mu_g_j.reindex(gene_ids)
-    mu_genes_aligned.index = variants.index
+            term = mu_genes_aligned.div(n_contexts, axis=0)
+            valid = n_contexts.notna()
+            mu_m_j.loc[group.index[valid]] = term.loc[valid].values
+            any_term.loc[group.index[valid]] = True
 
-    # Divide by n_contexts (broadcasting across columns)
-    n_contexts = variants["n_contexts"].replace(0, np.nan)
-    mu_m_j = mu_genes_aligned.div(n_contexts, axis=0)
+    # Multi-type variants (rare): sum per-type terms row by row.
+    if is_list.any():
+        for idx, row in variants[is_list].iterrows():
+            gene_id = row["ensembl_gene_id"]
+            total = pd.Series(0.0, index=tumors)
+            got_term = False
+            for tau in row["mut_types"]:
+                if tau not in mu_g_tau_j:
+                    continue
+                context = extract_context(tau)
+                if (
+                    gene_id not in valid_genes
+                    or context not in valid_contexts
+                    or gene_id not in mu_g_tau_j[tau].index
+                ):
+                    continue
+                n_context = contexts_by_gene.at[gene_id, context]
+                if n_context == 0:
+                    continue
+                total = (
+                    total + mu_g_tau_j[tau].loc[gene_id] / n_context
+                )
+                got_term = True
+            if got_term:
+                mu_m_j.loc[idx] = total.values
+                any_term.loc[idx] = True
 
-    # Fill NaN with 0 (for missing genes or zero contexts)
+    # Fill variants with no valid (gene, tau) term with 0 (missing
+    # genes or zero contexts), matching the previous implementation.
+    mu_m_j.loc[~any_term] = 0.0
     mu_m_j = mu_m_j.fillna(0.0)
 
     logger.info("... done with per-variant mutation rates per tumor.")

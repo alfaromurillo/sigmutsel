@@ -3083,6 +3083,16 @@ class Model:
                 filename = f"gamma_{safe_key}.nc"
                 filepath = gammas_dir / filename
 
+                if filepath.exists():
+                    # Already on disk (e.g. loaded unchanged via
+                    # load_model earlier this session). Re-opening it
+                    # for write can collide with a lingering cached
+                    # read handle from xarray's file manager and
+                    # raise a spurious PermissionError, and the
+                    # content would be identical anyway.
+                    gamma_files[key] = f"gammas/{filename}"
+                    continue
+
                 # Save as NetCDF if possible
                 if hasattr(result, "to_netcdf"):
                     result.to_netcdf(filepath)

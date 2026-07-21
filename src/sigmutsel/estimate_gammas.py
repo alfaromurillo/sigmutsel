@@ -33,6 +33,10 @@ def estimate_gamma_from_mus(
     kwargs=None,
     max_retries=5,
     factor_of_reduction=10,
+    auto_expand_bound=True,
+    max_bound_expansions=4,
+    expand_factor=10.0,
+    saturation_ratio=0.2,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -74,15 +78,47 @@ def estimate_gamma_from_mus(
         :func:`pymc.find_MAP`.
 
     max_retries : int, default=5
-        Maximum number of retries with reduced prior bound.
+        Maximum number of retries with reduced prior bound, triggered
+        when sampling itself fails (numerical errors).
 
     factor_of_reduction : float, default=10
         Factor by which to reduce the prior upper bound if sampling fails.
 
+    auto_expand_bound : bool, default=True
+        A ``Uniform(0, upper_bound_prior)`` prior can silently cap
+        gamma: if the data support a value close to or beyond the
+        bound, the posterior gets truncated at the ceiling rather
+        than converging to its natural scale, while MCMC diagnostics
+        (R-hat, ESS) can still look clean, since sampling a uniform
+        prior up to a hard edge is not itself a numerical problem.
+        If True, after a successful fit, check whether the posterior
+        mean exceeds ``saturation_ratio * upper_bound_prior``; if so,
+        multiply the bound by ``expand_factor`` and refit, up to
+        ``max_bound_expansions`` times, until the estimate settles at
+        a value that is a small fraction of its own ceiling.
+
+    max_bound_expansions : int, default=4
+        Maximum number of times to multiply the prior bound and
+        refit when the posterior looks saturated against it.
+
+    expand_factor : float, default=10.0
+        Factor to multiply the prior upper bound by on each
+        saturation-triggered expansion.
+
+    saturation_ratio : float, default=0.2
+        If the posterior mean (or MAP estimate) exceeds this fraction
+        of the current prior upper bound, the fit is considered
+        potentially bound-limited and triggers an expansion (while
+        expansions remain).
+
     Returns
     -------
     results : arviz.InferenceData or dict
-        Posterior samples (or MAP/MLE estimate) of gamma.
+        Posterior samples (or MAP/MLE estimate) of gamma. For MCMC
+        results, ``results.posterior.attrs`` records
+        ``final_upper_bound_prior`` and ``bound_expansions`` so
+        callers can tell whether (and how much) the bound had to be
+        expanded.
 
     Raises
     ------
@@ -103,11 +139,13 @@ def estimate_gamma_from_mus(
         kwargs = {}
 
     attempt = 0
+    expansions = 0
+    current_bound = upper_bound_prior
     while attempt <= max_retries:
         try:
             with pm.Model():
                 gamma = pm.Uniform(
-                    name="gamma", lower=0, upper=upper_bound_prior
+                    name="gamma", lower=0, upper=current_bound
                 )
 
                 Ps = tt.clip(
@@ -134,6 +172,50 @@ def estimate_gamma_from_mus(
                         random_seed=constants.random_seed,
                         **kwargs,
                     )
+
+            if draws == 1:
+                gamma_point = float(results["gamma"])
+            else:
+                gamma_point = float(
+                    results.posterior["gamma"].values.mean()
+                )
+
+            if (
+                auto_expand_bound
+                and expansions < max_bound_expansions
+                and gamma_point > saturation_ratio * current_bound
+            ):
+                logger.warning(
+                    "Posterior for gamma (mean/MAP %.3g) looks "
+                    "bound-limited against the prior upper bound "
+                    "%.3g -- expanding the bound %sx and refitting "
+                    "(expansion %d/%d).",
+                    gamma_point,
+                    current_bound,
+                    expand_factor,
+                    expansions + 1,
+                    max_bound_expansions,
+                )
+                current_bound *= expand_factor
+                expansions += 1
+                continue
+
+            if (
+                auto_expand_bound
+                and expansions >= max_bound_expansions
+                and gamma_point > saturation_ratio * current_bound
+            ):
+                logger.warning(
+                    "Posterior for gamma (mean/MAP %.3g) still looks "
+                    "bound-limited against the prior upper bound "
+                    "%.3g after %d expansion(s) -- this estimate may "
+                    "still be capped. Consider raising "
+                    "upper_bound_prior or max_bound_expansions "
+                    "manually.",
+                    gamma_point,
+                    current_bound,
+                    expansions,
+                )
 
             if save_name is not None:
                 if draws == 1:
@@ -173,15 +255,23 @@ def estimate_gamma_from_mus(
                             "increasing target_accept."
                         )
 
+            if draws != 1:
+                results.posterior.attrs["final_upper_bound_prior"] = (
+                    current_bound
+                )
+                results.posterior.attrs["bound_expansions"] = (
+                    expansions
+                )
+
             return results
 
         except (pm.SamplingError, ValueError, KeyError) as e:
             logger.warning(
                 "Sampling failed with upper bound "
-                f"{upper_bound_prior:.1e}: {e}"
+                f"{current_bound:.1e}: {e}"
             )
             attempt += 1
-            upper_bound_prior /= factor_of_reduction
+            current_bound /= factor_of_reduction
 
     raise RuntimeError(
         f"Sampling failed after {max_retries} attempts "

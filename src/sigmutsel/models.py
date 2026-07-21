@@ -2319,7 +2319,7 @@ class Model:
         self,
         item,
         level=None,
-        upper_bound_prior=0.5 * 10**3,
+        upper_bound_prior=None,
         store=True,
         non_silent=True,
     ):
@@ -2334,8 +2334,13 @@ class Model:
         level : str or None, optional
             Type of item: 'variant', 'gene', or None (auto-detect).
             Default None.
-        upper_bound_prior : float, optional
-            Upper bound for gamma prior. Default 0.5 * 10**3.
+        upper_bound_prior : float or None, optional
+            Upper bound for gamma prior. If None (default), uses
+            :func:`estimate_gammas.estimate_gamma_from_mus`'s own
+            default -- that function also auto-expands the bound if
+            the posterior turns out to be bound-limited, so an
+            explicit value here is only needed to change the
+            starting point.
         store : bool, optional
             Whether to store result in self.gammas. Default True.
         non_silent : bool, optional
@@ -2461,7 +2466,7 @@ class Model:
         print(summary.to_string())
 
     def _estimate_gamma_variant(
-        self, variant, upper_bound_prior=0.5 * 10**3, store=True
+        self, variant, upper_bound_prior=None, store=True
     ):
         """Estimate selection coefficient for a variant.
 
@@ -2469,8 +2474,10 @@ class Model:
         ----------
         variant : str
             Variant identifier.
-        upper_bound_prior : float, optional
-            Upper bound for gamma prior.
+        upper_bound_prior : float or None, optional
+            Upper bound for gamma prior. If None, uses
+            :func:`estimate_gammas.estimate_gamma_from_mus`'s own
+            default (which also auto-expands if bound-limited).
         store : bool, optional
             Whether to store result.
 
@@ -2493,10 +2500,15 @@ class Model:
         present_mask = variants_present.loc[variant] == 1
         absent_mask = ~present_mask
 
+        extra = (
+            {}
+            if upper_bound_prior is None
+            else {"upper_bound_prior": upper_bound_prior}
+        )
         result = estimate_gamma_from_mus(
             self.mu_ms.loc[variant][present_mask],
             self.mu_ms.loc[variant][absent_mask],
-            upper_bound_prior=upper_bound_prior,
+            **extra,
         )
 
         if store:
@@ -2507,7 +2519,7 @@ class Model:
     def _estimate_gamma_gene(
         self,
         gene,
-        upper_bound_prior=0.5 * 10**3,
+        upper_bound_prior=None,
         store=True,
         non_silent=True,
     ):
@@ -2517,8 +2529,10 @@ class Model:
         ----------
         gene : str
             Gene name or ensembl_gene_id.
-        upper_bound_prior : float, optional
-            Upper bound for gamma prior.
+        upper_bound_prior : float or None, optional
+            Upper bound for gamma prior. If None, uses
+            :func:`estimate_gammas.estimate_gamma_from_mus`'s own
+            default (which also auto-expands if bound-limited).
         store : bool, optional
             Whether to store result.
         non_silent : bool, optional
@@ -2563,10 +2577,15 @@ class Model:
         present_mask = gene_presence.loc[gene_id] == 1
         absent_mask = ~present_mask
 
+        extra = (
+            {}
+            if upper_bound_prior is None
+            else {"upper_bound_prior": upper_bound_prior}
+        )
         result = estimate_gamma_from_mus(
             self.mu_gs.loc[gene_id][present_mask],
             self.mu_gs.loc[gene_id][absent_mask],
-            upper_bound_prior=upper_bound_prior,
+            **extra,
         )
 
         if store:

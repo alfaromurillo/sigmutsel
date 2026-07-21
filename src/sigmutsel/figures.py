@@ -164,8 +164,15 @@ def plot_posteriors_vs_counts(
         ax.yaxis.set_minor_formatter(mticker.NullFormatter())
     else:  # variant
         ax.set_yscale("log", base=10)
-        ax.set_yticks(np.power(10, np.arange(0, 3 + 1)))
-        ax.set_ylim(0.9, 10**3)
+        # Ceiling follows the data (with headroom) rather than a
+        # fixed 10**3: gamma's prior upper bound auto-expands when
+        # bound-limited (see estimate_gammas.estimate_gamma_from_mus),
+        # so posterior means/HDIs can legitimately land well above
+        # 1000 and a fixed ceiling would silently clip them off-plot.
+        ymax_data = max(df["high"].max() * 1.5, 10**3)
+        ymax_pow = int(np.ceil(np.log10(ymax_data)))
+        ax.set_yticks(np.power(10, np.arange(0, ymax_pow + 1)))
+        ax.set_ylim(0.9, 10**ymax_pow)
 
     xmax = (
         max_shift_x

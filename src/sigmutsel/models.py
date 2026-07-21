@@ -1567,6 +1567,11 @@ class Model:
     _mu_taus: pd.DataFrame | dict = None
     _prob_g_tau_tau_independent: bool | None = None
     gammas: dict = field(default_factory=dict, init=False, repr=False)
+    # Tracks which entries in `gammas` are literally the object
+    # load_model() read from disk (see save_model's re-save guard).
+    _gammas_loaded_from_disk: dict = field(
+        default_factory=dict, init=False, repr=False
+    )
     _saved_location: str | None = field(
         default=None, init=False, repr=False
     )
@@ -1612,6 +1617,7 @@ class Model:
         self._mu_taus = None
         self._prob_g_tau_tau_independent = None
         self.gammas = {}
+        self._gammas_loaded_from_disk = {}
 
         self._auto_mu_taus_kwargs = {
             "L_low": L_low,
@@ -3290,19 +3296,38 @@ class Model:
                 filename = f"gamma_{safe_key}.nc"
                 filepath = gammas_dir / filename
 
-                if filepath.exists():
-                    # Already on disk (e.g. loaded unchanged via
-                    # load_model earlier this session). Re-opening it
-                    # for write can collide with a lingering cached
-                    # read handle from xarray's file manager and
-                    # raise a spurious PermissionError, and the
-                    # content would be identical anyway.
+                if (
+                    filepath.exists()
+                    and self._gammas_loaded_from_disk.get(key)
+                    is result
+                ):
+                    # This exact object is the one load_model() read
+                    # from this file earlier this session -- content
+                    # is guaranteed identical, and re-opening it for
+                    # write can collide with a lingering cached read
+                    # handle from xarray's file manager and raise a
+                    # spurious PermissionError. A file merely
+                    # *existing* at this path is not enough: if the
+                    # in-memory result was recomputed (e.g. the key
+                    # was deleted from self.gammas and re-estimated),
+                    # it must overwrite the stale file, not skip it.
                     gamma_files[key] = f"gammas/{filename}"
                     continue
 
-                # Save as NetCDF if possible
+                # Save as NetCDF if possible. Write to a temporary
+                # path and rename into place rather than writing
+                # `filepath` directly: if this key was previously
+                # loaded from this exact path via load_model() and
+                # then recomputed, xarray's file manager may still
+                # hold a cached read handle open on `filepath`, and
+                # writing to it directly can raise a spurious
+                # PermissionError (netCDF4/HDF5). Writing a fresh
+                # path and swapping it in avoids that collision
+                # regardless of any lingering handle.
                 if hasattr(result, "to_netcdf"):
-                    result.to_netcdf(filepath)
+                    tmp_filepath = filepath.with_suffix(".nc.tmp")
+                    result.to_netcdf(tmp_filepath)
+                    tmp_filepath.replace(filepath)
                     gamma_files[key] = f"gammas/{filename}"
                 else:
                     logger.warning(
@@ -3434,6 +3459,9 @@ class Model:
                 if full_path.exists():
                     try:
                         model.gammas[key] = az.from_netcdf(full_path)
+                        model._gammas_loaded_from_disk[key] = (
+                            model.gammas[key]
+                        )
                     except Exception as e:
                         logger.warning(
                             f"Failed to load gamma result for {key!r} "

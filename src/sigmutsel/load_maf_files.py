@@ -721,7 +721,10 @@ def process_single_maf(maf_file, variant_type="SNP", **kwargs):
         logger.debug(f"Successfully processed: {maf_file.name}")
         return df
 
-    except Exception as e:
+    # Batch processing: one malformed file (bad format, parse
+    # error, unexpected column layout, ...) shouldn't abort the
+    # whole run -- log it and let the caller skip this file.
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to process {maf_file.name}: {e}")
         return None
 

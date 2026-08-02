@@ -14,7 +14,11 @@ except ImportError:
         from importlib.metadata import version
 
         __version__ = version("sigmutsel")
-    except Exception:
+    # Any lookup failure means "version unknown", not a real error;
+    # narrowing to PackageNotFoundError would miss other broken-
+    # install cases (e.g. corrupt metadata) that should fall back
+    # the same way.
+    except Exception:  # noqa: BLE001
         __version__ = "unknown"
 
 from sigmutsel import locations

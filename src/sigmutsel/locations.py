@@ -77,7 +77,7 @@ def get_data_dir() -> Path:
     return DATA_DIR
 
 
-def check_data_file(file_path: Path, name: str = None) -> Path:
+def check_data_file(file_path: Path, name: str | None = None) -> Path:
     """Check if a data file exists, provide helpful error if not.
 
     Parameters

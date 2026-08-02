@@ -1419,9 +1419,7 @@ def _aggregate_signature_dict(
                 matched_signatures.add(item)
             else:
                 matching_sigs = [
-                    sig
-                    for sig in sig_dict.keys()
-                    if sig.startswith(item)
+                    sig for sig in sig_dict if sig.startswith(item)
                 ]
 
                 if matching_sigs:
@@ -1436,9 +1434,7 @@ def _aggregate_signature_dict(
 
     if include_other:
         other_sigs = [
-            sig
-            for sig in sig_dict.keys()
-            if sig not in matched_signatures
+            sig for sig in sig_dict if sig not in matched_signatures
         ]
 
         if other_sigs:
@@ -2181,21 +2177,22 @@ class Model:
         # Validate index for dicts of DataFrames (signature-separated)
         elif isinstance(value, dict):
             for sig_name, df in value.items():
-                if isinstance(df, pd.DataFrame):
-                    if not df.index.equals(
-                        self.dataset.contexts_by_gene.index
-                    ):
-                        logger.warning(
-                            "base_mus['%s'] index does not match "
-                            "dataset.contexts_by_gene.index. "
-                            "This may cause errors when computing "
-                            "mutation rates. To fix: reindex all "
-                            "base_mus DataFrames to match "
-                            "contexts_by_gene.index, or recompute "
-                            "base_mus after loading contexts_by_gene.",
-                            sig_name,
-                        )
-                        break  # Only warn once
+                if isinstance(
+                    df, pd.DataFrame
+                ) and not df.index.equals(
+                    self.dataset.contexts_by_gene.index
+                ):
+                    logger.warning(
+                        "base_mus['%s'] index does not match "
+                        "dataset.contexts_by_gene.index. "
+                        "This may cause errors when computing "
+                        "mutation rates. To fix: reindex all "
+                        "base_mus DataFrames to match "
+                        "contexts_by_gene.index, or recompute "
+                        "base_mus after loading contexts_by_gene.",
+                        sig_name,
+                    )
+                    break  # Only warn once
 
         self._base_mus = value
 
@@ -2462,9 +2459,11 @@ class Model:
         if not hasattr(result, "posterior"):
             return
 
+        # This is purely a convenience print; any az.summary failure
+        # should degrade to a warning, not break the caller.
         try:
             summary = az.summary(result, var_names=["gamma"])
-        except Exception as exc:  # pragma: no cover - logging path
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to summarize gamma posterior: %s", exc
             )
@@ -2724,7 +2723,7 @@ class Model:
             ).astype(int)
             counts = {
                 key: int(variant_counts.get(key, 0))
-                for key in results.keys()
+                for key in results
             }
             passenger_genes = set(
                 filter_passenger_genes(self.dataset.mutation_db)
@@ -2930,26 +2929,28 @@ class Model:
         # aggregating the derived base_mus, as aggregate_signatures
         # does.
         mu_taus_for_g_taus = self._mu_taus
-        if signature_separated and isinstance(self._base_mus, dict):
-            if set(self._mu_taus.keys()) != set(
-                self._base_mus.keys()
-            ):
-                # _auto_signature_selection is a construction-time
-                # convenience field and isn't restored by
-                # load_model(), so prefer it when available (it may
-                # carry tuple/'+' groupings) but fall back to
-                # reconstructing the grouping from base_mus' own
-                # keys, splitting any "sigA+sigB" name back into a
-                # tuple. This matches what aggregate_signatures
-                # would have been called with, since base_mus'
-                # keys *are* the resulting group names.
-                selection = self._auto_signature_selection or [
-                    tuple(key.split("+")) if "+" in key else key
-                    for key in self._base_mus.keys()
-                ]
-                mu_taus_for_g_taus = _aggregate_signature_dict(
-                    self._mu_taus, selection
-                )
+        if (
+            signature_separated
+            and isinstance(self._base_mus, dict)
+            and set(self._mu_taus.keys())
+            != set(self._base_mus.keys())
+        ):
+            # _auto_signature_selection is a construction-time
+            # convenience field and isn't restored by
+            # load_model(), so prefer it when available (it may
+            # carry tuple/'+' groupings) but fall back to
+            # reconstructing the grouping from base_mus' own
+            # keys, splitting any "sigA+sigB" name back into a
+            # tuple. This matches what aggregate_signatures
+            # would have been called with, since base_mus'
+            # keys *are* the resulting group names.
+            selection = self._auto_signature_selection or [
+                tuple(key.split("+")) if "+" in key else key
+                for key in self._base_mus
+            ]
+            mu_taus_for_g_taus = _aggregate_signature_dict(
+                self._mu_taus, selection
+            )
 
         use_cov = (
             use_cov_effects
@@ -3213,21 +3214,26 @@ class Model:
             if isinstance(value, set):
                 return [_json_safe(v) for v in value]
 
-            # Try common conversion methods
+            # Try common conversion methods. Each candidate method may
+            # exist (hasattr) but still raise for this particular
+            # value (e.g. an incompatible dtype); silently falling
+            # through to the next candidate -- and ultimately to
+            # str(value) below -- is the intended best-effort
+            # behavior here, not an error to surface.
             if hasattr(value, "tolist"):
                 try:
                     return value.tolist()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             if hasattr(value, "to_dict"):
                 try:
                     return _json_safe(value.to_dict())
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             if hasattr(value, "item"):
                 try:
                     return value.item()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
 
             # Last resort: convert to string
@@ -3467,7 +3473,10 @@ class Model:
                         model._gammas_loaded_from_disk[key] = (
                             model.gammas[key]
                         )
-                    except Exception as e:
+                    # One corrupt/unreadable gamma file shouldn't
+                    # abort loading the rest of the model -- skip it
+                    # and warn, same pattern as MAF batch processing.
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(
                             f"Failed to load gamma result for {key!r} "
                             f"from {filepath}: {e}"
@@ -3556,15 +3565,17 @@ class Model:
                 )
 
             # Also check against cov_matrix if present
-            if self.cov_matrix is not None:
-                if not value.index.equals(self.cov_matrix.index):
-                    logger.warning(
-                        "mu_gs index does not match cov_matrix.index. "
-                        "This may cause errors in downstream analysis. "
-                        "To fix: call model.assign_cov_matrix() again "
-                        "to reindex cov_matrix to match "
-                        "contexts_by_gene.index, then recompute mu_gs."
-                    )
+            if (
+                self.cov_matrix is not None
+                and not value.index.equals(self.cov_matrix.index)
+            ):
+                logger.warning(
+                    "mu_gs index does not match cov_matrix.index. "
+                    "This may cause errors in downstream analysis. "
+                    "To fix: call model.assign_cov_matrix() again "
+                    "to reindex cov_matrix to match "
+                    "contexts_by_gene.index, then recompute mu_gs."
+                )
 
         # Validate index for dicts of DataFrames (signature-separated)
         elif isinstance(value, dict):
@@ -3586,20 +3597,22 @@ class Model:
                         break  # Only warn once for contexts_by_gene
 
                     # Also check against cov_matrix if present
-                    if self.cov_matrix is not None:
-                        if not df.index.equals(self.cov_matrix.index):
-                            logger.warning(
-                                "mu_gs['%s'] index does not "
-                                "match cov_matrix.index. "
-                                "This may cause errors in downstream "
-                                "analysis. To fix: call "
-                                "model.assign_cov_matrix() again to "
-                                "reindex cov_matrix to match "
-                                "contexts_by_gene.index, then recompute "
-                                "mu_gs.",
-                                sig_name,
-                            )
-                            break  # Only warn once
+                    if (
+                        self.cov_matrix is not None
+                        and not df.index.equals(self.cov_matrix.index)
+                    ):
+                        logger.warning(
+                            "mu_gs['%s'] index does not "
+                            "match cov_matrix.index. "
+                            "This may cause errors in downstream "
+                            "analysis. To fix: call "
+                            "model.assign_cov_matrix() again to "
+                            "reindex cov_matrix to match "
+                            "contexts_by_gene.index, then recompute "
+                            "mu_gs.",
+                            sig_name,
+                        )
+                        break  # Only warn once
 
         self._mu_gs = value
 
@@ -5232,7 +5245,7 @@ class Model:
 
         # Ensure base_mus are signature-dependent
         if not isinstance(self._base_mus, dict):
-            raise ValueError(
+            raise TypeError(
                 "base_mus must be signature-dependent (dict) to "
                 "aggregate signatures. Current base_mus is a "
                 "DataFrame (signature-independent). "

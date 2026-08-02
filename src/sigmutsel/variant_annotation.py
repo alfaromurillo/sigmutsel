@@ -97,7 +97,7 @@ def extract_variants_from_db(
             # compute safely even if all values are NaN
             pos_mean = np.nanmean(starts)
             if not np.isnan(pos_mean):
-                mean_start = int(round(pos_mean))
+                mean_start = round(pos_mean)
 
         records.append(
             (variant, genes[0], ensembl_id, chroms[0], mean_start)

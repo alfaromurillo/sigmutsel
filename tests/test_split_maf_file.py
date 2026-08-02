@@ -7,7 +7,10 @@ from sigmutsel.split_maf_file import split_maf_file
 # Minimal MAF content: two comment lines, a header, and three
 # mutations across three samples (one each).
 _COMMENT_LINES = "# version 2.4\n# source: synthetic\n"
-_HEADER = "\t".join(
+# Kept as a per-field list rather than one flat tab-joined string
+# (ruff's FLY002 suggestion) -- this way each value lines up with
+# its header column and can be edited without hand-counting tabs.
+_HEADER = "\t".join(  # noqa: FLY002
     [
         "Hugo_Symbol",
         "Tumor_Sample_Barcode",
@@ -17,9 +20,9 @@ _HEADER = "\t".join(
     ]
 )
 _ROWS = [
-    "\t".join(["KRAS", "SAMPLE_A", "SNP", "C", "T"]),
-    "\t".join(["TP53", "SAMPLE_B", "SNP", "G", "A"]),
-    "\t".join(["EGFR", "SAMPLE_C", "SNP", "A", "G"]),
+    "\t".join(["KRAS", "SAMPLE_A", "SNP", "C", "T"]),  # noqa: FLY002
+    "\t".join(["TP53", "SAMPLE_B", "SNP", "G", "A"]),  # noqa: FLY002
+    "\t".join(["EGFR", "SAMPLE_C", "SNP", "A", "G"]),  # noqa: FLY002
 ]
 _MAF_CONTENT = (
     _COMMENT_LINES + _HEADER + "\n" + "\n".join(_ROWS) + "\n"

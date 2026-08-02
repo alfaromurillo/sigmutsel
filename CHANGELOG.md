@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `Model.aggregate_signatures` now raises `TypeError` (was
+  `ValueError`) when `base_mus` isn't signature-separated -- it's a
+  type check, not a value check. Callers catching `ValueError`
+  specifically from this method should catch `TypeError` instead.
+
 ## [0.1.1] - 2025-12-24
 
 ### Fixed

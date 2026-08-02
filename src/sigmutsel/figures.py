@@ -96,13 +96,13 @@ def plot_posteriors_vs_counts(
         mean = g.mean()
         hdi_low, hdi_high = az.hdi(g, prob=0.94)
         rows.append(
-            dict(
-                label=lbl,
-                count=counts.get(lbl, 0),
-                mean=mean,
-                low=hdi_low,
-                high=hdi_high,
-            )
+            {
+                "label": lbl,
+                "count": counts.get(lbl, 0),
+                "mean": mean,
+                "low": hdi_low,
+                "high": hdi_high,
+            }
         )
 
     df = (
@@ -320,11 +320,11 @@ def comparison_with_observed(
         ha="right",
         va="bottom",
         fontsize=10,
-        bbox=dict(facecolor="none", edgecolor="none", alpha=1),
+        bbox={"facecolor": "none", "edgecolor": "none", "alpha": 1},
     )
 
     max_val = np.max([exp.max(), obs.max()])
-    lim = int(round(max_val * 1.05))
+    lim = round(max_val * 1.05)
 
     ax.plot([0, lim], [0, lim], "--", color="gray")
 

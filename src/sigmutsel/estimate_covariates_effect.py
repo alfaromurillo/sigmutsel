@@ -192,14 +192,17 @@ def estimate_covariates_effect(
             ("upper_bounds_c", upper_bounds_c),
             ("lower_bounds_c", lower_bounds_c),
         ]:
-            if isinstance(bounds, np.ndarray) and bounds.ndim == 2:
-                if bounds.shape != (len(signatures), n_coeffs):
-                    raise ValueError(
-                        f"{bounds_name} has shape {bounds.shape} but "
-                        f"expected ({len(signatures)}, {n_coeffs}) for "
-                        f"multi-signature mode with {len(signatures)} "
-                        f"signatures and {n_coeffs} coefficients"
-                    )
+            if (
+                isinstance(bounds, np.ndarray)
+                and bounds.ndim == 2
+                and bounds.shape != (len(signatures), n_coeffs)
+            ):
+                raise ValueError(
+                    f"{bounds_name} has shape {bounds.shape} but "
+                    f"expected ({len(signatures)}, {n_coeffs}) for "
+                    f"multi-signature mode with {len(signatures)} "
+                    f"signatures and {n_coeffs} coefficients"
+                )
 
     with pm.Model():
         cov32 = pm.Data("cov_ext", cov_ext.astype("float32"))

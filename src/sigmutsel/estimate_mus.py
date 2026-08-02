@@ -544,7 +544,7 @@ def compute_mus_per_gene_per_sample(
         # Check if cov_effect is from estimate_all_cov_effects with multiple models
         if isinstance(cov_effect, dict):
             tuple_keys = [
-                k for k in cov_effect.keys() if isinstance(k, tuple)
+                k for k in cov_effect if isinstance(k, tuple)
             ]
 
             # Multiple models case: separate_mus_per_model must be True
@@ -976,9 +976,13 @@ def compute_mu_m_per_tumor(
                 continue
 
             gene_ids = group["ensembl_gene_id"]
+            # .map() evaluates the lambda immediately against every
+            # element before the next loop iteration reassigns
+            # `context`, so the late-binding closure risk B023 warns
+            # about doesn't apply here.
             n_contexts = gene_ids.map(
                 lambda g: (
-                    contexts_by_gene.at[g, context]
+                    contexts_by_gene.at[g, context]  # noqa: B023
                     if g in valid_genes
                     else np.nan
                 )

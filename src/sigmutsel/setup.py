@@ -72,9 +72,11 @@ def download_file(url: str, dest: Path, decompress: bool = False):
         if decompress and str(dest).endswith(".gz"):
             logger.info("  Decompressing...")
             final_dest = dest.with_suffix("")  # Remove .gz
-            with gzip.open(temp_file, "rb") as f_in:
-                with open(final_dest, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
+            with (
+                gzip.open(temp_file, "rb") as f_in,
+                open(final_dest, "wb") as f_out,
+            ):
+                shutil.copyfileobj(f_in, f_out)
             temp_file.unlink()  # Remove compressed temp file
             logger.info(f"  Saved to {final_dest}")
             return final_dest
@@ -327,7 +329,9 @@ Examples:
             decompress_fasta=not args.keep_fasta_compressed,
             keep_gtf_compressed=not args.decompress_gtf,
         )
-    except Exception as e:
+    # Top-level CLI handler: print a clean error and a non-zero exit
+    # code instead of a raw traceback, regardless of failure cause.
+    except Exception as e:  # noqa: BLE001
         logger.error(f"\nError: {e}")
         return 1
 

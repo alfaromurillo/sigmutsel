@@ -9,13 +9,12 @@ sample.
 
 """
 
-import numpy as np
+import logging
 
+import arviz as az
+import numpy as np
 import pymc as pm
 import pytensor.tensor as tt
-import arviz as az
-
-import logging
 
 from . import constants
 

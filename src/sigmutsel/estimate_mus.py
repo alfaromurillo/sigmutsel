@@ -12,13 +12,12 @@ mutation rate estimates used in selection inference.
 """
 
 import logging
-import pandas as pd
-import numpy as np
-
 from collections.abc import Sequence
 
-from .estimate_presence import filter_passenger_genes_ensembl
+import numpy as np
+import pandas as pd
 
+from .estimate_presence import filter_passenger_genes_ensembl
 
 logger = logging.getLogger(__name__)
 
@@ -311,8 +310,7 @@ def compute_mu_g_per_tumor(
             for sigma, mu_tau_sigma in mu_taus.items()
         }
 
-    from .constants import canonical_types_order
-    from .constants import extract_context
+    from .constants import canonical_types_order, extract_context
 
     tau_list = (
         canonical_types_order

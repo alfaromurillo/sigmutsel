@@ -6,20 +6,16 @@ It also includes utilities to filter passenger genes based on the
 Cancer Gene Census.
 """
 
+import logging
 import re
-
-from pathlib import Path
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
-import pandas as pd
 import numpy as np
-
+import pandas as pd
 from Bio import SeqIO
 
 from .locations import location_cancer_gene_census, location_cds_fasta
-
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +59,7 @@ def compute_variants_present(
     ).astype("uint8")
 
     logger.info("... done.")
-    print("")
+    print()
     return present
 
 
@@ -110,7 +106,7 @@ def compute_genes_present(db, scope=None):
     present = (present > 0).astype(int)
 
     logger.info("... done.")
-    print("")
+    print()
     return present
 
 
@@ -233,7 +229,7 @@ def filter_passenger_genes_ensembl(
     ens_candidates = [
         c
         for c in census.columns
-        if re.search(r"ensembl", c, flags=re.I)
+        if re.search(r"ensembl", c, flags=re.IGNORECASE)
     ]
     if ens_candidates:
         ens_col = ens_candidates[0]

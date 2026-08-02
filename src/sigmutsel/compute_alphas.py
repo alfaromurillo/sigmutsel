@@ -14,13 +14,12 @@ assignment matrix from a signature decomposition step.
 
 """
 
-from typing import Optional
 import logging
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 
 from .compute_mutation_burden import count_mutation_burden
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +27,8 @@ logger = logging.getLogger(__name__)
 def estimate_alphas(
     df: pd.DataFrame,
     assignments: pd.DataFrame,
-    L_low: Optional[float] = None,
-    L_high: Optional[float] = None,
+    L_low: float | None = None,
+    L_high: float | None = None,
 ) -> pd.DataFrame:
     """Return per-sample signature probabilities (`alphas`).
 

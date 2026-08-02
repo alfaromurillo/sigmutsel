@@ -6,11 +6,10 @@ functions for creating posterior vs. observed count plots and
 expected vs. observed mutation burden comparisons.
 """
 
-import pandas as pd
 import arviz as az
+import pandas as pd
 
 from .locations import location_cosmic_cancer_gene_census
-
 
 oncogenes = pd.read_csv(location_cosmic_cancer_gene_census, sep="\t")
 oncogenes = oncogenes[oncogenes["ROLE_IN_CANCER"] == "oncogene"]
@@ -77,10 +76,10 @@ def plot_posteriors_vs_counts(
       and variants.
 
     """
-    import numpy as np
-    from matplotlib import pyplot as plt
     import matplotlib.ticker as mticker
+    import numpy as np
     import seaborn as sns
+    from matplotlib import pyplot as plt
 
     def _marker(label: str):
         gene = label if level == "gene" else label.split(" p.")[0]
@@ -261,11 +260,11 @@ def comparison_with_observed(
         The created figure.
 
     """
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
+    from matplotlib.ticker import AutoMinorLocator, MaxNLocator
     from sklearn.metrics import r2_score
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import MaxNLocator, AutoMinorLocator
 
     # --- Normalize observed to a per-gene Series ---
     if isinstance(observed, pd.DataFrame):
@@ -405,9 +404,10 @@ def plot_signature_correlations(
     tuple
         (fig, ax1, ax2) matplotlib figure and axes objects.
     """
-    from .signature_attribution import assign_signatures_per_gene_id
     import matplotlib.pyplot as plt
     import numpy as np
+
+    from .signature_attribution import assign_signatures_per_gene_id
 
     # Compute signature attribution per gene
     sigs_per_gene_id = assign_signatures_per_gene_id(
@@ -465,7 +465,7 @@ def plot_signature_correlations(
     width = 0.8 / len(corr_cols)  # Bar width
 
     # Use Set1 colormap
-    import matplotlib.cm as cm
+    from matplotlib import cm
 
     cmap = cm.get_cmap("tab10")
     colors = [cmap(i) for i in range(len(corr_cols))]
@@ -642,12 +642,12 @@ def plot_sig_decomposition_with_burden(
     -------
     fig : matplotlib.figure.Figure
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+    import numpy as np
 
-    from .compute_mutation_burden import count_mutation_burden
     from .compute_alphas import estimate_alphas
+    from .compute_mutation_burden import count_mutation_burden
 
     # Compute or extract burden
     if isinstance(df, pd.DataFrame):

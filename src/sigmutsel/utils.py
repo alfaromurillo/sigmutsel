@@ -69,6 +69,7 @@ def run_riemannian_stats_on_covariates(
 
     """
     import warnings
+
     import numpy as np
 
     if columns is None:

@@ -17,11 +17,11 @@ except ImportError:
     except Exception:
         __version__ = "unknown"
 
-from sigmutsel.models import MutationDataset, Model
 from sigmutsel import locations
+from sigmutsel.models import Model, MutationDataset
 
 __all__ = [
-    "MutationDataset",
     "Model",
+    "MutationDataset",
     "locations",
 ]

@@ -1,13 +1,13 @@
 """Data models for mutation rate analysis."""
 
-from dataclasses import dataclass, field
-import pandas as pd
-import numpy as np
-import logging
 import inspect
 import json
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -702,6 +702,7 @@ class MutationDataset:
         load_maf_files.generate_compact_db : Core generation function
         """
         from pathlib import Path
+
         from .load_maf_files import generate_compact_db
 
         # Auto-set seqinfo_dir for ID signature class if not provided
@@ -751,8 +752,8 @@ class MutationDataset:
             Variant annotation table with mutation types.
         """
         from .variant_annotation import (
-            extract_variants_from_db,
             annotate_variants_with_types,
+            extract_variants_from_db,
         )
 
         if self._mutation_db is None:
@@ -1107,6 +1108,7 @@ class MutationDataset:
 
         import logging
         from pathlib import Path
+
         from .signature_decomposition import (
             signature_decomposition as run_sig_decomp,
         )
@@ -1142,7 +1144,7 @@ class MutationDataset:
                 **matrix_kwargs,
             )
             logger.info("...done.")
-            print("")
+            print()
 
         if not self.has_mutational_matrices():
             raise FileNotFoundError(
@@ -1252,7 +1254,7 @@ class MutationDataset:
 
         if not results_exist:
             logger.info("... done with signature decomposition.")
-            print("")
+            print()
 
         # Load the normalized signature matrix
         sig_matrix_path = (
@@ -1269,7 +1271,7 @@ class MutationDataset:
                 f"Loaded normalized signature matrix from "
                 f"{sig_matrix_path}"
             )
-            print("")
+            print()
         else:
             logger.warning(
                 f"Signature matrix not found at {sig_matrix_path}"
@@ -1281,7 +1283,7 @@ class MutationDataset:
         self._signature_cosmic_version = cosmic_version
         self._signature_genome_build = genome_build
 
-        print("")
+        print()
         return self._sig_assignments
 
     def generate_contexts_by_gene(self, fastas=None):
@@ -1355,7 +1357,7 @@ class MutationDataset:
         print(title)
         print("=" * len(title))
         self.generate_mutation_db()
-        print("")
+        print()
 
         title = "Gene presence: computing matrices."
         print("=" * len(title))
@@ -1363,14 +1365,14 @@ class MutationDataset:
         print("=" * len(title))
         self.compute_gene_presence()
         self.compute_gene_presence_non_silent()
-        print("")
+        print()
 
         title = "Contexts by gene: computing opportunities."
         print("=" * len(title))
         print(title)
         print("=" * len(title))
         self.generate_contexts_by_gene(fastas=fastas)
-        print("")
+        print()
 
         title = "Variant data: generating annotations and presence."
         print("=" * len(title))
@@ -1378,7 +1380,7 @@ class MutationDataset:
         print("=" * len(title))
         self.generate_variant_db()
         self.compute_variants_present()
-        print("")
+        print()
 
 
 def _aggregate_signature_dict(
@@ -2658,8 +2660,8 @@ class Model:
         ...     level='gene',
         ...     change_gene_ids_to_names=False)
         """
-        from .figures import plot_posteriors_vs_counts
         from .estimate_presence import filter_passenger_genes
+        from .figures import plot_posteriors_vs_counts
 
         if not self.gammas:
             raise ValueError(
@@ -2843,6 +2845,7 @@ class Model:
         ...     figsize=(12, 8))
         """
         from pathlib import Path
+
         from .figures import plot_signature_correlations
 
         # Check that covariates are set
@@ -2910,8 +2913,10 @@ class Model:
             not yet summed over τ).
         """
         from .constants import canonical_types_order
-        from .estimate_mus import compute_mu_g_per_tumor
-        from .estimate_mus import compute_mus_per_gene_per_sample
+        from .estimate_mus import (
+            compute_mu_g_per_tumor,
+            compute_mus_per_gene_per_sample,
+        )
 
         signature_separated = isinstance(self._mu_taus, dict)
 
@@ -3853,9 +3858,10 @@ class Model:
         --------
         estimate_mus.compute_mu_tau_per_tumor : Core computation
         """
-        from .estimate_mus import compute_mu_tau_per_tumor
-        from pathlib import Path
         import tempfile
+        from pathlib import Path
+
+        from .estimate_mus import compute_mu_tau_per_tumor
 
         # Ensure mutation_db is loaded
         if self.dataset._mutation_db is None:
@@ -4530,11 +4536,11 @@ class Model:
         n_in_cov_effects_estimation : Property showing gene count
             used
         """
+        from .constants import random_seed
         from .estimate_covariates_effect import (
             estimate_covariates_effect,
         )
         from .estimate_presence import filter_passenger_genes_ensembl
-        from .constants import random_seed
 
         # Step 1: Configuration - Extract bounds from kwargs
         cov_effects_kwargs = dict(self.cov_effects_kwargs)
@@ -5052,8 +5058,9 @@ class Model:
         estimate_presence.filter_passenger_genes_ensembl : Identifies
             passenger genes
         """
-        from .estimate_presence import filter_passenger_genes_ensembl
         from sklearn.metrics import r2_score
+
+        from .estimate_presence import filter_passenger_genes_ensembl
 
         # Check if mu_gs need to be computed
         if self._mu_gs is None:

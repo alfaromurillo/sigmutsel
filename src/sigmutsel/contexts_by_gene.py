@@ -8,11 +8,10 @@ specific type occurs in a given gene.
 """
 
 import logging
-import pandas as pd
-
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 
+import pandas as pd
 from Bio import SeqIO
 
 from .locations import location_cds_fasta
@@ -145,7 +144,7 @@ def compute_contexts_by_gene(
     )
 
     logger.info("...done.")
-    print("")
+    print()
     return df
 
 

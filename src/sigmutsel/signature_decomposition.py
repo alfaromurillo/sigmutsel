@@ -5,11 +5,12 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-
 from SigProfilerAssignment import Analyzer
 
-from .locations import location_exclusion_signatures_matrix
-from .locations import location_inclusion_signatures_matrix
+from .locations import (
+    location_exclusion_signatures_matrix,
+    location_inclusion_signatures_matrix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -692,6 +693,6 @@ def signature_decomposition(
                 )
 
     logger.info("... done.")
-    print("")
+    print()
 
     return assignments

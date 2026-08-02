@@ -6,11 +6,11 @@ single gene and chromosome. It handles position inconsistencies and
 assigns mutational types when available.
 """
 
-import os
 import logging
+import os
+
 import numpy as np
 import pandas as pd
-
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def extract_variants_from_db(
     ).set_index("variant")
 
     logger.info("... done.")
-    print("")
+    print()
     return result
 
 
@@ -168,7 +168,7 @@ def annotate_variants_with_types(
     out["mut_types"] = tidy_types.reindex(key).values
 
     logger.info("... done.")
-    print("")
+    print()
     return out
 
 

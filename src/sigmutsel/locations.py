@@ -9,7 +9,6 @@ downloaded on first use or via `sigmutsel-setup`.
 import os
 from pathlib import Path
 
-
 # Package data directory
 _PKG_DATA_DIR = Path(__file__).parent / "data"
 

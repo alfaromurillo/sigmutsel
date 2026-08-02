@@ -11,21 +11,18 @@ modulated by exponential covariate effects: μ = μ_base * exp(X @ β),
 where X is the covariate matrix and β are the effect coefficients.
 """
 
+import logging
 from pathlib import Path
 
+import arviz as az
 import numpy as np
 import pandas as pd
-
 import pymc as pm
 import pymc.sampling.jax as pmjax
 import pytensor.tensor as tt
-import arviz as az
-
-import logging
-
-from .estimate_presence import filter_passenger_genes_ensembl
 
 from . import constants
+from .estimate_presence import filter_passenger_genes_ensembl
 
 logger = logging.getLogger(__name__)
 
@@ -707,7 +704,7 @@ def estimate_all_cov_effects(
             else:
                 results[combo] = estimation
             genes_considered[combo] = genes_to_consider
-            print("")
+            print()
 
     return results
 
@@ -772,9 +769,9 @@ def load_or_estimate_all_cov_effects(
     - File paths determined by `results_dir`, `save_results`, and
       covariate names.
     """
+    import logging
     from itertools import combinations
     from pathlib import Path
-    import logging
 
     logger = logging.getLogger(__name__)
 

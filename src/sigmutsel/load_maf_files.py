@@ -6,21 +6,17 @@ retain only necessary columns, and merge all files.
 
 __author__ = "Jorge Alfaro-Murillo"
 
-import os
 import logging
+import os
+from functools import partial
+from multiprocessing import Pool, cpu_count
+from pathlib import Path
+
 import pandas as pd
 
-from pathlib import Path
-from multiprocessing import Pool, cpu_count
-from functools import partial
-
-from .update_gene_names import update_genes_with_gene_set
-
-from .constants import nucleotides
-from .constants import chromosomes
-from .constants import reverse_complement
-
+from .constants import chromosomes, nucleotides, reverse_complement
 from .locations import location_hgnc_complete_set
+from .update_gene_names import update_genes_with_gene_set
 
 logger = logging.getLogger(__name__)
 
@@ -948,7 +944,7 @@ def generate_compact_db(
         )
 
     logger.info("... done generating compact mutation database.")
-    print("")
+    print()
 
     return db
 

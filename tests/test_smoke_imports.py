@@ -17,5 +17,7 @@ def test_public_api_symbols():
 
 def test_can_import_core_modules():
     """Import core modules without side effects raising."""
-    from sigmutsel import locations  # noqa: F401
-    from sigmutsel import models  # noqa: F401
+    from sigmutsel import (
+        locations,  # noqa: F401
+        models,  # noqa: F401
+    )

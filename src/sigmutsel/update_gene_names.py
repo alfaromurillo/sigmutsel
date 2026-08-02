@@ -3,10 +3,9 @@
 __author__ = "Jorge Alfaro-Murillo"
 
 import logging
-import pandas as pd
-
 from pathlib import Path
 
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ def update_genes_with_gene_set(
         A copy of *df* with harmonised ``'gene'``,
         ``'ensembl_gene_id'`` (and ``'variant'`` if present).
     """
-    ...
     logger.info("Updating gene symbols and Ensembl IDs...")
 
     location_gene_set = Path(location_gene_set)

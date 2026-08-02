@@ -4,11 +4,10 @@ import logging
 import shutil
 from pathlib import Path
 
+from SigProfilerMatrixGenerator import install as genInstall
 from SigProfilerMatrixGenerator.scripts import (
     SigProfilerMatrixGeneratorFunc,
 )
-from SigProfilerMatrixGenerator import install as genInstall
-
 
 logger = logging.getLogger(__name__)
 

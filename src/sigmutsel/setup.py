@@ -11,14 +11,13 @@ Or import and call programmatically:
     download_all()
 """
 
-import urllib.request
 import gzip
-import shutil
 import logging
+import shutil
+import urllib.request
 from pathlib import Path
 
 from sigmutsel.locations import DATA_DIR
-
 
 logger = logging.getLogger(__name__)
 

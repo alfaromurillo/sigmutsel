@@ -5054,13 +5054,12 @@ class Model:
         """
         from .estimate_presence import filter_passenger_genes_ensembl
         from sklearn.metrics import r2_score
-        import logging
 
         # Check if mu_gs need to be computed
         if self._mu_gs is None:
             # Check if this is a model without covariates
             if self.cov_matrix is None:
-                logging.info(
+                logger.info(
                     "Model has no covariate matrix. Computing mu_gs "
                     "with baseline mutation rates only (no covariate "
                     "effects)."

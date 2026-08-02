@@ -91,7 +91,7 @@ def compute_genes_present(db, scope=None):
     logger.info(
         "Producing presence matrix for all tumors per gene..."
     )
-    if scope == "silent" or "non-silent":
+    if scope in ("silent", "non-silent"):
         logger.info(f"Restricting to {scope} variants")
 
     # Filter by variant classification scope

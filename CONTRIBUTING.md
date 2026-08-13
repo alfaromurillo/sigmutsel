@@ -39,6 +39,14 @@ black src/ tests/
 ruff check src/ tests/ --fix
 ```
 
+A `pre-commit` hook enforces both automatically (`black --check` +
+`ruff check`, blocking the commit on failure). Install it once per
+clone:
+```bash
+pip install pre-commit
+pre-commit install
+```
+
 ## Pull Request Process
 
 1. Create a new branch for your feature/fix

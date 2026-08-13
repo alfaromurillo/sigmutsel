@@ -189,25 +189,34 @@ def download_gencode_gtf(
         )
         return final_dest
 
-    # sigmutselcovs caches the same GTFs under this well-known path
-    # (no import here -- sigmutselcovs is a separate, optional
-    # package -- just a filesystem convention both sides know about)
-    # so a user with both installed never downloads the same ~1 GB
-    # file twice.
-    xdg_cache = Path(
-        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
-    )
-    covs_cached = xdg_cache / "sigmutselcovs" / "gencode" / filename
-    if covs_cached.exists():
-        logger.info(
-            f"Reusing GENCODE v{version} already cached by "
-            f"sigmutselcovs at {covs_cached}"
+    # GENCODE GTFs are a universal reference, not specific to this
+    # package -- sigmutselcovs and any other consumer that follows
+    # the same convention share this location (GENCODE_DATA_HOME, or
+    # $XDG_DATA_HOME/gencode; data, not cache, since these files are
+    # worth keeping, not disposable). No import here -- sigmutselcovs
+    # is a separate, optional package -- just a filesystem
+    # convention both sides know about, so a user with both
+    # installed never downloads the same file twice.
+    xdg_data_home = Path(
+        os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
         )
+    )
+    shared = (
+        Path(
+            os.environ.get(
+                "GENCODE_DATA_HOME", str(xdg_data_home / "gencode")
+            )
+        )
+        / filename
+    )
+    if shared.exists():
+        logger.info(f"Reusing GENCODE v{version} already at {shared}")
         if keep_compressed:
-            shutil.copyfile(covs_cached, dest)
+            shutil.copyfile(shared, dest)
             return dest
         with (
-            gzip.open(covs_cached, "rb") as f_in,
+            gzip.open(shared, "rb") as f_in,
             open(final_dest, "wb") as f_out,
         ):
             shutil.copyfileobj(f_in, f_out)

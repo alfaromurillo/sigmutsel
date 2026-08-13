@@ -2018,7 +2018,7 @@ class Model:
 
         When run_pca=True, the method performs:
         1. Reindex to dataset genes (as above)
-        2. Run PCA using :func:`covariates_utilities.run_pca_on_covariates`
+        2. Run PCA using :func:`utils.run_pca_on_covariates`
         3. Replace covariates with principal components (PC1, PC2, ...)
 
         The PCA transformation is useful for:
@@ -2085,7 +2085,7 @@ class Model:
         See Also
         --------
         generate_contexts_by_gene : Must be called first on dataset
-        covariates_utilities.run_pca_on_covariates : PCA implementation
+        utils.run_pca_on_covariates : PCA implementation
         """
         # Ensure contexts_by_gene has been loaded
         if self.dataset._contexts_by_gene is None:

@@ -13,6 +13,7 @@ Or import and call programmatically:
 
 import gzip
 import logging
+import os
 import shutil
 import urllib.request
 from pathlib import Path
@@ -186,6 +187,30 @@ def download_gencode_gtf(
         logger.info(
             f"GENCODE v{version} already exists at {final_dest}"
         )
+        return final_dest
+
+    # sigmutselcovs caches the same GTFs under this well-known path
+    # (no import here -- sigmutselcovs is a separate, optional
+    # package -- just a filesystem convention both sides know about)
+    # so a user with both installed never downloads the same ~1 GB
+    # file twice.
+    xdg_cache = Path(
+        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
+    )
+    covs_cached = xdg_cache / "sigmutselcovs" / "gencode" / filename
+    if covs_cached.exists():
+        logger.info(
+            f"Reusing GENCODE v{version} already cached by "
+            f"sigmutselcovs at {covs_cached}"
+        )
+        if keep_compressed:
+            shutil.copyfile(covs_cached, dest)
+            return dest
+        with (
+            gzip.open(covs_cached, "rb") as f_in,
+            open(final_dest, "wb") as f_out,
+        ):
+            shutil.copyfileobj(f_in, f_out)
         return final_dest
 
     url = DOWNLOAD_URLS[filename]

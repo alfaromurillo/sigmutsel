@@ -67,7 +67,7 @@ dataset.run_signature_decomposition(
 - `exome`: Set `True` for whole-exome sequencing data
 - `cosmic_version`: COSMIC signature database version
 - `force_generation`: Set `True` to regenerate even if cached
-- `include_signature_subgroups`: Cancer type for tissue-specific signatures
+- `include_signature_subgroups`: Cohort code for cohort-specific signatures
 
 ### Build Full Dataset
 

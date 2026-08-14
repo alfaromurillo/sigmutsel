@@ -105,6 +105,15 @@ def compute_genes_present(db, scope=None):
 
     present = (present > 0).astype(int)
 
+    # crosstab silently drops any tumor absent from db_filtered (e.g.
+    # a sample with mutations but none matching `scope`), which would
+    # otherwise leave this matrix's columns short of the full sample
+    # universe other matrices (mu_gs, variants_present) use --
+    # reindex to db's full tumor list so every scope has the same
+    # columns, with 0 for tumors with no matching mutation.
+    all_tumors = sorted(db["Tumor_Sample_Barcode"].dropna().unique())
+    present = present.reindex(columns=all_tumors, fill_value=0)
+
     logger.info("... done.")
     print()
     return present

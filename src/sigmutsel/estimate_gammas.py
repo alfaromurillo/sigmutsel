@@ -361,9 +361,24 @@ def estimate_gamma_from_mus(
 
             rhat = ess_bulk = n_divergent = None
             if draws != 1:
-                summary = az.summary(results, var_names=["gamma"])
-                rhat = summary["r_hat"].item()
-                ess_bulk = summary["ess_bulk"].item()
+                # round_to="auto" (the default) can hand back a
+                # non-numeric value for some summary cells in edge
+                # cases; round_to=None keeps r_hat/ess_bulk as plain
+                # floats, which is all the comparisons below need.
+                summary = az.summary(
+                    results, var_names=["gamma"], round_to=None
+                )
+                try:
+                    rhat = float(summary["r_hat"].item())
+                    ess_bulk = float(summary["ess_bulk"].item())
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Could not parse R-hat/ESS from az.summary() "
+                        "(got %r/%r) -- treating as unconverged.",
+                        summary["r_hat"].item(),
+                        summary["ess_bulk"].item(),
+                    )
+                    rhat, ess_bulk = float("inf"), 0.0
                 n_divergent = (
                     results.sample_stats["diverging"].sum().item()
                 )

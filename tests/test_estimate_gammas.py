@@ -116,7 +116,7 @@ def test_well_identified_gamma_is_not_capped():
     constants.random_seed = None
 
     attrs = result.posterior.attrs
-    assert attrs["likelihood_saturated"] is False
+    assert attrs["likelihood_saturated"] == 0
     assert (
         attrs["final_upper_bound_prior"]
         < attrs["natural_gamma_ceiling"]

@@ -453,7 +453,9 @@ def estimate_gamma_from_mus(
                 results.posterior.attrs["final_target_accept"] = (
                     current_kwargs.get("target_accept", 0.8)
                 )
-                results.posterior.attrs["likelihood_saturated"] = (
+                # netCDF attributes don't support a bool dtype
+                # (only S1/i1/u1/.../f8) -- store as int.
+                results.posterior.attrs["likelihood_saturated"] = int(
                     likelihood_saturated
                 )
                 results.posterior.attrs["natural_gamma_ceiling"] = (

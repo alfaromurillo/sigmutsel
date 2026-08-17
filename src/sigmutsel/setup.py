@@ -40,6 +40,10 @@ DOWNLOAD_URLS = {
         "https://ftp.ebi.ac.uk/pub/databases/gencode/"
         "Gencode_human/release_19/gencode.v19.annotation.gtf.gz"
     ),
+    "gaf_20111020Plusbroad_wex_1.1_hg19.bed": (
+        "https://api.gdc.cancer.gov/data/"
+        "b1e303a5-a542-4389-8ddb-1d151218be75"
+    ),
 }
 
 
@@ -226,6 +230,60 @@ def download_gencode_gtf(
     return download_file(url, dest, decompress=not keep_compressed)
 
 
+def download_wes_target_bed(force: bool = False) -> Path:
+    """Download MC3's TCGA WES capture-kit target BED.
+
+    Parameters
+    ----------
+    force : bool, default False
+        If True, download even if file exists
+
+    Returns
+    -------
+    Path
+        Path to downloaded file
+
+    Notes
+    -----
+    This is `gaf_20111020Plusbroad_wex_1.1_hg19.bed` from MC3
+    (Ellrott et al. 2018, Cell Systems) -- the intersection of TCGA's
+    WES capture kits across sequencing centers, applied uniformly
+    across all 33 TCGA cohorts. hg19, not gzipped, ~5MB.
+    """
+    filename = "gaf_20111020Plusbroad_wex_1.1_hg19.bed"
+    dest = DATA_DIR / filename
+
+    if dest.exists() and not force:
+        logger.info(f"WES target BED already exists at {dest}")
+        return dest
+
+    # Same shared-cache convention as download_gencode_gtf: a
+    # filesystem convention, not an import, so any consumer that
+    # follows the same env-var + filename pattern shares the
+    # download without duplicating it.
+    xdg_data_home = Path(
+        os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
+        )
+    )
+    shared = (
+        Path(
+            os.environ.get(
+                "MC3_WES_TARGET_DATA_HOME",
+                str(xdg_data_home / "mc3_wes_target"),
+            )
+        )
+        / filename
+    )
+    if shared.exists():
+        logger.info(f"Reusing WES target BED already at {shared}")
+        shutil.copyfile(shared, dest)
+        return dest
+
+    url = DOWNLOAD_URLS[filename]
+    return download_file(url, dest, decompress=False)
+
+
 def download_all(
     force: bool = False,
     decompress_fasta: bool = True,
@@ -281,6 +339,12 @@ def download_all(
             version="19",
             force=force,
             keep_compressed=keep_gtf_compressed,
+        )
+
+        # Download MC3 WES target BED
+        logger.info("\n5. MC3 WES Target BED")
+        downloaded["wes_target_bed"] = download_wes_target_bed(
+            force=force
         )
 
         logger.info("\n" + "=" * 60)

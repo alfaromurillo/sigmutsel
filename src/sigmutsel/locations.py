@@ -53,6 +53,14 @@ location_gencode19_annotation = (
     DATA_DIR / "gencode.v19.annotation.gtf.gz"
 )
 
+location_wes_target_bed = (
+    DATA_DIR / "gaf_20111020Plusbroad_wex_1.1_hg19.bed"
+)
+
+location_wes_target_gene_ids = (
+    DATA_DIR / "wes_target_gene_ids_gencode19.txt"
+)
+
 
 # ============================================================
 # Helper functions
@@ -125,6 +133,8 @@ def list_data_files() -> dict[str, bool]:
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,
+        "wes_target_bed": location_wes_target_bed,
+        "wes_target_gene_ids": location_wes_target_gene_ids,
     }
     return {name: path.exists() for name, path in files.items()}
 

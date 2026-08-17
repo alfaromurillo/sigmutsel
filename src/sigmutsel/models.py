@@ -70,12 +70,16 @@ class MutationDataset:
     contexts_by_gene : pd.DataFrame or None
         Trinucleotide context counts by gene (genes × contexts). Each
         value represents the count of a specific trinucleotide context
-        in a gene's coding sequence. Automatically restricted to genes
-        present in the mutation database. Lazy-loaded via
-        generate_contexts_by_gene(). These values are needed
-        to compute later the probability that a mutation of a certain
-        type lands on a gene. Thus, gene mutation rates can only be
-        obtained for genes with this information, and so the index of
+        in a gene's coding sequence. Lazy-loaded via
+        generate_contexts_by_gene(), whose `gene_universe` argument
+        controls which genes are included ("own_cohort", the
+        default: genes present in the mutation database only;
+        "wes_target": the union of that set with MC3's TCGA WES-target
+        gene set, a better-calibrated denominator for low-mutation-
+        burden cohorts). These values are needed to compute later the
+        probability that a mutation of a certain type lands on a
+        gene. Thus, gene mutation rates can only be obtained for
+        genes with this information, and so the index of
         contexts_by_gene is the maximal scope of the analysis.
     signature_reference_genome : str or None
         Reference genome (same as genome_build) used when generating
@@ -149,6 +153,7 @@ class MutationDataset:
     _signature_cosmic_version: float | None = None
     _signature_genome_build: str | None = None
     _contexts_by_gene: pd.DataFrame = None
+    _contexts_by_gene_gene_universe: str | None = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -341,6 +346,9 @@ class MutationDataset:
                 else None
             ),
             "files": saved_files,
+            "contexts_by_gene_gene_universe": (
+                self._contexts_by_gene_gene_universe
+            ),
             "signature_parameters": {
                 "reference_genome": self._signature_reference_genome,
                 "exome": self._signature_exome,
@@ -369,6 +377,12 @@ class MutationDataset:
             location_maf_files=manifest.get("location_maf_files"),
             signature_class=manifest.get("signature_class", "SBS"),
             source_maf=manifest.get("source_maf"),
+        )
+        # Manifests predating this field used the (then-only)
+        # own-cohort-restricted behavior, so that's the correct
+        # default for old manifests, not an unknown/null state.
+        dataset._contexts_by_gene_gene_universe = manifest.get(
+            "contexts_by_gene_gene_universe", "own_cohort"
         )
 
         for attr_name, info in manifest.get("files", {}).items():
@@ -1286,13 +1300,13 @@ class MutationDataset:
         print()
         return self._sig_assignments
 
-    def generate_contexts_by_gene(self, fastas=None):
+    def generate_contexts_by_gene(
+        self, fastas=None, gene_universe="own_cohort"
+    ):
         """Generate trinucleotide context counts by gene.
 
         Computes trinucleotide context counts from FASTA files and
-        stores them in ``self._contexts_by_gene``. The computation is
-        automatically restricted to genes present in the mutation
-        database to keep runtime manageable.
+        stores them in ``self._contexts_by_gene``.
 
         Parameters
         ----------
@@ -1301,14 +1315,33 @@ class MutationDataset:
             - Single FASTA file path (str or Path)
             - List of FASTA file paths
             - None: automatically uses locations.location_cds_fasta
+        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+            Which genes to compute contexts (and, downstream, mutation
+            rates) for:
+
+            - ``"own_cohort"``: restricted to genes present in this
+              dataset's own mutation database -- the original
+              behavior. For low-mutation-burden cohorts this can be
+              a small fraction of the exome, which biases downstream
+              per-gene rate estimates (see ``"wes_target"``).
+            - ``"wes_target"``: the union of genes present in this
+              dataset's own mutation database *and* MC3's TCGA
+              WES-target gene set (:func:`sigmutsel.wes_target.get_wes_target_gene_ids`)
+              -- a principled, cohort-independent approximation of
+              which genes were actually capturable by TCGA's
+              sequencing. Always a superset of ``"own_cohort"``'s
+              result: genes with real mutation evidence are never
+              dropped just because they're absent from the WES-target
+              set (which can happen for genes annotated only in
+              newer GENCODE releases than the target BED's hg19
+              build).
 
         Returns
         -------
         pd.DataFrame
             DataFrame with genes as index and trinucleotide contexts
             as columns. Each cell contains the count of that context
-            in that gene's sequence. Restricted to genes present in
-            the mutation database.
+            in that gene's sequence.
 
         Notes
         -----
@@ -1343,15 +1376,45 @@ class MutationDataset:
                 "load_dataset() first."
             )
 
-        # Compute contexts, restricting to genes in mutation_db
+        if gene_universe == "own_cohort":
+            restrict_to_db = self.mutation_db
+        elif gene_universe == "wes_target":
+            from .wes_target import get_wes_target_gene_ids
+
+            own_mask = self.mutation_db["variant"].notna() & (
+                self.mutation_db["ensembl_gene_id"].notna()
+            )
+            own_ids = set(
+                self.mutation_db.loc[
+                    own_mask, "ensembl_gene_id"
+                ].astype(str)
+            )
+            restrict_to_db = get_wes_target_gene_ids() | own_ids
+        else:
+            raise ValueError(
+                f"Unknown gene_universe {gene_universe!r}; expected "
+                "'own_cohort' or 'wes_target'."
+            )
+
         self._contexts_by_gene = compute_contexts_by_gene(
-            fastas, restrict_to_db=self.mutation_db
+            fastas, restrict_to_db=restrict_to_db
         )
+        self._contexts_by_gene_gene_universe = gene_universe
 
         return self._contexts_by_gene
 
-    def build_full_dataset(self, fastas=None):
-        """Run the full data-generation pipeline for this dataset."""
+    def build_full_dataset(
+        self, fastas=None, gene_universe="own_cohort"
+    ):
+        """Run the full data-generation pipeline for this dataset.
+
+        Parameters
+        ----------
+        fastas : str, Path, list, or None, default None
+            Forwarded to :meth:`generate_contexts_by_gene`.
+        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+            Forwarded to :meth:`generate_contexts_by_gene`.
+        """
         title = "Mutation data: building compact mutation database."
         print("=" * len(title))
         print(title)
@@ -1371,7 +1434,9 @@ class MutationDataset:
         print("=" * len(title))
         print(title)
         print("=" * len(title))
-        self.generate_contexts_by_gene(fastas=fastas)
+        self.generate_contexts_by_gene(
+            fastas=fastas, gene_universe=gene_universe
+        )
         print()
 
         title = "Variant data: generating annotations and presence."

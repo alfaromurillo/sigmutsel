@@ -185,7 +185,18 @@ def load_or_generate_contexts_by_gene(
         - Iterable: Collection of Ensembl gene IDs to process
         Filtering can significantly speed up computation.
         Only applied during generation (when force_generation=True
-        or file doesn't exist).
+        or file doesn't exist) -- **not** during cache lookup. A
+        cached CSV computed under one gene universe (e.g. genes
+        observed in one cohort) is silently reused as-is for a
+        different `restrict_to_db` unless `location_contexts_df`
+        itself encodes which universe was used (e.g. distinct
+        filenames per universe) or `force_generation=True` is
+        passed. When `restrict_to_db` is an `Iterable[str]`, a
+        loaded cache is checked against it (see Notes) to catch the
+        most common form of this mismatch; DataFrame-mode and
+        `None` are not checked, since re-deriving their implied gene
+        set here would duplicate `compute_contexts_by_gene`'s own
+        logic.
     force_generation : bool, default False
         If True, recompute context counts even if a saved version
         exists. Use this when:
@@ -221,6 +232,12 @@ def load_or_generate_contexts_by_gene(
     2. Normalize for sequence composition biases
     3. Calculate signature-specific mutation probabilities
 
+    When a cached file is loaded and `restrict_to_db` is an
+    `Iterable[str]`, the loaded index is checked against it: if the
+    cache contains any gene ID absent from `restrict_to_db`, this
+    raises `ValueError` rather than silently serving a table computed
+    under a different (likely broader) gene universe than requested.
+
     Examples
     --------
     >>> # Load or generate from single FASTA
@@ -255,6 +272,21 @@ def load_or_generate_contexts_by_gene(
             f"Loading context table from {location_contexts_df}"
         )
         df = pd.read_csv(location_contexts_df, index_col=0)
+        if restrict_to_db is not None and not isinstance(
+            restrict_to_db, pd.DataFrame
+        ):
+            expected_ids = set(map(str, restrict_to_db))
+            unexpected = set(df.index) - expected_ids
+            if unexpected:
+                raise ValueError(
+                    f"Cached context table at {location_contexts_df} "
+                    f"has {len(unexpected)} gene(s) not in the "
+                    "requested restrict_to_db (e.g. "
+                    f"{sorted(unexpected)[:5]}) -- it was likely "
+                    "computed under a different gene universe. Pass "
+                    "force_generation=True to recompute, or use a "
+                    "distinct location_contexts_df per universe."
+                )
         logger.info("... done.")
         return df
 

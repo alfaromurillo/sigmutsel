@@ -2,11 +2,12 @@
 
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from sigmutsel.contexts_by_gene import compute_contexts_by_gene
-from sigmutsel.models import MutationDataset
+from sigmutsel.models import Model, MutationDataset
 
 # A tiny synthetic Ensembl-style FASTA: two genes, each with two
 # transcripts of different lengths (the longer one should win).
@@ -203,3 +204,38 @@ def test_load_dataset_defaults_gene_universe_for_old_manifests(
 
     loaded = MutationDataset.load_dataset(save_dir)
     assert loaded._contexts_by_gene_gene_universe == "own_cohort"
+
+
+def test_passenger_genes_r2_handles_genes_absent_from_genes_present(
+    tmp_path,
+):
+    """Regression test: under gene_universe="wes_target", mu_gs can
+    include genes never observed as mutated in this cohort -- absent
+    from genes_present's crosstab by construction, not an error
+    state. estimate_passenger_genes_r2() must treat that as 0
+    observed presence, not raise KeyError (caught during COAD's
+    rollout, 2026-08-17)."""
+    tumors = ["T1", "T2", "T3"]
+    # ENSG_OBSERVED has real mutation evidence; ENSG_WES_ONLY was
+    # added by the WES-target union but never mutated in this cohort.
+    genes_present = pd.DataFrame(
+        [[1, 0, 1]], index=["ENSG_OBSERVED"], columns=tumors
+    )
+
+    dataset = MutationDataset(location_maf_files=tmp_path)
+    dataset._genes_present = genes_present
+
+    mu_gs = pd.DataFrame(
+        [[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]],
+        index=["ENSG_OBSERVED", "ENSG_WES_ONLY"],
+        columns=tumors,
+    )
+
+    model = Model.__new__(Model)
+    model.dataset = dataset
+    model._mu_gs = mu_gs
+    model._passenger_genes_r2 = None
+
+    r2 = model.estimate_passenger_genes_r2()
+    assert np.isfinite(r2)
+    assert model.passenger_genes_r2 == r2

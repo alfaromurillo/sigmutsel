@@ -4746,10 +4746,16 @@ class Model:
                 passenger_genes_complete
             ].T.values
 
-        # Step 3: Filter genes_present matrix
-        presence_matrix = self.dataset.genes_present.loc[
-            passenger_genes_complete
-        ].T.values
+        # Step 3: Filter genes_present matrix. genes_present's
+        # crosstab only contains genes observed as mutated in this
+        # cohort, so under gene_universe="wes_target",
+        # passenger_genes_complete (drawn from cov_matrix's index,
+        # which can include genes never mutated here but with real
+        # covariate data) may include IDs absent from genes_present --
+        # by construction, never-mutated, so 0 in every sample.
+        presence_matrix = self.dataset.genes_present.reindex(
+            passenger_genes_complete, fill_value=0
+        ).T.values
 
         # Step 3: Filter cov_matrix and convert to array
         cov_matrix_array = self.cov_matrix.loc[
@@ -5172,11 +5178,17 @@ class Model:
             self._mu_gs.index
         )
 
-        # Restrict to passenger genes
+        # Restrict to passenger genes. genes_present's crosstab is
+        # built only from genes that appear at least once in the
+        # mutation database, so under gene_universe="wes_target"
+        # mu_gs.index can include genes absent from genes_present --
+        # by construction, genes never observed as mutated in this
+        # cohort (not an unknown/missing state), so their observed
+        # presence is 0 in every sample, not a lookup error.
         mu_gs_passenger = self._mu_gs.loc[passenger_gene_ids]
-        genes_present_passenger = self.dataset.genes_present.loc[
-            passenger_gene_ids
-        ]
+        genes_present_passenger = self.dataset.genes_present.reindex(
+            passenger_gene_ids, fill_value=0
+        )
 
         # Sum observed mutations across all samples for each gene
         present_sum = genes_present_passenger.sum(

@@ -145,20 +145,35 @@ def plot_posteriors_vs_counts(
     ax.set_ylabel("Selection coefficient", fontsize=8)
 
     if level == "gene":
-        ymax = 130
         ax.set_yscale("log", base=10)
-        ax.set_yticks([0.5, 1, 5, 10, 50, 100])
-        ax.set_yticklabels([0.5, 1, 5, 10, 50, 100])
-        ax.set_yticks(
-            np.concatenate(
-                [
-                    np.arange(0.4, 1, 0.1),
-                    np.arange(1, 10, 1),
-                    np.arange(10, ymax + 1, 10),
-                ]
-            ),
-            minor=True,
-        )
+        # Ceiling follows the data (with headroom) rather than a
+        # fixed 130: a strong single-gene driver signal (e.g. TP53
+        # in a near-universal-TP53 cohort like OV) can legitimately
+        # exceed 130 at the gene level, and a fixed ceiling silently
+        # clips it off-plot exactly when it matters most.
+        ymax = max(130.0, df["high"].max() * 1.3)
+        major = [0.5, 1, 5, 10, 50, 100]
+        minor_parts = [
+            np.arange(0.4, 1, 0.1),
+            np.arange(1, 10, 1),
+            np.arange(10, 101, 10),
+        ]
+        if ymax > 100:
+            ymax_pow = int(np.ceil(np.log10(ymax)))
+            major = major + list(
+                np.power(10, np.arange(3, ymax_pow + 1))
+            )
+            minor_parts.append(
+                np.concatenate(
+                    [
+                        np.arange(10**p, 10 ** (p + 1), 10**p)
+                        for p in range(2, ymax_pow)
+                    ]
+                )
+            )
+        ax.set_yticks(major)
+        ax.set_yticklabels(major)
+        ax.set_yticks(np.concatenate(minor_parts), minor=True)
         ax.set_ylim(0.4, ymax)
         ax.yaxis.set_minor_formatter(mticker.NullFormatter())
     else:  # variant
@@ -184,15 +199,16 @@ def plot_posteriors_vs_counts(
         else df["count"].min() * 0.98
     )
     ax.set_xlim(xmin, xmax)
-    major = 50 if level == "gene" else 10
-    minor = 10 if level == "gene" else 5
-    tick_start = int(np.ceil(xmin / major)) * major if major else xmin
-    ax.set_xticks(np.arange(tick_start, xmax + major, major))
-    ax.set_xticks(np.arange(xmin, xmax + minor, minor), minor=True)
-    ax.set_xticklabels(
-        np.arange(tick_start, xmax + major, major).astype(int),
-        fontsize=6,
+    # Adaptive tick spacing instead of a fixed 50/10 (genes) or 10/5
+    # (variants) step: a fixed step gives too few labeled ticks on a
+    # narrow range (e.g. a low-TMB cohort's variant counts spanning
+    # 0-10) and needlessly many on a wide one, regardless of what the
+    # data for this particular cohort/model actually spans.
+    ax.xaxis.set_major_locator(
+        mticker.MaxNLocator(nbins=6, integer=True, min_n_ticks=3)
     )
+    ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+    ax.tick_params(axis="x", labelsize=6)
     ax.axhline(1, color="gray", linestyle="--", lw=1)
 
     # legend -------------------------------------------------------------

@@ -6,6 +6,7 @@
 *.gct
 *.gct.gz
 *.bed
+rmsk.*.txt.gz
 hgnc_complete_set.txt
 
 # Cached/derived files (regenerated from the downloaded files above)

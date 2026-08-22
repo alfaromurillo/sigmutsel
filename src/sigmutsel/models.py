@@ -1404,7 +1404,7 @@ class MutationDataset:
         return self._contexts_by_gene
 
     def build_full_dataset(
-        self, fastas=None, gene_universe="own_cohort"
+        self, fastas=None, gene_universe="own_cohort", **kwargs
     ):
         """Run the full data-generation pipeline for this dataset.
 
@@ -1414,12 +1414,17 @@ class MutationDataset:
             Forwarded to :meth:`generate_contexts_by_gene`.
         gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
             Forwarded to :meth:`generate_contexts_by_gene`.
+        **kwargs : dict
+            Forwarded to :meth:`generate_mutation_db` -- e.g.
+            `qc_mode=True` (optionally with `qc_kwargs`) to enable
+            the structured QC pipeline in :mod:`qc` instead of the
+            default silent validation.
         """
         title = "Mutation data: building compact mutation database."
         print("=" * len(title))
         print(title)
         print("=" * len(title))
-        self.generate_mutation_db()
+        self.generate_mutation_db(**kwargs)
         print()
 
         title = "Gene presence: computing matrices."

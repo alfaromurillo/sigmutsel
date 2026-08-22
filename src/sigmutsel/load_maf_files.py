@@ -679,7 +679,14 @@ def compact_data(df, *, variant_type="SNP", **kwargs):
     return df
 
 
-def process_single_maf(maf_file, variant_type="SNP", **kwargs):
+def process_single_maf(
+    maf_file,
+    variant_type="SNP",
+    *,
+    qc_mode=False,
+    qc_kwargs=None,
+    **kwargs,
+):
     """Process a single MAF file into a cleaned and compact DataFrame.
 
     This function reads a MAF file, filters and validates for
@@ -695,9 +702,23 @@ def process_single_maf(maf_file, variant_type="SNP", **kwargs):
         Type of mutation to filter to, so far 'SNP' or 'ID' are
         supported.
 
+    qc_mode : bool, default False
+        If True, run :func:`qc.apply_qc` (structured problem
+        tagging, germline-frequency filtering, MNV/DBS merging)
+        instead of the plain silent :func:`validate_full`. Rows
+        tagged with a problem are dropped before `compact_data`,
+        same end result as the default path, but a per-file problem
+        summary is logged first -- see :func:`qc.apply_qc` for what
+        gets checked and :mod:`qc`'s module docstring for the
+        cancereffectsizeR conventions this follows.
+    qc_kwargs : dict or None
+        Extra keyword arguments forwarded to :func:`qc.apply_qc`
+        (e.g. `germline_af_threshold`, or `check_mnv_dbs=False` to
+        disable one check). Ignored if `qc_mode` is False.
+
     **kwargs : dict
         Additional keyword arguments to be passed to
-        `func:validate_full` and `func:compact_data`.
+        `func:compact_data`.
 
     Returns
     -------
@@ -715,7 +736,22 @@ def process_single_maf(maf_file, variant_type="SNP", **kwargs):
         )
 
         df = filter_db(df, variant_type)
-        df = validate_full(df, variant_type=variant_type)
+
+        if qc_mode:
+            from .qc import apply_qc, summarize_problems
+
+            df = apply_qc(
+                df, variant_type=variant_type, **(qc_kwargs or {})
+            )
+            problems = summarize_problems(df)
+            if problems:
+                logger.info(
+                    f"{maf_file.name} QC problems: {problems}"
+                )
+            df = df[df["problem"].isna()].drop(columns="problem")
+        else:
+            df = validate_full(df, variant_type=variant_type)
+
         df = compact_data(df, variant_type=variant_type, **kwargs)
 
         logger.debug(f"Successfully processed: {maf_file.name}")
@@ -749,7 +785,10 @@ def load_validate_compact_all_maf_files_parallel(
 
     **kwargs : dict
         Additional keyword arguments to be passed to
-        `func:process_single_maf`.
+        `func:process_single_maf`, including `qc_mode=True` (and
+        optional `qc_kwargs`) for structured problem tagging,
+        germline-frequency filtering, and MNV/DBS merging -- see
+        `func:process_single_maf`'s docstring and :mod:`qc`.
 
     Returns
     -------

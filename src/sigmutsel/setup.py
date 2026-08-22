@@ -44,6 +44,14 @@ DOWNLOAD_URLS = {
         "https://api.gdc.cancer.gov/data/"
         "b1e303a5-a542-4389-8ddb-1d151218be75"
     ),
+    "rmsk.hg38.txt.gz": (
+        "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/"
+        "rmsk.txt.gz"
+    ),
+    "rmsk.hg19.txt.gz": (
+        "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/"
+        "rmsk.txt.gz"
+    ),
 }
 
 
@@ -277,6 +285,78 @@ def download_wes_target_bed(force: bool = False) -> Path:
     )
     if shared.exists():
         logger.info(f"Reusing WES target BED already at {shared}")
+        shutil.copyfile(shared, dest)
+        return dest
+
+    url = DOWNLOAD_URLS[filename]
+    return download_file(url, dest, decompress=False)
+
+
+def download_repeatmasker_bed(
+    genome_build: str = "hg38", force: bool = False
+) -> Path:
+    """Download UCSC's RepeatMasker (rmsk) track.
+
+    Parameters
+    ----------
+    genome_build : {"hg38", "hg19"}, default "hg38"
+        hg38 matches this package's usual GRCh38 MAF coordinates
+        (see the module docstring of :mod:`wes_target` for why the
+        rest of the package is hg38-based); hg19 is provided for
+        callers working against hg19 coordinates directly.
+    force : bool, default False
+        If True, download even if the file exists.
+
+    Returns
+    -------
+    Path
+        Path to the downloaded ``rmsk.<build>.txt.gz`` file. This is
+        UCSC's raw tab-separated rmsk table dump (not a BED file) --
+        see :func:`qc.load_repeat_intervals` for parsing it into
+        per-chromosome intervals.
+
+    Notes
+    -----
+    Kept gzipped -- hg38's rmsk table is genome-wide (millions of
+    rows); pandas reads a ``.gz`` file directly, so there's no need
+    to decompress it to disk.
+    """
+    if genome_build not in ("hg38", "hg19"):
+        raise ValueError(
+            f"genome_build must be 'hg38' or 'hg19', got {genome_build!r}."
+        )
+    filename = f"rmsk.{genome_build}.txt.gz"
+    dest = DATA_DIR / filename
+
+    if dest.exists() and not force:
+        logger.info(
+            f"RepeatMasker ({genome_build}) already exists at {dest}"
+        )
+        return dest
+
+    # Same shared-cache convention as download_gencode_gtf/
+    # download_wes_target_bed: a filesystem convention, not an
+    # import, so any consumer following the same env-var + filename
+    # pattern shares the download without duplicating a genome-wide
+    # table.
+    xdg_data_home = Path(
+        os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
+        )
+    )
+    shared = (
+        Path(
+            os.environ.get(
+                "REPEATMASKER_DATA_HOME",
+                str(xdg_data_home / "repeatmasker"),
+            )
+        )
+        / filename
+    )
+    if shared.exists():
+        logger.info(
+            f"Reusing RepeatMasker ({genome_build}) already at {shared}"
+        )
         shutil.copyfile(shared, dest)
         return dest
 

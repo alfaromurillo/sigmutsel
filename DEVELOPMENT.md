@@ -122,6 +122,55 @@ Barcode parsing (`TcgaBarcodeInfo`, `parse_tcga_barcode`,
 live in `gdcfetch.tcga_barcode`, a dependency — this module
 re-exports those names so callers don't need a second import.
 
+## MAF preprocessing QC (`qc.py`)
+
+`load_maf_files.py`'s default `validate_full` silently drops
+invalid rows via boolean masking, with only a `logger.warning` as a
+record of what was dropped. `qc.py` offers a structured alternative
+and three additional checks, all opt-in (conventions adapted from
+cancereffectsizeR, an R package addressing the same estimation
+problem — see https://github.com/Townsend-Lab-Yale/cancereffectsizeR):
+
+- `apply_qc(df, ...)` runs the full sequence and returns every row
+  with a `"problem"` column (`None` for a clean row, else a reason
+  string) instead of dropping anything — enable via
+  `qc_mode=True` on `process_single_maf`/
+  `load_validate_compact_all_maf_files_parallel`/
+  `MutationDataset.generate_mutation_db`/`.build_full_dataset`
+  (forwarded through `**kwargs` at every layer). Rows still tagged
+  `None` after `apply_qc` are what actually gets kept when
+  `qc_mode=True` is used through that chain -- tagged rows are
+  dropped before `compact_data`, same as the default path, but with
+  a per-file problem-count summary logged first.
+- `flag_exact_duplicates`: same sample+chromosome+position+alleles
+  appearing twice (no equivalent check existed before).
+- `flag_germline_variants`: tags a row whose `gnomAD_non_cancer_MAX_AF_adj`
+  exceeds a threshold (default 0.1%) as likely germline, not
+  somatic. That column is already present in raw GDC MAFs (see
+  `constants.maf_column_descriptions`) but was previously dropped
+  before it could be used.
+- `detect_mnv_dbs`: same-sample SNVs within 2bp of each other are
+  very likely one real multi-nucleotide event an upstream caller
+  split into separate single-base calls (classic case: UV-signature
+  CC>TT), not two independent substitutions. Tags the whole cluster
+  for exclusion, since this package has no DBS/MNV modeling
+  downstream to route them to instead.
+- `flag_repetitive_regions` (needs `repeat_intervals`, built by
+  `load_repeat_intervals` from a file downloaded via
+  `setup.download_repeatmasker_bed`): tags calls overlapping a
+  RepeatMasker-annotated region, where sequencing/mapping artifacts
+  cluster. Not part of `apply_qc`'s default checks (needs an
+  external download the others don't) — pass `repeat_intervals`
+  explicitly to enable it.
+- `check_sample_overlap(mutation_db)` is a separate, cohort-level
+  diagnostic (not part of `apply_qc`, and not wired into the
+  pipeline anywhere) that flags sample *pairs* with suspiciously
+  high shared-mutation counts — catches contamination or a sample
+  processed twice under different barcodes, which barcode-based
+  dedup in `tcga_sample_selection.py` can't see (that only catches
+  *known* same-patient duplicates by barcode). Call it directly on
+  a built `MutationDataset.mutation_db` when investigating a cohort.
+
 ## General conventions
 
 - **No titles in matplotlib figures** — titles go in captions.

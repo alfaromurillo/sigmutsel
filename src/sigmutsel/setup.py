@@ -52,6 +52,14 @@ DOWNLOAD_URLS = {
         "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/"
         "rmsk.txt.gz"
     ),
+    "TCGA_mastercalls.abs_tables_JSedit.fixed.txt": (
+        "https://api.gdc.cancer.gov/data/"
+        "4f277128-f793-4354-a13d-30cc7fe9f6b5"
+    ),
+    "TCGA_mastercalls.abs_segtabs.fixed.txt": (
+        "https://api.gdc.cancer.gov/data/"
+        "0f4f5701-7b61-41ae-bda9-2805d1ca9781"
+    ),
 }
 
 
@@ -356,6 +364,134 @@ def download_repeatmasker_bed(
     if shared.exists():
         logger.info(
             f"Reusing RepeatMasker ({genome_build}) already at {shared}"
+        )
+        shutil.copyfile(shared, dest)
+        return dest
+
+    url = DOWNLOAD_URLS[filename]
+    return download_file(url, dest, decompress=False)
+
+
+def download_tcga_absolute_purity(force: bool = False) -> Path:
+    """Download TCGA's Pan-Cancer Atlas ABSOLUTE purity/ploidy calls.
+
+    A single pan-cancer file covering every TCGA cohort and sample --
+    not cohort-specific, so this only needs downloading once, ever,
+    not once per cohort or per rerun.
+
+    Parameters
+    ----------
+    force : bool, default False
+        If True, download even if the file exists.
+
+    Returns
+    -------
+    Path
+        Path to ``TCGA_mastercalls.abs_tables_JSedit.fixed.txt``. One
+        row per sample (15-character barcode, column ``array``), with
+        columns including ``purity``, ``ploidy``, and
+        ``Subclonal genome fraction``.
+
+    Notes
+    -----
+    From the GDC PanCanAtlas publication resources (Liu et al. 2018,
+    Hoadley et al. 2018) -- see
+    https://gdc.cancer.gov/about-data/publications/PanCan-CellOfOrigin.
+    Companion file: :func:`download_tcga_absolute_segments`.
+    """
+    filename = "TCGA_mastercalls.abs_tables_JSedit.fixed.txt"
+    dest = DATA_DIR / filename
+
+    if dest.exists() and not force:
+        logger.info(
+            f"TCGA ABSOLUTE purity/ploidy already exists at {dest}"
+        )
+        return dest
+
+    # Same shared-cache convention as download_gencode_gtf/
+    # download_repeatmasker_bed -- a pan-cancer reference table, not
+    # specific to any cohort or this package, so any consumer
+    # following the same env-var + filename pattern shares the
+    # download.
+    xdg_data_home = Path(
+        os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
+        )
+    )
+    shared = (
+        Path(
+            os.environ.get(
+                "TCGA_ABSOLUTE_DATA_HOME",
+                str(xdg_data_home / "tcga_absolute"),
+            )
+        )
+        / filename
+    )
+    if shared.exists():
+        logger.info(
+            f"Reusing TCGA ABSOLUTE purity/ploidy already at {shared}"
+        )
+        shutil.copyfile(shared, dest)
+        return dest
+
+    url = DOWNLOAD_URLS[filename]
+    return download_file(url, dest, decompress=False)
+
+
+def download_tcga_absolute_segments(force: bool = False) -> Path:
+    """Download TCGA's Pan-Cancer Atlas ABSOLUTE copy-number segments.
+
+    A single pan-cancer file (~250MB, ~1.9M rows) covering every TCGA
+    cohort and sample -- not cohort-specific, so this only needs
+    downloading once, ever, not once per cohort or per rerun.
+
+    Parameters
+    ----------
+    force : bool, default False
+        If True, download even if the file exists.
+
+    Returns
+    -------
+    Path
+        Path to ``TCGA_mastercalls.abs_segtabs.fixed.txt``. One row
+        per (sample, segment), with ``Sample``, ``Chromosome``,
+        ``Start``, ``End``, ``Modal_Total_CN``, and
+        ``Cancer_cell_frac_a1``/``_a2`` columns (the latter describe
+        the copy-number event's own clonality, not an individual
+        point mutation's -- see the purity/CN-corrected VAF QC
+        presentation, ``mutation_rates/presentations/
+        2026_08_22_vaf_purity_qc.tex``, for why that distinction
+        matters).
+
+    Notes
+    -----
+    Companion file: :func:`download_tcga_absolute_purity`. Same
+    source as that function's docstring.
+    """
+    filename = "TCGA_mastercalls.abs_segtabs.fixed.txt"
+    dest = DATA_DIR / filename
+
+    if dest.exists() and not force:
+        logger.info(f"TCGA ABSOLUTE segments already exist at {dest}")
+        return dest
+
+    xdg_data_home = Path(
+        os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
+        )
+    )
+    shared = (
+        Path(
+            os.environ.get(
+                "TCGA_ABSOLUTE_DATA_HOME",
+                str(xdg_data_home / "tcga_absolute"),
+            )
+        )
+        / filename
+    )
+    if shared.exists():
+        logger.info(
+            f"Reusing TCGA ABSOLUTE segments already at {shared}"
         )
         shutil.copyfile(shared, dest)
         return dest

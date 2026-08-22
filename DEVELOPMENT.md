@@ -17,6 +17,8 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
 | `load_maf_files.py` | MAF validation and compact DB loading |
+| `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
+| `tcga_sample_selection.py` | Which downloaded MAF files to use: sample-type filter + per-case duplicate policy (see below) |
 | `constants.py` | Central parameters (SBS96 types, chr list) |
 | `locations.py` | Data file paths; respects `SIGMUTSEL_DATA_DIR` |
 | `figures.py` | γ posterior scatter plots; **no titles** |
@@ -95,6 +97,30 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   random_seed = 777` (that only rebinds a local name and has no
   effect, since the estimation functions read `constants.random_seed`
   as a module attribute at call time).
+
+## TCGA sample selection (`tcga_sample_selection.py`)
+
+`download_tcga_data.py` fetches one MAF file per sequenced
+*aliquot*, with no sample-type filtering or per-case dedup — a case
+(patient) with multiple sequenced aliquots becomes multiple
+independent files (e.g. a re-plated portion, or both a primary and a
+metastatic tumor).
+
+`select_tcga_maf_files(maf_dir, ...)` is the entry point: sample-type
+filter (default keeps only 01/03 — Primary Solid Tumor and Primary
+Blood Derived Cancer — matching cancereffectsizeR's
+`get_TCGA_project_MAF()`), then a per-case duplicate policy
+(`keep_all`/`oldest`/`newest`/`random`), then optional
+`exclude_prior_treatment`. It does **not** run automatically inside
+`main.py`-style pipelines or `MutationDataset` construction — call it
+on an already-downloaded `all_maf_files/`-style directory and feed
+the returned subset forward yourself if you want filtering applied.
+
+Barcode parsing (`TcgaBarcodeInfo`, `parse_tcga_barcode`,
+`SAMPLE_TYPE_CODES`) and the GDC cases-API lookup
+(`fetch_case_metadata`, aliased here as `fetch_gdc_case_metadata`)
+live in `gdcfetch.tcga_barcode`, a dependency — this module
+re-exports those names so callers don't need a second import.
 
 ## General conventions
 

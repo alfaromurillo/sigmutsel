@@ -2543,7 +2543,11 @@ class Model:
         print(summary.to_string())
 
     def _estimate_gamma_variant(
-        self, variant, upper_bound_prior=None, store=True
+        self,
+        variant,
+        upper_bound_prior=None,
+        store=True,
+        excluded_samples=None,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -2557,6 +2561,12 @@ class Model:
             default (which also auto-expands if bound-limited).
         store : bool, optional
             Whether to store result.
+        excluded_samples : collection of str or None, optional
+            Tumor sample barcodes to drop entirely (from both the
+            present and absent sets) before estimating gamma, e.g.
+            samples flagged by :func:`sample_qc.combine_sample_flags`.
+            Inverse-variance downweighting is not implemented here --
+            see `Model.estimate_cov_effects`'s docstring for why.
 
         Returns
         -------
@@ -2576,6 +2586,10 @@ class Model:
         variants_present = self.dataset.variants_present
         present_mask = variants_present.loc[variant] == 1
         absent_mask = ~present_mask
+        if excluded_samples is not None:
+            not_excluded = ~present_mask.index.isin(excluded_samples)
+            present_mask &= not_excluded
+            absent_mask &= not_excluded
 
         extra = (
             {}
@@ -2599,6 +2613,7 @@ class Model:
         upper_bound_prior=None,
         store=True,
         non_silent=True,
+        excluded_samples=None,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -2614,6 +2629,12 @@ class Model:
             Whether to store result.
         non_silent : bool, optional
             Whether to use non-silent mutations only.
+        excluded_samples : collection of str or None, optional
+            Tumor sample barcodes to drop entirely (from both the
+            present and absent sets) before estimating gamma, e.g.
+            samples flagged by :func:`sample_qc.combine_sample_flags`.
+            Inverse-variance downweighting is not implemented here --
+            see `Model.estimate_cov_effects`'s docstring for why.
 
         Returns
         -------
@@ -2653,6 +2674,10 @@ class Model:
 
         present_mask = gene_presence.loc[gene_id] == 1
         absent_mask = ~present_mask
+        if excluded_samples is not None:
+            not_excluded = ~present_mask.index.isin(excluded_samples)
+            present_mask &= not_excluded
+            absent_mask &= not_excluded
 
         extra = (
             {}
@@ -2924,9 +2949,10 @@ class Model:
                 "Create model with cov_matrix parameter."
             )
 
-        # Get L_low and L_high from auto kwargs or use defaults
-        L_low = self._auto_mu_taus_kwargs.get("L_low", 64)
-        L_high = self._auto_mu_taus_kwargs.get("L_high", 500)
+        # Get L_low and L_high from auto kwargs (whatever compute_mu_taus
+        # was actually run with -- None if no correction was applied)
+        L_low = self._auto_mu_taus_kwargs.get("L_low")
+        L_high = self._auto_mu_taus_kwargs.get("L_high")
 
         # Build signature matrix path
         location_sig_matrix_norm = (
@@ -3860,12 +3886,13 @@ class Model:
         **kwargs : dict
             Additional arguments passed to
             :func:`estimate_mus.compute_mu_tau_per_tumor`:
-            - L_low : float, optional (default 64)
+            - L_low : float or None, optional (default None)
                 Lower burden threshold for correcting low-burden
-                samples
-            - L_high : float, optional (default 500)
+                samples. None (the default) applies no correction --
+                each sample's own raw alpha/burden is used as-is.
+            - L_high : float or None, optional (default None)
                 Upper burden threshold for intermediate-burden
-                correction
+                correction. No effect if L_low is None.
             - cut_at_L_low : bool, default False
                 Whether to hard clip burden estimates at L_low
 
@@ -3977,23 +4004,16 @@ class Model:
             tmp_path = tmp_file.name
 
         try:
-            l_low = kwargs.get("L_low", 64)
-            l_high = kwargs.get("L_high", 500)
+            l_low = kwargs.get("L_low")
+            l_high = kwargs.get("L_high")
 
             if "L_low" not in kwargs:
                 logger.warning(
-                    "L_low was not provided and 64 was chosen as the "
-                    "lower burden threshold for correcting low-burden "
-                    "samples. If you want to run a model without "
-                    "correction for low-burden samples set L_low=0."
-                )
-            if "L_high" not in kwargs:
-                logger.warning(
-                    "L_high was not provided and 500 was chosen as the "
-                    "upper burden threshold for intermediate-burden "
-                    "correction. If you want to run a model without a "
-                    "limit for intermediate-burden correction set "
-                    "L_high=np.inf."
+                    "L_low was not provided; no low-burden correction "
+                    "will be applied (each sample's own raw alpha/"
+                    "burden is used as-is). Pass L_low=<value> to "
+                    "blend low-burden samples' estimates toward a "
+                    "population average instead."
                 )
 
             compute_kwargs = kwargs.copy()
@@ -4356,7 +4376,12 @@ class Model:
         return self._mu_gs
 
     def estimate_cov_effects(
-        self, sample="MAP", chains=4, burn=1000, tol=0.05
+        self,
+        sample="MAP",
+        chains=4,
+        burn=1000,
+        tol=0.05,
+        excluded_samples=None,
     ):
         """Estimate covariate effect coefficients via MAP or MCMC.
 
@@ -4397,6 +4422,15 @@ class Model:
             when estimates or HDI bounds fall too close to the
             configured parameter bounds. Increase this if you want
             a looser check.
+        excluded_samples : collection of str or None, default None
+            Tumor sample barcodes to drop entirely before fitting
+            (e.g. samples flagged by
+            :func:`sample_qc.combine_sample_flags`). Applied to both
+            `base_mus` and `genes_present` before the model sees them.
+            Inverse-variance downweighting instead of dropping is not
+            implemented -- PyMC's `Bernoulli` likelihood here has no
+            native per-observation weight argument; see the L_low
+            low-burden-correction plan for why this was deferred.
 
         Returns
         -------
@@ -4738,16 +4772,35 @@ class Model:
         else:
             logger.info("Using signature-independent mode")
 
+        # Step 3: drop excluded samples (tumor axis) before anything
+        # gets transposed to a bare numpy array -- past this point
+        # there's no longer a labeled axis to filter by barcode.
+        genes_present_source = self.dataset.genes_present
+        if excluded_samples is not None:
+            kept_samples = genes_present_source.columns.difference(
+                excluded_samples
+            )
+            genes_present_source = genes_present_source[kept_samples]
+            if isinstance(self._base_mus, dict):
+                base_mus_source = {
+                    sig: df[kept_samples]
+                    for sig, df in self._base_mus.items()
+                }
+            else:
+                base_mus_source = self._base_mus[kept_samples]
+        else:
+            base_mus_source = self._base_mus
+
         # Step 3: Filter and transpose base_mus
-        if isinstance(self._base_mus, dict):
+        if isinstance(base_mus_source, dict):
             # Signature-separated: filter and transpose each DataFrame
             mus_transposed = {
                 sig: df.loc[passenger_genes_complete].T.values
-                for sig, df in self._base_mus.items()
+                for sig, df in base_mus_source.items()
             }
         else:
             # Signature-independent: filter and transpose DataFrame
-            mus_transposed = self._base_mus.loc[
+            mus_transposed = base_mus_source.loc[
                 passenger_genes_complete
             ].T.values
 
@@ -4758,7 +4811,7 @@ class Model:
         # which can include genes never mutated here but with real
         # covariate data) may include IDs absent from genes_present --
         # by construction, never-mutated, so 0 in every sample.
-        presence_matrix = self.dataset.genes_present.reindex(
+        presence_matrix = genes_present_source.reindex(
             passenger_genes_complete, fill_value=0
         ).T.values
 
@@ -5026,7 +5079,9 @@ class Model:
                 return signature_names
         return [f"signature_{i}" for i in range(n_signatures)]
 
-    def estimate_passenger_genes_r2(self):
+    def estimate_passenger_genes_r2(
+        self, sample_weights=None, excluded_samples=None
+    ):
         """Estimate R² for passenger gene mutation frequency predictions.
 
         This method evaluates model performance on passenger genes
@@ -5045,6 +5100,24 @@ class Model:
         that baseline mutation rates are being used.
 
         The result is stored in `self.passenger_genes_r2`.
+
+        Parameters
+        ----------
+        sample_weights : pd.Series or None, default None
+            Optional per-sample weight (indexed by
+            ``Tumor_Sample_Barcode``, matching `genes_present`'s
+            columns), applied to both the observed and expected sums
+            before computing R². Default (None) weights every sample
+            equally (today's behavior). Intended for samples flagged
+            by :mod:`sample_qc` as lower-confidence, rather than
+            dropping them outright -- see `excluded_samples` for that.
+            Samples missing from `sample_weights` get weight 1.
+        excluded_samples : collection of str or None, default None
+            Sample barcodes to exclude entirely from both sums before
+            computing R² (e.g. samples flagged by
+            :func:`sample_qc.combine_sample_flags`, when dropping
+            rather than downweighting). Applied before
+            `sample_weights`.
 
         Returns
         -------
@@ -5195,14 +5268,34 @@ class Model:
             passenger_gene_ids, fill_value=0
         )
 
+        if excluded_samples is not None:
+            keep = mu_gs_passenger.columns.difference(
+                excluded_samples
+            )
+            mu_gs_passenger = mu_gs_passenger[keep]
+            genes_present_passenger = genes_present_passenger[keep]
+
+        if sample_weights is not None:
+            weights = sample_weights.reindex(
+                mu_gs_passenger.columns, fill_value=1.0
+            )
+        else:
+            weights = pd.Series(1.0, index=mu_gs_passenger.columns)
+
         # Sum observed mutations across all samples for each gene
-        present_sum = genes_present_passenger.sum(
+        present_sum = genes_present_passenger.mul(
+            weights, axis=1
+        ).sum(
             axis=1
         )  # Sum over genes
 
         # Convert mutation rates to presence probabilities and sum
         # across all samples for each gene
-        expected = (1 - np.exp(-mu_gs_passenger)).sum(axis=1)
+        expected = (
+            (1 - np.exp(-mu_gs_passenger))
+            .mul(weights, axis=1)
+            .sum(axis=1)
+        )
 
         # Compute R² between expected and observed
         r2 = r2_score(present_sum, expected)

@@ -171,6 +171,34 @@ problem — see https://github.com/Townsend-Lab-Yale/cancereffectsizeR):
   *known* same-patient duplicates by barcode). Call it directly on
   a built `MutationDataset.mutation_db` when investigating a cohort.
 
+## Per-sample sequencing-quality flags (`sample_qc.py`)
+
+Separate from `qc.py` (which tags/drops individual mutation *rows*),
+this module scores whole *samples* against evidence external to the
+mutation count itself, and returns the flags for the caller to act
+on — it never drops or modifies anything itself, since whether a
+flagged sample should be dropped or downweighted is a per-call
+decision:
+
+- `flag_low_purity_samples(purity_table, ...)`: flags samples below
+  a tumor-purity threshold (default 0.30). Takes any purity table
+  with a barcode column and a purity column — this module does no
+  I/O and fetches nothing itself; the caller loads whichever purity
+  resource it wants (e.g. a cohort-wide consensus purity/ploidy
+  table) and passes it in.
+- `compute_vaf_shape_score(sample_rows, purity, ...)` /
+  `flag_vaf_shape_samples(mutation_db, purity_table, ...)`: flags
+  samples whose variant-allele-frequency pattern doesn't match a
+  flat-diploid `Binomial(depth, purity / 2)` null (a one-sample KS
+  test of per-variant binomial p-values against Uniform(0, 1) —
+  systematic under-calling skews those p-values toward 0). Needs
+  `t_depth`/`t_ref_count`/`t_alt_count`, which survive
+  `compact_data()`'s compaction for exactly this purpose. Ignores
+  subclonality/local copy-number deliberately — a QC gate, not a
+  clonal-architecture tool.
+- `combine_sample_flags(*flags, how="any"/"all")`: unions or
+  intersects multiple flag `Series`, aligned on their combined index.
+
 ## General conventions
 
 - **No titles in matplotlib figures** — titles go in captions.

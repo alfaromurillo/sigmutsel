@@ -15,12 +15,14 @@ informative region instead.
 """
 
 import numpy as np
+import pandas as pd
 
 from sigmutsel import constants
 from sigmutsel.estimate_gammas import (
     _natural_gamma_ceiling,
     estimate_gamma_from_mus,
 )
+from sigmutsel.models import Model
 
 # A small mu value among the "no" group forces a low natural
 # ceiling: -log(1e-12) / 0.01 ~= 2763.
@@ -121,3 +123,80 @@ def test_well_identified_gamma_is_not_capped():
         attrs["final_upper_bound_prior"]
         < attrs["natural_gamma_ceiling"]
     )
+
+
+# --- Model._estimate_gamma_variant/_estimate_gamma_gene's
+# --- excluded_samples (part of the L_low low-burden-correction
+# --- rework's dropping-only option; see the plan for why weighting
+# --- wasn't built here -- PyMC's Bernoulli likelihood in
+# --- estimate_gamma_from_mus has no native per-observation weight
+# --- argument). Both wrapper methods just build present_mask/
+# --- absent_mask and delegate to estimate_gamma_from_mus (tested
+# --- above), so these tests intercept that call rather than run a
+# --- real MCMC fit -- they check the masking, not gamma estimation.
+
+
+def _model_for_gamma_variant():
+    model = Model.__new__(Model)
+    model.mu_ms = pd.DataFrame(
+        [[0.1, 0.2, 0.3, 0.4]],
+        index=["VAR1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    dataset = type("FakeDataset", (), {})()
+    dataset.variants_present = pd.DataFrame(
+        [[1, 0, 1, 0]],
+        index=["VAR1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    model.dataset = dataset
+    model.gammas = {}
+    return model
+
+
+def test_estimate_gamma_variant_excludes_samples_from_both_masks(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes_index"] = list(mus_yes.index)
+        captured["no_index"] = list(mus_no.index)
+        return "fake_result"
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        fake_estimate_gamma_from_mus,
+    )
+
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant(
+        "VAR1", store=False, excluded_samples=["T1", "T4"]
+    )
+
+    # T1 was in the "present" group, T4 in "absent" -- both excluded,
+    # T2/T3 untouched.
+    assert captured["yes_index"] == ["T3"]
+    assert captured["no_index"] == ["T2"]
+
+
+def test_estimate_gamma_variant_no_excluded_samples_unchanged(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes_index"] = list(mus_yes.index)
+        captured["no_index"] = list(mus_no.index)
+        return "fake_result"
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        fake_estimate_gamma_from_mus,
+    )
+
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant("VAR1", store=False)
+
+    assert captured["yes_index"] == ["T1", "T3"]
+    assert captured["no_index"] == ["T2", "T4"]

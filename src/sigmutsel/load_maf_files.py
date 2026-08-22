@@ -626,6 +626,11 @@ def compact_data(df, *, variant_type="SNP", **kwargs):
           reference in case you wondered why the 2 in the previous one
         - Variant_Classification: type of mutation, like synonymous,
           nonsynonymous, missense, nonsense, splice site, etc
+        - t_depth, t_ref_count, t_alt_count: tumor read depth and
+          reference/alt allele counts, kept through compaction so VAF
+          (t_alt_count / t_depth) is computable downstream (e.g. for
+          per-sample sequencing-quality checks) without a separate raw
+          MAF read
 
     variant_type : str
         Type(s) of mutation to filter to, so far 'SNP' or 'ID' are
@@ -644,6 +649,7 @@ def compact_data(df, *, variant_type="SNP", **kwargs):
         - 'variant' (in HGVS protein-level nomenclature)
         - 'ensembl_gene_id'
         - 'type' (standard W[X>Y]Z format for 'SNP')
+        - 't_depth', 't_ref_count', 't_alt_count' (kept as-is, for VAF)
 
     """
     df = df.copy()
@@ -672,6 +678,9 @@ def compact_data(df, *, variant_type="SNP", **kwargs):
         "ensembl_gene_id",
         "variant",
         "type",
+        "t_depth",
+        "t_ref_count",
+        "t_alt_count",
     ]
 
     df = df[final_cols_to_keep]

@@ -65,7 +65,9 @@ def count_mutation_burden(db):
     return mutation_counts
 
 
-def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
+def estimate_ell_hats(
+    df, L_low=None, L_high=None, *, cut_at_L_low=False
+):
     """Estimate adjusted mutation burdens (ell_hat) per sample.
 
     This function uses the total or expected mutation burden per
@@ -86,11 +88,14 @@ def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
         columns are not present it assumes that `df` is a mutation
         DataFrame and runs :func:`count_mutation_burden` first.
 
-    L_low : float
-        Threshold below which burdens are corrected.
+    L_low : float or None, default None
+        Threshold below which burdens are corrected. If None, no
+        correction is applied and each sample's raw observed burden
+        is returned as-is.
 
-    L_high : float
-        Upper threshold for computing expected burden at `L_low`.
+    L_high : float or None, default None
+        Upper threshold for computing expected burden at `L_low`. No
+        effect if `L_low` is None.
 
     cut_at_L_low : bool, default=True
         If True, low-burden samples are assigned a fixed value.
@@ -110,6 +115,10 @@ def estimate_ell_hats(df, L_low, L_high, *, cut_at_L_low=False):
 
     else:
         mb = count_mutation_burden(df)
+
+    if L_low is None:
+        logger.warning("No low-burden correction requested.")
+        return mb["total_mutations"].rename("ell_hats")
 
     ells = mb["total_mutations"]
     L_low_star = L_low

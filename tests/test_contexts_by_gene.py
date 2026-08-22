@@ -239,3 +239,85 @@ def test_passenger_genes_r2_handles_genes_absent_from_genes_present(
     r2 = model.estimate_passenger_genes_r2()
     assert np.isfinite(r2)
     assert model.passenger_genes_r2 == r2
+
+
+def _minimal_model_for_r2(tmp_path):
+    tumors = ["T1", "T2", "T3"]
+    genes_present = pd.DataFrame(
+        [[1, 0, 1], [0, 1, 1]],
+        index=["ENSG_A", "ENSG_B"],
+        columns=tumors,
+    )
+    dataset = MutationDataset(location_maf_files=tmp_path)
+    dataset._genes_present = genes_present
+
+    mu_gs = pd.DataFrame(
+        [[0.5, 0.1, 0.5], [0.1, 0.5, 0.5]],
+        index=["ENSG_A", "ENSG_B"],
+        columns=tumors,
+    )
+
+    model = Model.__new__(Model)
+    model.dataset = dataset
+    model._mu_gs = mu_gs
+    model._passenger_genes_r2 = None
+    return model
+
+
+def test_passenger_genes_r2_default_weights_matches_unweighted(
+    tmp_path,
+):
+    """sample_weights=None (default) must reproduce today's behavior
+    exactly -- this is the numerical-equivalence guarantee the L_low
+    rework's Phase 1 plan relies on."""
+    model = _minimal_model_for_r2(tmp_path)
+    r2_default = model.estimate_passenger_genes_r2()
+
+    model2 = _minimal_model_for_r2(tmp_path)
+    all_ones = pd.Series(1.0, index=["T1", "T2", "T3"])
+    r2_explicit = model2.estimate_passenger_genes_r2(
+        sample_weights=all_ones
+    )
+    assert r2_default == r2_explicit
+
+
+def test_passenger_genes_r2_excluded_samples_matches_never_having_it(
+    tmp_path,
+):
+    """excluded_samples=["T3"] must give the identical result to T3
+    never having been in the dataset at all -- checked by comparing
+    against a model built with T3 already dropped from mu_gs/
+    genes_present, rather than asserting the R² merely "differs"
+    (with only 2 passenger genes, r2_score can coincidentally land on
+    the same value either way)."""
+    model_excl = _minimal_model_for_r2(tmp_path)
+    r2_excl = model_excl.estimate_passenger_genes_r2(
+        excluded_samples=["T3"]
+    )
+
+    model_never_had_it = _minimal_model_for_r2(tmp_path)
+    model_never_had_it.dataset._genes_present = (
+        model_never_had_it.dataset._genes_present[["T1", "T2"]]
+    )
+    model_never_had_it._mu_gs = model_never_had_it._mu_gs[
+        ["T1", "T2"]
+    ]
+    r2_reference = model_never_had_it.estimate_passenger_genes_r2()
+
+    assert np.isclose(r2_excl, r2_reference)
+
+
+def test_passenger_genes_r2_zero_weight_matches_exclusion(tmp_path):
+    """A sample weighted to 0 should give the identical result to
+    dropping it outright -- weighting and exclusion are two ways to
+    reach the same place when the weight is exactly 0."""
+    model_weighted = _minimal_model_for_r2(tmp_path)
+    r2_weighted = model_weighted.estimate_passenger_genes_r2(
+        sample_weights=pd.Series({"T1": 1.0, "T2": 1.0, "T3": 0.0})
+    )
+
+    model_excluded = _minimal_model_for_r2(tmp_path)
+    r2_excluded = model_excluded.estimate_passenger_genes_r2(
+        excluded_samples=["T3"]
+    )
+    assert np.isclose(r2_weighted, r2_excluded)

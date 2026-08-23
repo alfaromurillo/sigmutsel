@@ -10,11 +10,14 @@ anything itself. This mirrors :func:`qc.check_sample_overlap`'s
 may be kept and downweighted rather than dropped, which is a
 per-call decision, not something this module should assume.
 
-Neither function fetches its own reference data: callers pass in a
-purity table and a copy-number segment table (e.g. TCGA's Pan-Cancer
-Atlas ABSOLUTE purity/ploidy and segmentation files) rather than this
-module downloading anything TCGA-specific itself, keeping the package
-data-source-agnostic.
+Most functions here do no I/O of their own: callers pass in a purity
+table and a copy-number segment table (e.g. TCGA's Pan-Cancer Atlas
+ABSOLUTE purity/ploidy and segmentation files) rather than this module
+downloading anything TCGA-specific itself, keeping the package
+data-source-agnostic. The one deliberate exception is
+:func:`load_copy_number_segments_from_file`, a caching convenience
+wrapper -- see its docstring for why processing the segments file is
+worth caching to disk rather than redoing on every call.
 """
 
 import logging
@@ -137,6 +140,81 @@ def load_copy_number_segments(
             g[end_col].to_numpy(),
             g[cn_col].to_numpy(),
         )
+    return segments
+
+
+def load_copy_number_segments_from_file(
+    segments_path, *, cache_path=None, **kwargs
+):
+    """Load+process an ABSOLUTE-style segments file, with optional
+    on-disk caching of the processed structure.
+
+    :func:`load_copy_number_segments` itself does no I/O (it takes an
+    already-loaded DataFrame), by design -- but building its output
+    from TCGA's ~250MB, ~1.9M-row pan-cancer segments file means
+    parsing that file *and* a ~240k-group Python-level groupby, real
+    costs that don't depend on which cohort is being processed. A
+    per-cohort pipeline invoked as a separate process per cohort (as
+    this package's typical caller does) would otherwise pay both
+    costs again for every cohort, even though the underlying segments
+    never change (TCGA is a closed, fixed dataset -- see the L_low
+    low-burden-correction plan's data-provenance notes). This wrapper
+    does the expensive parse+groupby once and pickles the result, so
+    later calls skip straight to a fast unpickle instead of reading
+    the raw file at all.
+
+    Parameters
+    ----------
+    segments_path : str or pathlib.Path
+        Path to the raw segments file (e.g. from
+        :func:`setup.download_tcga_absolute_segments`).
+    cache_path : str or pathlib.Path or None, default None
+        Where to cache the processed structure. If it already exists,
+        it's unpickled and returned directly -- `segments_path` is
+        never read in that case. If it doesn't exist, the file at
+        `segments_path` is read and processed as usual, then pickled
+        here for next time. If None, defaults to `segments_path` with
+        a ``.pkl`` suffix appended (not replaced, since ABSOLUTE's
+        segments filename already ends in ``.txt``).
+    **kwargs
+        Forwarded to :func:`load_copy_number_segments` (its column-name
+        parameters) on a cache miss.
+
+    Returns
+    -------
+    dict
+        As returned by :func:`load_copy_number_segments`.
+    """
+    import pickle
+    from pathlib import Path
+
+    segments_path = Path(segments_path)
+    cache_path = (
+        Path(cache_path)
+        if cache_path is not None
+        else segments_path.parent / (segments_path.name + ".pkl")
+    )
+
+    if cache_path.exists():
+        logger.info(
+            f"Reusing cached copy-number segments at {cache_path}"
+        )
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    logger.info(
+        f"Parsing copy-number segments from {segments_path}..."
+    )
+    segments_table = pd.read_csv(segments_path, sep="\t")
+    segments = load_copy_number_segments(segments_table, **kwargs)
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "wb") as f:
+        pickle.dump(segments, f)
+    logger.info(
+        f"Cached processed copy-number segments to {cache_path}"
+    )
+
     return segments
 
 
@@ -385,7 +463,7 @@ def flag_vaf_shape_samples(
     return flagged.rename("anomalous_vaf_shape")
 
 
-def combine_sample_flags(*flags, how="any"):
+def combine_sample_flags(*flags, how="any", warn_threshold=0.05):
     """Combine per-sample boolean flag Series into one.
 
     Parameters
@@ -396,10 +474,22 @@ def combine_sample_flags(*flags, how="any"):
         :func:`flag_vaf_shape_samples`. Indices need not match --
         combined on their union, treating a sample absent from one
         flag as not-flagged by that check (no evidence, not a
-        positive flag).
+        positive flag). For `warn_threshold` to reflect a real
+        fraction of the cohort, pass in flags already restricted/
+        reindexed to that cohort's own samples -- an unrestricted
+        pan-cancer `flag_low_purity_samples` result combined with a
+        single cohort's `flag_vaf_shape_samples` result would dilute
+        the denominator with irrelevant samples from other cohorts.
     how : {"any", "all"}, default "any"
         "any": flagged if any input flags it. "all": flagged only if
         every input flags it.
+    warn_threshold : float or None, default 0.05
+        Log a warning if more than this fraction of the combined
+        index ends up flagged -- a signal that dropping flagged
+        samples outright may be discarding too much of the cohort,
+        and inverse-variance weighting (see the L_low low-burden-
+        correction plan's deferred Option A) may be worth revisiting
+        instead. Set to None to disable.
 
     Returns
     -------
@@ -412,4 +502,17 @@ def combine_sample_flags(*flags, how="any"):
     result = (
         combined.any(axis=1) if how == "any" else combined.all(axis=1)
     )
-    return result.rename("sample_qc_flag")
+    result = result.rename("sample_qc_flag")
+
+    if warn_threshold is not None and len(result) > 0:
+        frac_flagged = result.mean()
+        if frac_flagged > warn_threshold:
+            logger.warning(
+                f"{frac_flagged:.1%} of samples flagged "
+                f"({int(result.sum())}/{len(result)}), above the "
+                f"{warn_threshold:.0%} warn_threshold -- dropping this "
+                "many samples may be discarding too much of the "
+                "cohort; consider inverse-variance weighting instead."
+            )
+
+    return result

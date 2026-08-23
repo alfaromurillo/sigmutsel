@@ -17,6 +17,7 @@ from sigmutsel.sample_qc import (
     flag_low_purity_samples,
     flag_vaf_shape_samples,
     load_copy_number_segments,
+    load_copy_number_segments_from_file,
 )
 
 # --- flag_low_purity_samples ----------------------------------------
@@ -375,3 +376,97 @@ def test_combine_sample_flags_invalid_how():
     a = pd.Series({"s1": True})
     with pytest.raises(ValueError):
         combine_sample_flags(a, how="bogus")
+
+
+def test_combine_sample_flags_warns_above_threshold(caplog):
+    # 2/20 = 10% flagged, above the default 5% warn_threshold
+    a = pd.Series({f"s{i}": i < 2 for i in range(20)})
+    with caplog.at_level("WARNING", logger="sigmutsel.sample_qc"):
+        combine_sample_flags(a)
+    assert any("10.0%" in record.message for record in caplog.records)
+
+
+def test_combine_sample_flags_no_warning_below_threshold(caplog):
+    # 1/20 = 5%, not strictly above the default 5% threshold
+    a = pd.Series({f"s{i}": i < 1 for i in range(20)})
+    with caplog.at_level("WARNING", logger="sigmutsel.sample_qc"):
+        combine_sample_flags(a)
+    assert not any(
+        "warn_threshold" in record.message
+        or "flagged" in record.message
+        for record in caplog.records
+    )
+
+
+def test_combine_sample_flags_warn_threshold_none_disables():
+    a = pd.Series({f"s{i}": True for i in range(20)})
+    # Should not raise/log even though 100% is flagged -- just
+    # confirm it runs cleanly with warnings disabled.
+    combined = combine_sample_flags(a, warn_threshold=None)
+    assert combined.all()
+
+
+def test_combine_sample_flags_custom_warn_threshold(caplog):
+    a = pd.Series({f"s{i}": i < 1 for i in range(20)})  # 5%
+    with caplog.at_level("WARNING", logger="sigmutsel.sample_qc"):
+        combine_sample_flags(a, warn_threshold=0.01)
+    assert any("5.0%" in record.message for record in caplog.records)
+
+
+# --- load_copy_number_segments_from_file (caching) ---------------------
+
+
+def test_load_copy_number_segments_from_file_builds_and_caches(
+    tmp_path,
+):
+    segments_path = tmp_path / "segments.txt"
+    _segments_table().to_csv(segments_path, sep="\t", index=False)
+    cache_path = tmp_path / "segments.pkl"
+
+    assert not cache_path.exists()
+    segments = load_copy_number_segments_from_file(
+        segments_path, cache_path=cache_path
+    )
+    assert cache_path.exists()
+    _, _, cn = segments[("TCGA-AA-0001-01", "1")]
+    assert list(cn) == [2.0, 4.0]
+
+
+def test_load_copy_number_segments_from_file_cache_hit_skips_parse(
+    tmp_path, monkeypatch
+):
+    segments_path = tmp_path / "segments.txt"
+    _segments_table().to_csv(segments_path, sep="\t", index=False)
+    cache_path = tmp_path / "segments.pkl"
+
+    # Build the cache once for real.
+    load_copy_number_segments_from_file(
+        segments_path, cache_path=cache_path
+    )
+
+    # Second call: reading segments_path at all must not happen.
+    real_read_csv = pd.read_csv
+
+    def _boom(path, *args, **kwargs):
+        if str(path) == str(segments_path):
+            raise AssertionError(
+                "should not re-read segments_path on a cache hit"
+            )
+        return real_read_csv(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_csv", _boom)
+    segments = load_copy_number_segments_from_file(
+        segments_path, cache_path=cache_path
+    )
+    _, _, cn = segments[("TCGA-AA-0001-01", "1")]
+    assert list(cn) == [2.0, 4.0]
+
+
+def test_load_copy_number_segments_from_file_default_cache_path(
+    tmp_path,
+):
+    segments_path = tmp_path / "segments.txt"
+    _segments_table().to_csv(segments_path, sep="\t", index=False)
+
+    load_copy_number_segments_from_file(segments_path)
+    assert (tmp_path / "segments.txt.pkl").exists()

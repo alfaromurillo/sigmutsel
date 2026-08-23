@@ -154,6 +154,7 @@ class MutationDataset:
     _signature_genome_build: str | None = None
     _contexts_by_gene: pd.DataFrame = None
     _contexts_by_gene_gene_universe: str | None = None
+    _sample_qc_flags: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -212,6 +213,11 @@ class MutationDataset:
         if self._contexts_by_gene is not None:
             loaded.append(
                 f"contexts_by_gene: {self._contexts_by_gene.shape}"
+            )
+        if self._sample_qc_flags is not None:
+            loaded.append(
+                f"sample_qc_flags: {self._sample_qc_flags.shape[0]} "
+                "samples"
             )
 
         loaded_str = "\n  ".join(loaded) if loaded else "None"
@@ -295,6 +301,12 @@ class MutationDataset:
                 "contexts_by_gene.csv",
                 "csv",
             ),
+            (
+                "sample_qc_flags",
+                "_sample_qc_flags",
+                "sample_qc_flags.parquet",
+                "parquet",
+            ),
         ]
 
         saved_files = {}
@@ -337,7 +349,11 @@ class MutationDataset:
             }
 
         manifest = {
-            "version": 1,
+            # Bumped 2 -> adds sample_qc_flags (see the L_low
+            # low-burden-correction plan). Not read/validated on
+            # load -- documentary only, so an old manifest (version
+            # 1, no sample_qc_flags file) still loads fine.
+            "version": 2,
             "signature_class": self.signature_class,
             "location_maf_files": str(self.location_maf_files),
             "source_maf": (
@@ -545,6 +561,48 @@ class MutationDataset:
     def variants_present(self, value):
         """Set variant presence matrix."""
         self._variants_present = value
+
+    @property
+    def sample_qc_flags(self):
+        """Per-sample QC flag (lazy loaded), e.g. from
+        :func:`sample_qc.combine_sample_flags`.
+
+        Unlike the other lazy attributes here, this one is not
+        computed by any method on this class -- it is TCGA-specific
+        (purity/VAF-shape evidence, sourced by the caller from
+        outside `sigmutsel`, see :mod:`sample_qc`) and is expected to
+        be assigned directly by the pipeline that builds this
+        dataset (e.g. `tcga_analysis/code/main.py`).
+
+        Returns
+        -------
+        pandas.Series
+            Boolean, indexed by ``Tumor_Sample_Barcode``. ``True``
+            means flagged (drop or downweight).
+        """
+        if self._sample_qc_flags is None:
+            raise ValueError(
+                "sample_qc_flags not set. Assign "
+                "dataset.sample_qc_flags = combine_sample_flags(...) "
+                "first."
+            )
+        return self._sample_qc_flags["flag"]
+
+    @sample_qc_flags.setter
+    def sample_qc_flags(self, value):
+        """Set per-sample QC flags. Accepts a boolean Series or a
+        single-column DataFrame (the latter is what `load_dataset`
+        passes in, since parquet round-trips as a DataFrame)."""
+        if isinstance(value, pd.Series):
+            value = value.rename("flag").to_frame()
+        elif value.shape[1] != 1:
+            raise ValueError(
+                "sample_qc_flags must be a Series or single-column "
+                f"DataFrame, got {value.shape[1]} columns."
+            )
+        else:
+            value = value.set_axis(["flag"], axis=1)
+        self._sample_qc_flags = value.astype(bool)
 
     @property
     def n_variants(self):

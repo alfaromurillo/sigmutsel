@@ -528,3 +528,72 @@ def test_load_copy_number_segments_from_file_default_cache_path(
 
     load_copy_number_segments_from_file(segments_path)
     assert (tmp_path / "segments.txt.pkl").exists()
+
+
+# --- MutationDataset.sample_qc_flags (models.py) -- a plain lazy
+# --- attribute for storing combine_sample_flags()'s output on the
+# --- dataset, not computed by sample_qc.py itself. Tested here
+# --- rather than in test_contexts_by_gene.py since it's part of
+# --- this rework, not the gene_universe one.
+
+
+def test_sample_qc_flags_not_set_raises():
+    from sigmutsel.models import MutationDataset
+
+    dataset = MutationDataset(location_maf_files="/nonexistent")
+    with pytest.raises(ValueError, match="sample_qc_flags"):
+        _ = dataset.sample_qc_flags
+
+
+def test_sample_qc_flags_roundtrip_series():
+    from sigmutsel.models import MutationDataset
+
+    dataset = MutationDataset(location_maf_files="/nonexistent")
+    flags = pd.Series(
+        [True, False, True], index=["T1", "T2", "T3"], name="whatever"
+    )
+    dataset.sample_qc_flags = flags
+    result = dataset.sample_qc_flags
+    assert result.name == "flag"
+    assert result.tolist() == [True, False, True]
+    assert result.dtype == bool
+
+
+def test_sample_qc_flags_save_load_roundtrip(tmp_path):
+    from sigmutsel.models import MutationDataset
+
+    dataset = MutationDataset(location_maf_files=tmp_path / "src")
+    dataset._mutation_db = pd.DataFrame(
+        {"Tumor_Sample_Barcode": ["T1", "T2"], "variant": ["a", "b"]}
+    )
+    dataset.sample_qc_flags = pd.Series(
+        [True, False], index=["T1", "T2"]
+    )
+
+    save_dir = tmp_path / "saved"
+    dataset.save_dataset(save_dir)
+
+    loaded = MutationDataset.load_dataset(save_dir)
+    result = loaded.sample_qc_flags
+    assert result.loc["T1"] == True
+    assert result.loc["T2"] == False
+
+
+def test_sample_qc_flags_dataset_without_it_still_saves_loads(
+    tmp_path,
+):
+    """A dataset that never had sample_qc_flags assigned should save
+    and load fine (it's optional, not required)."""
+    from sigmutsel.models import MutationDataset
+
+    dataset = MutationDataset(location_maf_files=tmp_path / "src")
+    dataset._mutation_db = pd.DataFrame(
+        {"Tumor_Sample_Barcode": ["T1"], "variant": ["a"]}
+    )
+
+    save_dir = tmp_path / "saved"
+    dataset.save_dataset(save_dir)
+
+    loaded = MutationDataset.load_dataset(save_dir)
+    with pytest.raises(ValueError, match="sample_qc_flags"):
+        _ = loaded.sample_qc_flags

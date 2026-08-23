@@ -2397,6 +2397,7 @@ class Model:
         upper_bound_prior=None,
         store=True,
         non_silent=True,
+        excluded_samples=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -2421,6 +2422,11 @@ class Model:
         non_silent : bool, optional
             For genes, whether to use non-silent mutations only.
             Default True.
+        excluded_samples : collection of str or None, default None
+            Tumor barcodes to drop from both the "present" and
+            "absent" masks before estimation. See
+            `_estimate_gamma_variant`/`_estimate_gamma_gene` for
+            details.
 
         Returns
         -------
@@ -2445,7 +2451,10 @@ class Model:
 
         if level == "variant":
             result = self._estimate_gamma_variant(
-                item, upper_bound_prior=upper_bound_prior, store=store
+                item,
+                upper_bound_prior=upper_bound_prior,
+                store=store,
+                excluded_samples=excluded_samples,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -2453,6 +2462,7 @@ class Model:
                 upper_bound_prior=upper_bound_prior,
                 store=store,
                 non_silent=non_silent,
+                excluded_samples=excluded_samples,
             )
         else:
             raise ValueError(

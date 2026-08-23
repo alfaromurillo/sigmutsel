@@ -200,3 +200,28 @@ def test_estimate_gamma_variant_no_excluded_samples_unchanged(
 
     assert captured["yes_index"] == ["T1", "T3"]
     assert captured["no_index"] == ["T2", "T4"]
+
+
+def test_estimate_gamma_public_forwards_excluded_samples(monkeypatch):
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes_index"] = list(mus_yes.index)
+        captured["no_index"] = list(mus_no.index)
+        return "fake_result"
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        fake_estimate_gamma_from_mus,
+    )
+
+    model = _model_for_gamma_variant()
+    model.estimate_gamma(
+        "VAR1",
+        level="variant",
+        store=False,
+        excluded_samples=["T1", "T4"],
+    )
+
+    assert captured["yes_index"] == ["T3"]
+    assert captured["no_index"] == ["T2"]

@@ -94,6 +94,64 @@ def flag_low_purity_samples(
     return flagged.rename("low_purity")
 
 
+def flag_unverified_samples(
+    sample_barcodes,
+    purity_table,
+    *,
+    barcode_column="array",
+    purity_column="purity",
+):
+    """Flag samples with no purity estimate available at all.
+
+    Distinct from :func:`flag_low_purity_samples`'s output: that
+    function treats missing purity as "no evidence of a problem" (not
+    flagged) -- the right default (a missing ABSOLUTE call isn't
+    itself evidence of bad sequencing; it can just as easily reflect
+    a genuinely flat, hard-to-anchor copy-number profile), but it
+    means "not flagged" silently conflates "checked and clean" with
+    "never checked." This function surfaces the latter as its own
+    category, so it can be reported/stored separately rather than
+    lost. Since :func:`compute_vaf_shape_score` also requires purity,
+    a sample flagged here has no independent QC evidence from
+    *either* check, not just the purity one.
+
+    Parameters
+    ----------
+    sample_barcodes : iterable of str
+        Full-length sample barcodes to check (e.g.
+        ``mutation_db["Tumor_Sample_Barcode"].unique()``).
+    purity_table : pandas.DataFrame
+        Same purity table as :func:`flag_low_purity_samples`.
+    barcode_column, purity_column : str
+        Column names, as in :func:`flag_low_purity_samples`.
+
+    Returns
+    -------
+    pandas.Series
+        Boolean, indexed by `sample_barcodes` (full length, not
+        truncated to the purity table's barcode granularity).
+        ``True`` means no purity estimate was found for that sample.
+    """
+    purity = purity_table.set_index(barcode_column)[purity_column]
+    if purity.index.has_duplicates:
+        purity = purity[~purity.index.duplicated(keep="first")]
+    barcode_length = len(purity.index[0])
+
+    sample_barcodes = list(sample_barcodes)
+    short = pd.Series(
+        sample_barcodes, index=sample_barcodes
+    ).str.slice(0, barcode_length)
+    unverified = short.map(purity).isna()
+
+    logger.info(
+        f"Unverified: {int(unverified.sum())}/{len(unverified)} samples "
+        "have no purity estimate at all (no independent QC evidence "
+        "from either check -- included by default, but tracked "
+        "separately from 'checked and clean')."
+    )
+    return unverified.rename("no_purity_evidence")
+
+
 def load_copy_number_segments(
     segments_table,
     *,

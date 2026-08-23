@@ -15,6 +15,7 @@ from sigmutsel.sample_qc import (
     combine_sample_flags,
     compute_vaf_shape_score,
     flag_low_purity_samples,
+    flag_unverified_samples,
     flag_vaf_shape_samples,
     load_copy_number_segments,
     load_copy_number_segments_from_file,
@@ -73,6 +74,63 @@ def test_flag_low_purity_samples_custom_columns():
         threshold=0.30,
     )
     assert bool(flags["TCGA-AA-0001-01"])
+
+
+# --- flag_unverified_samples --------------------------------------------
+
+
+def test_flag_unverified_samples_flags_missing_purity():
+    purity_table = pd.DataFrame(
+        {
+            "array": ["TCGA-AA-0001-01", "TCGA-AA-0002-01"],
+            "purity": [0.6, np.nan],
+        }
+    )
+    sample_barcodes = [
+        "TCGA-AA-0001-01A-11D-0001-01",
+        "TCGA-AA-0002-01A-11D-0001-01",
+    ]
+    unverified = flag_unverified_samples(
+        sample_barcodes, purity_table
+    )
+    assert not unverified["TCGA-AA-0001-01A-11D-0001-01"]
+    assert unverified["TCGA-AA-0002-01A-11D-0001-01"]
+
+
+def test_flag_unverified_samples_flags_absent_from_purity_table():
+    purity_table = pd.DataFrame(
+        {"array": ["TCGA-AA-0001-01"], "purity": [0.6]}
+    )
+    sample_barcodes = ["TCGA-ZZ-9999-01A-11D-0001-01"]
+    unverified = flag_unverified_samples(
+        sample_barcodes, purity_table
+    )
+    assert unverified["TCGA-ZZ-9999-01A-11D-0001-01"]
+
+
+def test_flag_unverified_samples_custom_columns():
+    purity_table = pd.DataFrame(
+        {"Sample.ID": ["TCGA-AA-0001-01"], "CPE": [np.nan]}
+    )
+    sample_barcodes = ["TCGA-AA-0001-01A-11D-0001-01"]
+    unverified = flag_unverified_samples(
+        sample_barcodes,
+        purity_table,
+        barcode_column="Sample.ID",
+        purity_column="CPE",
+    )
+    assert unverified["TCGA-AA-0001-01A-11D-0001-01"]
+
+
+def test_flag_unverified_samples_preserves_full_barcode_index():
+    purity_table = pd.DataFrame(
+        {"array": ["TCGA-AA-0001-01"], "purity": [0.6]}
+    )
+    sample_barcodes = ["TCGA-AA-0001-01A-11D-0001-01"]
+    unverified = flag_unverified_samples(
+        sample_barcodes, purity_table
+    )
+    assert list(unverified.index) == sample_barcodes
 
 
 # --- load_copy_number_segments / annotate_local_copy_number ----------

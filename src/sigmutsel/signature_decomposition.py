@@ -204,6 +204,93 @@ def _expand_subvariants(base_sigs, available_sigs):
     return expanded
 
 
+def _load_default_cosmic_signature_database(
+    cosmic_version, genome_build, exome
+):
+    """Load SigProfilerAssignment's own bundled COSMIC SBS96 reference.
+
+    Mirrors the exact file-path convention SigProfilerAssignment's own
+    internal ``getProcessAvg()`` uses (verified directly against a
+    real installed copy, not assumed):
+    ``<package_path>/data/Reference_Signatures/<genome_build>/
+    COSMIC_v<cosmic_version>_SBS_<genome_build>[_exome].txt`` -- so a
+    "keep" subset built from this file (see
+    :func:`_write_filtered_signature_database`) reflects exactly the
+    same reference values SigProfilerAssignment would otherwise have
+    loaded by default. SBS96 only (see the "Only handles SBS96
+    context" note on :func:`run_signature_decomposition`'s
+    restriction-mechanism fix).
+    """
+    import SigProfilerAssignment as spa
+
+    suffix = "_exome" if exome else ""
+    path = (
+        Path(spa.__path__[0])
+        / "data"
+        / "Reference_Signatures"
+        / genome_build
+        / f"COSMIC_v{cosmic_version}_SBS_{genome_build}{suffix}.txt"
+    )
+    return pd.read_csv(path, sep="\t", index_col=0)
+
+
+def _write_filtered_signature_database(
+    base_df, keep_columns, output_path
+):
+    """Write a signature-database file restricted to `keep_columns`.
+
+    This is the mechanism that actually restricts
+    `Analyzer.cosmic_fit`'s candidate signature set: unlike
+    `signatures=`/`exclude_signature_subgroups=` (confirmed by
+    tracing SigProfilerAssignment's own installed source, and
+    empirically on real cohort data, to have no effect on the
+    underlying NNLS fit for the COSMIC-catalog fitting mode this
+    project uses -- see the note on
+    :func:`run_signature_decomposition`), `signature_database` is
+    read directly via `pd.read_csv` and becomes the actual fitting
+    basis. Restricting it there is a real, pre-fit restriction, not a
+    post-hoc filter of the fit's output.
+
+    Parameters
+    ----------
+    base_df : pd.DataFrame
+        Source signature matrix (index: mutation type, columns:
+        signature names) -- either the caller's own custom
+        `signature_database`, or the default COSMIC reference loaded
+        via `_load_default_cosmic_signature_database`.
+    keep_columns : Iterable[str]
+        Signature names to keep. Intersected with `base_df.columns`
+        (a name not present in `base_df` is silently ignored, same
+        convention as SigProfilerAssignment's own
+        `processAvg.drop(..., errors="ignore")`).
+    output_path : str or Path
+        Where to write the filtered database.
+
+    Returns
+    -------
+    Path
+        `output_path`, for chaining.
+
+    Raises
+    ------
+    ValueError
+        If no signatures remain after filtering.
+    """
+    keep_columns = [
+        c for c in base_df.columns if c in set(keep_columns)
+    ]
+    if not keep_columns:
+        raise ValueError(
+            "No signatures remain after filtering to keep_columns -- "
+            "check the exclude/include list against the signature "
+            "database's actual column names."
+        )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    base_df[keep_columns].to_csv(output_path, sep="\t")
+    return output_path
+
+
 def resolve_exclusion_list(
     cancer_type,
     location=None,
@@ -590,15 +677,72 @@ def run_signature_decomposition(
         )
         logger.debug(f"Signatures to include: {expanded_included}")
 
-    if exclude_signature_subgroups is not None:
-        how_many_sigs = (
-            f"{len(exclude_signature_subgroups)}"
-            if isinstance(exclude_signature_subgroups, list)
-            else "unknown"
+    # Restrict the actual fit via a filtered signature_database file,
+    # not via signatures=/exclude_signature_subgroups= -- traced
+    # through SigProfilerAssignment's own installed source and
+    # confirmed empirically (on real cohort data, not just synthetic
+    # tests) that neither parameter restricts the underlying NNLS
+    # candidate set for the COSMIC-catalog fitting mode used here:
+    # `signatures=` is only consumed for a different mode (custom
+    # denovo/decompose-fit signature files) this project never uses;
+    # `exclude_signature_subgroups=` only matches SigProfilerAssignment's
+    # own predefined category names (e.g. "Lymphoid_signatures"), never
+    # arbitrary signature-name lists. Both silently fit the *full*
+    # unrestricted catalog regardless of what's passed -- our own
+    # post-hoc column-filtering of the *returned* assignments then
+    # discards (not reallocates) any mass the unconstrained fit gave to
+    # a since-excluded signature. `signature_database=` is different:
+    # `Analyzer.cosmic_fit` reads it directly via `pd.read_csv` as the
+    # literal fitting basis, so restricting it here is a real, pre-fit
+    # restriction. Only handles SBS96 context (context_type == "96")
+    # -- this project's exclude/include mechanism is SBS96-only in
+    # practice; other context types fall through to the old,
+    # unrestricted-in-practice behavior unchanged.
+    keep_columns = None
+    if exclude_signature_subgroups is not None and isinstance(
+        exclude_signature_subgroups, list
+    ):
+        keep_columns = "exclude", exclude_signature_subgroups
+    elif signatures is not None:
+        keep_columns = "include", list(signatures)
+
+    if keep_columns is not None and context_type == "96":
+        mode, sig_list = keep_columns
+        if signature_database is not None:
+            base_df = pd.read_csv(
+                signature_database, sep="\t", index_col=0
+            )
+        else:
+            base_df = _load_default_cosmic_signature_database(
+                cosmic_version, genome_build, exome
+            )
+        if mode == "exclude":
+            keep = [
+                c for c in base_df.columns if c not in set(sig_list)
+            ]
+        else:
+            keep = sig_list
+        filtered_path = (
+            Path(output) / "sigmutsel_filtered_signature_database.txt"
+        )
+        _write_filtered_signature_database(
+            base_df, keep, filtered_path
         )
         logger.info(
-            "Passing exclude_signature_subgroups with "
-            f"{how_many_sigs} signatures"
+            f"Restricting fit to {len(set(keep) & set(base_df.columns))} "
+            f"signatures via a filtered signature_database "
+            f"({filtered_path})"
+        )
+        signature_database = str(filtered_path)
+        signatures = None
+        exclude_signature_subgroups = None
+    elif keep_columns is not None:
+        logger.warning(
+            f"context_type={context_type!r} -- signature restriction "
+            "isn't routed through signature_database for non-SBS96 "
+            "context types yet; falling back to the (unrestricted in "
+            "practice) signatures=/exclude_signature_subgroups= "
+            "parameters."
         )
 
     Analyzer.cosmic_fit(

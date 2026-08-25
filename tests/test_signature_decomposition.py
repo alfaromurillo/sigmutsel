@@ -15,6 +15,7 @@ from sigmutsel.signature_decomposition import (
     _expand_subvariants,
     _match_cancer_type_rows,
     _signatures_from_rows,
+    _write_filtered_signature_database,
     build_sbs96_matrix_from_mutation_db,
     resolve_exclusion_list,
 )
@@ -282,4 +283,64 @@ def test_build_sbs96_matrix_creates_parent_dirs(tmp_path):
         mutation_db, out
     )
     assert result_path == out
+    assert out.exists()
+
+
+# --- _write_filtered_signature_database -------------------------------
+
+
+def _fake_reference_db():
+    return pd.DataFrame(
+        {
+            "SBS1": [0.1, 0.2],
+            "SBS4": [0.3, 0.1],
+            "SBS25": [0.5, 0.6],
+            "SBS45": [0.9, 0.05],
+        },
+        index=["A[C>A]A", "A[C>A]C"],
+    )
+
+
+def test_write_filtered_signature_database_exclude_mode(tmp_path):
+    base = _fake_reference_db()
+    out = tmp_path / "filtered.txt"
+    keep = [c for c in base.columns if c not in {"SBS25", "SBS45"}]
+    result_path = _write_filtered_signature_database(base, keep, out)
+
+    written = pd.read_csv(result_path, sep="\t", index_col=0)
+    assert list(written.columns) == ["SBS1", "SBS4"]
+    assert "SBS25" not in written.columns
+    assert "SBS45" not in written.columns
+    # values preserved exactly, not renormalized
+    assert written.loc["A[C>A]A", "SBS1"] == 0.1
+
+
+def test_write_filtered_signature_database_keep_columns_not_in_base_ignored(
+    tmp_path,
+):
+    base = _fake_reference_db()
+    out = tmp_path / "filtered.txt"
+    # "SBS999" doesn't exist in base -- should be silently ignored,
+    # same convention as SigProfilerAssignment's own
+    # processAvg.drop(..., errors="ignore").
+    _write_filtered_signature_database(base, ["SBS1", "SBS999"], out)
+    written = pd.read_csv(out, sep="\t", index_col=0)
+    assert list(written.columns) == ["SBS1"]
+
+
+def test_write_filtered_signature_database_empty_result_raises(
+    tmp_path,
+):
+    base = _fake_reference_db()
+    out = tmp_path / "filtered.txt"
+    with pytest.raises(ValueError, match="No signatures remain"):
+        _write_filtered_signature_database(base, ["SBS999"], out)
+
+
+def test_write_filtered_signature_database_creates_parent_dirs(
+    tmp_path,
+):
+    base = _fake_reference_db()
+    out = tmp_path / "nested" / "dir" / "filtered.txt"
+    _write_filtered_signature_database(base, ["SBS1"], out)
     assert out.exists()

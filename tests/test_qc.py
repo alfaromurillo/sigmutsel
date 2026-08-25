@@ -14,6 +14,7 @@ from sigmutsel.qc import (
     apply_qc,
     check_sample_overlap,
     detect_mnv_dbs,
+    flag_artifact_signature_mutations,
     flag_exact_duplicates,
     flag_germline_variants,
     flag_repetitive_regions,
@@ -311,6 +312,58 @@ def test_flag_repetitive_regions_unknown_chrom_is_noop():
     )
     tagged = flag_repetitive_regions(df, intervals)
     assert tagged["problem"].isna().all()
+
+
+# --- flag_artifact_signature_mutations ---------------------------------
+
+
+def test_flag_artifact_signature_mutations_above_threshold():
+    df = pd.DataFrame(
+        [_valid_snv_row(), _valid_snv_row(), _valid_snv_row()]
+    )
+    probs = pd.Series([0.9, 0.4, 0.5], index=df.index)
+    tagged = flag_artifact_signature_mutations(
+        df, probs, threshold=0.5
+    )
+    assert tagged.loc[0, "problem"] == "artifact_signature_mutation"
+    assert pd.isna(tagged.loc[1, "problem"])
+    # exactly at threshold is not flagged (strictly greater than)
+    assert pd.isna(tagged.loc[2, "problem"])
+
+
+def test_flag_artifact_signature_mutations_plain_array_same_order():
+    df = pd.DataFrame([_valid_snv_row(), _valid_snv_row()])
+    tagged = flag_artifact_signature_mutations(
+        df, [0.9, 0.1], threshold=0.5
+    )
+    assert tagged.loc[0, "problem"] == "artifact_signature_mutation"
+    assert pd.isna(tagged.loc[1, "problem"])
+
+
+def test_flag_artifact_signature_mutations_respects_prior_tags():
+    df = pd.DataFrame([_valid_snv_row(), _valid_snv_row()])
+    df["problem"] = ["germline_variant_site", None]
+    probs = pd.Series([0.9, 0.9], index=df.index)
+    tagged = flag_artifact_signature_mutations(
+        df, probs, threshold=0.5
+    )
+    # row 0 keeps its earlier tag rather than being overwritten
+    assert tagged.loc[0, "problem"] == "germline_variant_site"
+    assert tagged.loc[1, "problem"] == "artifact_signature_mutation"
+
+
+def test_flag_artifact_signature_mutations_missing_series_entries_not_flagged():
+    df = pd.DataFrame(
+        [_valid_snv_row(), _valid_snv_row()], index=[10, 11]
+    )
+    # Series only covers index 10 -- index 11 should default to 0
+    # probability (not flagged), not raise or propagate NaN.
+    probs = pd.Series([0.9], index=[10])
+    tagged = flag_artifact_signature_mutations(
+        df, probs, threshold=0.5
+    )
+    assert tagged.loc[10, "problem"] == "artifact_signature_mutation"
+    assert pd.isna(tagged.loc[11, "problem"])
 
 
 def test_load_repeat_intervals_parses_rmsk_format(tmp_path):

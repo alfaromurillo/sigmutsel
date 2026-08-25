@@ -375,6 +375,68 @@ def flag_repetitive_regions(df, repeat_intervals):
     return df
 
 
+def flag_artifact_signature_mutations(
+    df, artifact_probability, threshold=0.5
+):
+    """Tag mutations dominantly attributed to a technical-artifact signature.
+
+    Unlike the other checks in this module, this one needs external,
+    dataset-wide input that doesn't exist per-MAF-file or before a
+    signature-decomposition fit has run: ``artifact_probability``,
+    each mutation's total probability mass on signatures COSMIC
+    itself flags as likely sequencing artifacts (see
+    :func:`sigmutsel.signature_attribution.compute_signature_probability_mass`
+    and ``constants.ARTIFACT_SIGNATURES``). Because of that, this
+    check is *not* one of :func:`apply_qc`'s per-file checks (those
+    run before any signature decomposition, one MAF file at a time,
+    inside :func:`load_maf_files.process_single_maf`) -- it's meant to
+    be called once, explicitly, on the whole cohort's already-built
+    mutation database, after the first ("pass A") fit of the two-pass
+    artifact-detection procedure (fit with artifact signatures present
+    in the basis so they can absorb their own mutations, tag and drop
+    the mutations dominantly attributed to them, then refit ("pass B")
+    on the cleaned mutation set with artifact signatures excluded --
+    see this project's plan for the full design and
+    :func:`sigmutsel.signature_decomposition.resolve_exclusion_list`'s
+    ``exclude_artifacts`` parameter for pass B's exclusion side).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Mutation dataframe (e.g. a dataset's whole-cohort
+        ``mutation_db``, not a single MAF file's rows).
+    artifact_probability : pandas.Series or array-like
+        Per-mutation summed probability mass on artifact signatures.
+        If a Series, aligned to *df* by index (missing entries treated
+        as 0, i.e. not flagged); otherwise must be the same length and
+        row order as *df*.
+    threshold : float, default 0.5
+        A mutation is flagged if its artifact-probability mass exceeds
+        this value. Not derived from theory -- tune against the real
+        distribution observed on a few pilot cohorts (see this
+        project's plan's Phase 0/2 empirical validation).
+
+    Returns
+    -------
+    pandas.DataFrame
+        *df* with ``"problem"`` added/updated
+        (``"artifact_signature_mutation"`` for flagged rows).
+    """
+    df = _ensure_problem_column(df)
+    untagged_mask = df["problem"].isna()
+    if not untagged_mask.any():
+        return df
+
+    if isinstance(artifact_probability, pd.Series):
+        probs = artifact_probability.reindex(df.index).fillna(0.0)
+    else:
+        probs = pd.Series(artifact_probability, index=df.index)
+
+    flag_mask = untagged_mask & (probs > threshold)
+    df.loc[flag_mask, "problem"] = "artifact_signature_mutation"
+    return df
+
+
 def apply_qc(
     df,
     *,

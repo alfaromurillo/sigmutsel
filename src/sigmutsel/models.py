@@ -1358,6 +1358,244 @@ class MutationDataset:
         print()
         return self._sig_assignments
 
+    def run_two_pass_signature_decomposition(
+        self,
+        artifact_threshold=0.5,
+        force_generation=False,
+        exome=None,
+        cosmic_version=None,
+        genome_build="GRCh38",
+        **kwargs,
+    ):
+        """Two-pass, artifact-aware signature decomposition.
+
+        Fits signature decomposition twice rather than once, so that
+        technical-artifact signatures (`constants.ARTIFACT_SIGNATURES`)
+        never contaminate real signatures' exposure and never count as
+        observed mutations downstream, without simply excluding them
+        from the fit (which would just force their mutations onto
+        whichever real signature fits next-best -- see this project's
+        plan for the full rationale):
+
+        1. **Pass A**: fit with artifact signatures present in the
+           basis (`exclude_artifacts=False`), so they can honestly
+           compete for -- and absorb -- their own mutations, via
+           :meth:`run_signature_decomposition`. Its raw output lives
+           in the standard
+           ``{location_maf_files}/signature_decomposition/{signature_class}/``
+           directory (kept for caching/debugging), but is an
+           intermediate result, *not* the final one.
+        2. Compute each mutation's probability mass on artifact
+           signatures from pass A's fit
+           (`signature_attribution.compute_signature_probability_mass`),
+           and drop (:func:`qc.flag_artifact_signature_mutations`,
+           then filtering ``problem.isna()``) the ones above
+           `artifact_threshold` from ``self.mutation_db`` --
+           guaranteeing they're excluded from burden, gene presence,
+           and every other downstream calculation that reads
+           `mutation_db`, not just from pass B's fit.
+        3. **Pass B**: rebuild the SBS96 matrix directly from the
+           artifact-mutation-cleaned `mutation_db` (not the original
+           MAF files -- single source of truth with what
+           `mutation_db` now holds) and refit with artifact signatures
+           excluded (`exclude_artifacts=True`). This becomes the
+           "official" result: ``self.sig_assignments`` /
+           ``self.signature_matrix`` are overwritten with pass B's,
+           and ``self.mutation_db`` is overwritten with the cleaned
+           version, once this method returns.
+
+        Requires ``self.mutation_db`` to already be built (e.g.
+        ``self.generate_mutation_db(qc_mode=True, ...)``) *before*
+        calling this -- pass A's artifact-probability computation
+        needs it, and it can't be built afterward without regenerating
+        over the cleaned data. When wiring this into
+        :meth:`build_full_dataset`, pass ``regenerate_mutation_db=False``
+        there, since this method already updated ``mutation_db`` and a
+        default rebuild would silently overwrite the cleaned version
+        with the original.
+
+        Only supports ``signature_class="SBS"`` (the matrix rebuild in
+        step 3 uses `constants.canonical_types_order`, which is
+        SBS96-specific).
+
+        Parameters
+        ----------
+        artifact_threshold : float, default 0.5
+            Forwarded to `qc.flag_artifact_signature_mutations`. Not
+            derived from theory -- tune against the real distribution
+            observed on a few pilot cohorts (see this project's plan).
+        force_generation, exome, cosmic_version, genome_build :
+            Forwarded to both passes (see :meth:`run_signature_decomposition`
+            for defaults).
+        **kwargs : dict
+            Forwarded to both passes -- e.g. `exclude_signature_subgroups`
+            (a cancer-type shorthand or explicit list) and
+            `treatment_naive`. `exclude_artifacts` is set explicitly by
+            this method for each pass and must not be passed here.
+
+        Returns
+        -------
+        pd.DataFrame
+            Pass B's signature assignments (also stored in
+            ``self.sig_assignments``).
+        """
+        if self.signature_class != "SBS":
+            raise NotImplementedError(
+                "run_two_pass_signature_decomposition only supports "
+                "signature_class='SBS' (the pass-B matrix rebuild "
+                "uses constants.canonical_types_order, which is "
+                "SBS96-specific)."
+            )
+        if not self.has_mutation_db():
+            raise ValueError(
+                "mutation_db must be built first (e.g. "
+                "generate_mutation_db(qc_mode=True, ...)) -- pass A's "
+                "per-mutation artifact-probability computation needs "
+                "it."
+            )
+        if "exclude_artifacts" in kwargs:
+            raise TypeError(
+                "exclude_artifacts is set explicitly per pass by "
+                "this method and must not be passed to "
+                "run_two_pass_signature_decomposition."
+            )
+
+        from .constants import ARTIFACT_SIGNATURES
+        from .qc import flag_artifact_signature_mutations
+        from .signature_attribution import (
+            compute_signature_probability_mass,
+        )
+        from .signature_decomposition import (
+            build_sbs96_matrix_from_mutation_db,
+        )
+        from .signature_decomposition import (
+            signature_decomposition as run_sig_decomp,
+        )
+
+        title = "Two-pass signature decomposition: pass A (artifact detection)"
+        print("=" * len(title))
+        print(title)
+        print("=" * len(title))
+        self.run_signature_decomposition(
+            force_generation=force_generation,
+            exome=exome,
+            cosmic_version=cosmic_version,
+            genome_build=genome_build,
+            exclude_artifacts=False,
+            **kwargs,
+        )
+        pass_a_assignments = self._sig_assignments
+        pass_a_signature_matrix = self._signature_matrix
+        if pass_a_signature_matrix is None:
+            raise RuntimeError(
+                "Pass A's normalized signature matrix wasn't loaded "
+                "-- can't compute per-mutation artifact probabilities."
+            )
+        print()
+
+        logger.info(
+            "Computing per-mutation artifact-signature probability "
+            "mass from pass A's fit..."
+        )
+        artifact_mass = compute_signature_probability_mass(
+            self.mutation_db,
+            pass_a_assignments,
+            pass_a_signature_matrix,
+            target_signatures=ARTIFACT_SIGNATURES,
+        )
+        artifact_mass = pd.Series(
+            artifact_mass, index=self.mutation_db.index
+        )
+
+        tagged_db = flag_artifact_signature_mutations(
+            self.mutation_db,
+            artifact_mass,
+            threshold=artifact_threshold,
+        )
+        n_flagged = (
+            tagged_db["problem"] == "artifact_signature_mutation"
+        ).sum()
+        logger.info(
+            f"Pass A: {n_flagged}/{len(tagged_db)} mutations "
+            f"({100 * n_flagged / len(tagged_db):.2f}%) flagged as "
+            "artifact-signature-attributed "
+            f"(threshold={artifact_threshold})."
+        )
+        cleaned_db = tagged_db[tagged_db["problem"].isna()].drop(
+            columns="problem"
+        )
+
+        # Pass B's input: rebuilt directly from the cleaned mutation
+        # set, not re-derived from the original MAF files.
+        matrix_dir = (
+            Path(self.location_maf_files)
+            / "output"
+            / self.signature_class
+        )
+        pass_b_matrix_path = (
+            matrix_dir
+            / "mutational_matrix.SBS96.exome.artifact_cleaned"
+        )
+        build_sbs96_matrix_from_mutation_db(
+            cleaned_db, pass_b_matrix_path
+        )
+
+        pass_b_results_dir = (
+            Path(self.location_maf_files)
+            / "signature_decomposition"
+            / f"{self.signature_class}_artifact_cleaned"
+        )
+
+        title = "Two-pass signature decomposition: pass B (final fit)"
+        print("=" * len(title))
+        print(title)
+        print("=" * len(title))
+
+        resolved_exome = True if exome is None else exome
+        resolved_cosmic_version = (
+            3.4 if cosmic_version is None else cosmic_version
+        )
+
+        pass_b_assignments = run_sig_decomp(
+            results_dir=str(pass_b_results_dir),
+            input_data=str(pass_b_matrix_path),
+            input_type="matrix",
+            collapse_to_SBS96=True,
+            force_generation=force_generation,
+            exome=resolved_exome,
+            cosmic_version=resolved_cosmic_version,
+            genome_build=genome_build,
+            exclude_artifacts=True,
+            **kwargs,
+        )
+
+        pass_b_sig_matrix_path = (
+            pass_b_results_dir
+            / "Assignment_Solution"
+            / "Signatures"
+            / "Assignment_Solution_Signatures.txt"
+        )
+        if pass_b_sig_matrix_path.exists():
+            pass_b_signature_matrix = pd.read_csv(
+                pass_b_sig_matrix_path, sep="\t", index_col=0
+            )
+        else:
+            logger.warning(
+                f"Pass B signature matrix not found at "
+                f"{pass_b_sig_matrix_path}"
+            )
+            pass_b_signature_matrix = None
+
+        # Pass B is the official result: everything downstream (burden,
+        # mu_tau, gene presence, R^2) must see the same cleaned
+        # mutation set pass B was fit on.
+        self._mutation_db = cleaned_db
+        self._sig_assignments = pass_b_assignments
+        self._signature_matrix = pass_b_signature_matrix
+
+        print()
+        return pass_b_assignments
+
     def generate_contexts_by_gene(
         self, fastas=None, gene_universe="own_cohort"
     ):
@@ -1462,7 +1700,11 @@ class MutationDataset:
         return self._contexts_by_gene
 
     def build_full_dataset(
-        self, fastas=None, gene_universe="own_cohort", **kwargs
+        self,
+        fastas=None,
+        gene_universe="own_cohort",
+        regenerate_mutation_db=True,
+        **kwargs,
     ):
         """Run the full data-generation pipeline for this dataset.
 
@@ -1472,17 +1714,37 @@ class MutationDataset:
             Forwarded to :meth:`generate_contexts_by_gene`.
         gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
             Forwarded to :meth:`generate_contexts_by_gene`.
+        regenerate_mutation_db : bool, default True
+            If False, skip calling :meth:`generate_mutation_db` and
+            use whatever is already in ``self.mutation_db`` (raises if
+            it hasn't been loaded). For callers that already built
+            (and possibly modified) the mutation database themselves
+            -- e.g. :meth:`run_two_pass_signature_decomposition`,
+            which needs ``mutation_db`` built *before* it can compute
+            per-mutation artifact probabilities, and updates it
+            in-place with the artifact-mutation-cleaned version
+            afterward. Calling this with the default `True` right
+            after that would silently regenerate and overwrite the
+            cleaned database with the original, uncleaned one.
         **kwargs : dict
             Forwarded to :meth:`generate_mutation_db` -- e.g.
             `qc_mode=True` (optionally with `qc_kwargs`) to enable
             the structured QC pipeline in :mod:`qc` instead of the
-            default silent validation.
+            default silent validation. Ignored if
+            `regenerate_mutation_db` is False.
         """
         title = "Mutation data: building compact mutation database."
         print("=" * len(title))
         print(title)
         print("=" * len(title))
-        self.generate_mutation_db(**kwargs)
+        if regenerate_mutation_db:
+            self.generate_mutation_db(**kwargs)
+        elif not self.has_mutation_db():
+            raise ValueError(
+                "regenerate_mutation_db=False but no mutation_db is "
+                "loaded -- call generate_mutation_db() (or "
+                "run_two_pass_signature_decomposition()) first."
+            )
         print()
 
         title = "Gene presence: computing matrices."

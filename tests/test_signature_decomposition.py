@@ -10,10 +10,12 @@ files.
 import pandas as pd
 import pytest
 
+from sigmutsel.constants import canonical_types_order
 from sigmutsel.signature_decomposition import (
     _expand_subvariants,
     _match_cancer_type_rows,
     _signatures_from_rows,
+    build_sbs96_matrix_from_mutation_db,
     resolve_exclusion_list,
 )
 
@@ -234,3 +236,50 @@ def test_resolve_exclusion_list_artifact_carve_out_survives_table(
         exclude_artifacts=False,
     )
     assert "SBS45" not in excluded
+
+
+# --- build_sbs96_matrix_from_mutation_db ------------------------------
+
+
+def test_build_sbs96_matrix_has_all_96_types_and_correct_counts(
+    tmp_path,
+):
+    mutation_db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1", "S1", "S1", "S2"],
+            "type": [
+                "A[C>A]A",
+                "A[C>A]A",
+                "A[C>A]C",
+                "A[C>A]A",
+            ],
+        }
+    )
+    out = tmp_path / "matrix.txt"
+    build_sbs96_matrix_from_mutation_db(mutation_db, out)
+
+    matrix = pd.read_csv(out, sep="\t", index_col=0)
+    assert matrix.shape == (96, 2)
+    assert set(matrix.index) == set(canonical_types_order)
+    assert matrix.loc["A[C>A]A", "S1"] == 2
+    assert matrix.loc["A[C>A]C", "S1"] == 1
+    assert matrix.loc["A[C>A]A", "S2"] == 1
+    # types with zero mutations in either sample are present as 0,
+    # not silently dropped from the matrix
+    assert matrix.loc["A[C>A]C", "S2"] == 0
+    assert matrix.loc["T[T>G]T", "S1"] == 0
+
+
+def test_build_sbs96_matrix_creates_parent_dirs(tmp_path):
+    mutation_db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1"],
+            "type": ["A[C>A]A"],
+        }
+    )
+    out = tmp_path / "nested" / "dir" / "matrix.txt"
+    result_path = build_sbs96_matrix_from_mutation_db(
+        mutation_db, out
+    )
+    assert result_path == out
+    assert out.exists()

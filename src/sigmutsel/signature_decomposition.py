@@ -10,6 +10,7 @@ from SigProfilerAssignment import Analyzer
 from .constants import (
     ARTIFACT_SIGNATURES,
     TREATMENT_ASSOCIATED_SIGNATURES,
+    canonical_types_order,
 )
 from .locations import (
     location_exclusion_signatures_matrix,
@@ -17,6 +18,54 @@ from .locations import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_sbs96_matrix_from_mutation_db(mutation_db, output_path):
+    """Write an SBS96 mutational-matrix file from a mutation database.
+
+    Builds the same tab-delimited format SigProfilerMatrixGenerator
+    produces (verified against a real `mutational_matrix.SBS96.exome`
+    file: header ``MutationType`` + one column per sample, 96 rows,
+    integer counts) directly from
+    `mutation_db`'s own `type`/`Tumor_Sample_Barcode` columns, rather
+    than re-running SigProfilerMatrixGenerator against MAF files.
+    `mutation_db`'s `type` column is already in this exact format (see
+    `load_maf_files.create_mutation_type_column_snp`), so this is a
+    straightforward crosstab -- used for pass B of the two-pass
+    artifact-detection procedure, where the input needs to be the
+    artifact-mutation-cleaned `mutation_db`, not the original raw MAF
+    files (see `MutationDataset.run_two_pass_signature_decomposition`).
+
+    Parameters
+    ----------
+    mutation_db : pd.DataFrame
+        Must have `type` (COSMIC SBS96 format, e.g. "A[C>A]A") and
+        `Tumor_Sample_Barcode` columns.
+    output_path : str or Path
+        Where to write the matrix file.
+
+    Returns
+    -------
+    Path
+        `output_path`, for chaining.
+    """
+    matrix = pd.crosstab(
+        mutation_db["type"], mutation_db["Tumor_Sample_Barcode"]
+    )
+    # Row order here doesn't match SigProfilerMatrixGenerator's own
+    # output order (verified directly against a real
+    # mutational_matrix.SBS96.exome file -- same 96 labels, different
+    # order), which is fine: every consumer in this codebase
+    # (load_signature_matrix.py, compute_signature_probability_mass,
+    # Analyzer.cosmic_fit's own matrix reader) aligns rows by the
+    # MutationType *label*, never by position.
+    matrix = matrix.reindex(canonical_types_order, fill_value=0)
+    matrix.index.name = "MutationType"
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    matrix.to_csv(output_path, sep="\t")
+    return output_path
 
 
 def _normalize_signature_group_arg(arg, default_matrix):

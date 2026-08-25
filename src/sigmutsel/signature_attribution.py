@@ -176,8 +176,13 @@ def compute_signature_probability_mass(
     assignments : pd.DataFrame
         Signature assignments per sample, output from
         signature_decomposition.
-    location_sig_matrix_norm : str or Path
-        Path to normalized signature matrix file.
+    location_sig_matrix_norm : str, Path, or pd.DataFrame
+        Path to normalized signature matrix file, or an already-loaded
+        DataFrame (index or a "MutationType" column giving mutation
+        types, columns giving signature names) -- accepting a
+        DataFrame avoids a redundant re-read when the caller already
+        has it loaded, e.g. `MutationDataset._signature_matrix` right
+        after a fit.
     target_signatures : Iterable[str]
         Signature names whose probability mass to sum per mutation
         (e.g. `constants.ARTIFACT_SIGNATURES`).
@@ -200,9 +205,14 @@ def compute_signature_probability_mass(
 
     alphas = estimate_alphas(db, assignments, L_low, L_high)
 
-    sig_matrix = pd.read_csv(
-        location_sig_matrix_norm, sep="\t"
-    ).set_index("MutationType")
+    if isinstance(location_sig_matrix_norm, pd.DataFrame):
+        sig_matrix = location_sig_matrix_norm
+        if "MutationType" in sig_matrix.columns:
+            sig_matrix = sig_matrix.set_index("MutationType")
+    else:
+        sig_matrix = pd.read_csv(
+            location_sig_matrix_norm, sep="\t"
+        ).set_index("MutationType")
 
     common_sigs = sig_matrix.columns.intersection(alphas.columns)
     sig_matrix = sig_matrix[common_sigs]

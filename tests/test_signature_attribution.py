@@ -62,6 +62,29 @@ def test_artifact_mass_matches_deterministic_type_assignment(
     assert mass[3] == pytest.approx(1.0)
 
 
+def test_accepts_already_loaded_dataframe(sig_matrix_path):
+    db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1", "S1"],
+            "type": ["T1", "T2"],
+            "Variant_Classification": ["Missense_Mutation"] * 2,
+        }
+    )
+    assignments = pd.DataFrame(
+        {"SIG_A": [8], "SIG_ARTIFACT": [2]}, index=["S1"]
+    )
+    sig_matrix_df = pd.read_csv(sig_matrix_path, sep="\t")
+
+    mass = compute_signature_probability_mass(
+        db,
+        assignments,
+        sig_matrix_df,
+        target_signatures=["SIG_ARTIFACT"],
+    )
+    assert mass[0] == pytest.approx(0.0)
+    assert mass[1] == pytest.approx(1.0)
+
+
 def test_zero_burden_sample_gives_zero_not_nan(sig_matrix_path):
     db = pd.DataFrame(
         {

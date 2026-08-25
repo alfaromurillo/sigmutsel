@@ -28,6 +28,10 @@ location_inclusion_signatures_matrix = (
     DATA_DIR / "inclusion_signatures_matrix_by_cancer_type.txt"
 )
 
+location_cosmic_signature_etiology = (
+    DATA_DIR / "cosmic_signature_etiology.tsv"
+)
+
 
 # ============================================================
 # Large files (downloaded on setup or first use)
@@ -127,6 +131,7 @@ def list_data_files() -> dict[str, bool]:
     files = {
         "exclusion_signatures_matrix": location_exclusion_signatures_matrix,
         "inclusion_signatures_matrix": location_inclusion_signatures_matrix,
+        "cosmic_signature_etiology": location_cosmic_signature_etiology,
         "hgnc_complete_set": location_hgnc_complete_set,
         "cancer_gene_census": location_cancer_gene_census,
         "cosmic_cancer_gene_census": location_cosmic_cancer_gene_census,

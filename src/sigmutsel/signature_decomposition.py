@@ -7,6 +7,10 @@ from pathlib import Path
 import pandas as pd
 from SigProfilerAssignment import Analyzer
 
+from .constants import (
+    ARTIFACT_SIGNATURES,
+    TREATMENT_ASSOCIATED_SIGNATURES,
+)
 from .locations import (
     location_exclusion_signatures_matrix,
     location_inclusion_signatures_matrix,
@@ -33,6 +37,209 @@ def _normalize_signature_group_arg(arg, default_matrix):
     return arg
 
 
+def _match_cancer_type_rows(table_df, cancer_type):
+    """Return every row of a per-cancer-type table matching cancer_type.
+
+    Matches on an exact "PCAWG" label, or membership in the
+    comma-separated "Applicable_TCGA" column. Returns *all* matching
+    rows rather than assuming a single match: most TCGA codes map to
+    exactly one PCAWG row, but "ESCA" ambiguously matches both
+    "Eso-AdenoCA" and "Eso-SCC" (esophageal adenocarcinoma and
+    squamous-cell carcinoma are separate rows with different
+    signature profiles). Silently taking the first match here used to
+    mean ESCA-derived cohorts always got Eso-AdenoCA's profile, never
+    Eso-SCC's -- callers that know which histology they mean (e.g.
+    the ESCA-EAC / ESCA-ESCC TCGA subcohorts) should pass the exact
+    PCAWG label ("Eso-AdenoCA" / "Eso-SCC") rather than the ambiguous
+    TCGA code, which resolves unambiguously via the exact-match branch
+    above. Callers stuck with an ambiguous code (e.g. bare "ESCA",
+    covering both histologies) get every matching row back and must
+    decide how to combine them (see `_signatures_from_rows`).
+
+    Raises
+    ------
+    ValueError
+        If no row matches cancer_type.
+    """
+
+    def _row_matches(row):
+        if row["PCAWG"] == cancer_type:
+            return True
+        tcga_val = row["Applicable_TCGA"]
+        if pd.notna(tcga_val):
+            tcga_types = [t.strip() for t in str(tcga_val).split(",")]
+            if cancer_type in tcga_types:
+                return True
+        return False
+
+    mask = table_df.apply(_row_matches, axis=1)
+    rows = table_df[mask]
+    if rows.empty:
+        raise ValueError(
+            f"Cancer type '{cancer_type}' not found in table"
+        )
+    if len(rows) > 1:
+        matched_labels = rows["PCAWG"].tolist()
+        logger.warning(
+            f"Cancer type '{cancer_type}' matches more than one PCAWG "
+            f"row ({matched_labels}) -- combining across rows rather "
+            "than arbitrarily picking one. Pass the exact PCAWG label "
+            "instead of the ambiguous TCGA code if you mean only one "
+            "of these."
+        )
+    return rows
+
+
+def _signatures_from_rows(rows, sig_cols, table_semantics):
+    """Resolve the set of signatures marked 1 across one or more rows.
+
+    Parameters
+    ----------
+    rows : pd.DataFrame
+        Matched rows from `_match_cancer_type_rows`.
+    sig_cols : Iterable[str]
+        Signature column names to check.
+    table_semantics : {"inclusion", "exclusion"}
+        How to combine multiple matched rows (only matters when more
+        than one row matched, e.g. bare "ESCA"):
+        - "inclusion" (value=1 means "keep this signature"): union
+          across rows -- permissive, a signature is plausible for the
+          combined cohort if *any* matched histology supports it.
+        - "exclusion" (value=1 means "drop this signature"): a
+          signature is dropped only if *every* matched row marks it
+          for exclusion (intersection) -- conservative, so a signature
+          that's real for one histology in a mixed cohort doesn't get
+          excluded because it happens to be marked absent for another.
+          This is the mathematical complement of the "inclusion" rule
+          above (confirmed elsewhere the two tables are exact
+          complements of each other), so the two rules agree exactly
+          when applied to the same underlying information.
+    """
+    if table_semantics not in ("inclusion", "exclusion"):
+        raise ValueError(
+            "table_semantics must be 'inclusion' or 'exclusion', got "
+            f"{table_semantics!r}"
+        )
+    per_row_sets = [
+        {sig for sig in sig_cols if row[sig] == 1}
+        for _, row in rows.iterrows()
+    ]
+    if table_semantics == "inclusion":
+        combined = set().union(*per_row_sets)
+    else:
+        combined = set(sig_cols).intersection(*per_row_sets)
+    # Preserve sig_cols order for readability/determinism.
+    return [sig for sig in sig_cols if sig in combined]
+
+
+def _expand_subvariants(base_sigs, available_sigs):
+    """Expand base signature names to include lettered subvariants.
+
+    e.g. "SBS10" -> ["SBS10", "SBS10a", "SBS10b", "SBS10c", "SBS10d"]
+    if those subvariants are present in available_sigs. Handles COSMIC
+    version-driven splits (SBS22 -> SBS22a/b/c, SBS40 -> SBS40a/b/c)
+    transparently, since it only depends on what's actually in
+    available_sigs, not a hardcoded split table.
+    """
+    expanded = []
+    for base_sig in base_sigs:
+        expanded.append(base_sig)
+        for avail_sig in available_sigs:
+            if (
+                avail_sig.startswith(base_sig)
+                and len(avail_sig) > len(base_sig)
+                and avail_sig[len(base_sig)]
+                in "abcdefghijklmnopqrstuvwxyz"
+            ):
+                expanded.append(avail_sig)
+    return expanded
+
+
+def resolve_exclusion_list(
+    cancer_type,
+    location=None,
+    available_sigs=None,
+    treatment_naive=True,
+    exclude_artifacts=False,
+):
+    """Resolve the final list of signatures to exclude for a cancer type.
+
+    Combines three independent sources, per the project's design
+    (biological tissue-absence and treatment-association are
+    signature-level exclusion decisions; technical artifacts are
+    handled separately via mutation-level removal, not signature
+    exclusion -- see sigmutsel.qc.flag_artifact_signature_mutations):
+
+    1. The per-cancer-type table's excluded signatures (via
+       `_match_cancer_type_rows` / `_signatures_from_rows`, so
+       ambiguous TCGA-code matches like "ESCA" are combined
+       conservatively rather than silently picking one row).
+    2. `TREATMENT_ASSOCIATED_SIGNATURES`, unioned in only if
+       `treatment_naive` is True.
+    3. `ARTIFACT_SIGNATURES`, unioned in only if `exclude_artifacts`
+       is True.
+
+    Regardless of (2) and (3), any signature in `ARTIFACT_SIGNATURES`
+    contributed by the per-cancer-type table itself (source 1) is
+    always stripped back out before combining -- the table can mark
+    an artifact signature "excluded" for a cancer type simply because
+    Extended Data Fig. 5-style attribution wouldn't show real signal
+    for a technical artifact in most tissues anyway, which would
+    otherwise let an artifact signature end up excluded "by accident"
+    via the table even when `exclude_artifacts=False` (e.g. during
+    pass A of the two-pass artifact-detection procedure, where
+    artifact signatures must stay in the fitting basis). Whether an
+    artifact signature is excluded is always explicitly attributable
+    to `exclude_artifacts`, never to the table.
+
+    Parameters
+    ----------
+    cancer_type : str
+        Cancer type / TCGA code / PCAWG label to look up.
+    location : str or Path, optional
+        Path to the exclusion matrix. Defaults to
+        `location_exclusion_signatures_matrix`.
+    available_sigs : list of str, optional
+        Signatures to expand subvariants against (see
+        `_expand_subvariants`). If None, subvariant expansion uses the
+        table's own signature columns.
+    treatment_naive : bool, default True
+        Whether to also exclude `TREATMENT_ASSOCIATED_SIGNATURES`.
+    exclude_artifacts : bool, default False
+        Whether to also exclude `ARTIFACT_SIGNATURES`. Leave False for
+        pass A of the two-pass artifact-detection procedure (artifacts
+        must stay in the basis); set True for pass B (the final fit).
+
+    Returns
+    -------
+    list of str
+        Final exclusion list, with subvariants expanded.
+    """
+    if location is None:
+        location = location_exclusion_signatures_matrix
+    location = Path(location)
+    exclusion_df = pd.read_csv(location, sep="\t")
+    sig_cols = list(exclusion_df.columns[4:])
+
+    rows = _match_cancer_type_rows(exclusion_df, cancer_type)
+    table_excluded = set(
+        _signatures_from_rows(rows, sig_cols, "exclusion")
+    )
+    # Never let the table itself exclude an artifact signature --
+    # that's exclude_artifacts's job, explicitly.
+    table_excluded -= set(ARTIFACT_SIGNATURES)
+
+    combined = set(table_excluded)
+    if treatment_naive:
+        combined |= set(TREATMENT_ASSOCIATED_SIGNATURES)
+    if exclude_artifacts:
+        combined |= set(ARTIFACT_SIGNATURES)
+
+    if available_sigs is None:
+        available_sigs = sig_cols
+    return _expand_subvariants(sorted(combined), available_sigs)
+
+
 def run_signature_decomposition(
     samples,
     output,
@@ -50,6 +257,8 @@ def run_signature_decomposition(
     devopts=None,
     exclude_signature_subgroups=None,
     include_signature_subgroups=None,
+    treatment_naive=True,
+    exclude_artifacts=False,
     exome=True,
     input_type="vcf",
     context_type="96",
@@ -169,6 +378,26 @@ def run_signature_decomposition(
         a ValueError. Only applies when using COSMIC reference
         signatures. Default is None.
 
+    treatment_naive : bool, optional
+        Only applies when `exclude_signature_subgroups` resolves from
+        a cancer-type table (str or tuple form). If True (default),
+        also excludes `constants.TREATMENT_ASSOCIATED_SIGNATURES`
+        (signatures COSMIC's own aetiology attributes to prior
+        chemotherapy/treatment exposure) -- appropriate when samples
+        are known treatment-naive. Set False for data that may include
+        treated samples.
+
+    exclude_artifacts : bool, optional
+        Only applies when `exclude_signature_subgroups` resolves from
+        a cancer-type table. If True, also excludes
+        `constants.ARTIFACT_SIGNATURES` (signatures COSMIC's own
+        aetiology flags as likely sequencing artifacts). Default is
+        False: artifact signatures are ordinarily handled by
+        mutation-level removal (see `sigmutsel.qc`), not signature
+        exclusion, so they should stay in the fitting basis unless a
+        caller has already run the mutation-level artifact-detection
+        pass and wants a final refit with artifacts excluded.
+
     exome : bool, optional
         Whether to use exome-normalized COSMIC signatures. Default is
         True, since most of our data will be WES (different from
@@ -253,77 +482,23 @@ def run_signature_decomposition(
     ):
 
         location, cancer_type = exclude_signature_subgroups
-        location = Path(location)
 
-        # Read the exclusion matrix
-        exclusion_df = pd.read_csv(location, sep="\t")
-
-        # Find the cancer type row
-        # Check for exact match in PCAWG or as part of
-        # comma-separated list in Applicable_TCGA
-        def match_cancer_type(row):
-            if row["PCAWG"] == cancer_type:
-                return True
-            tcga_val = row["Applicable_TCGA"]
-            if pd.notna(tcga_val):
-                # Split by comma and strip whitespace
-                tcga_types = [
-                    t.strip() for t in str(tcga_val).split(",")
-                ]
-                if cancer_type in tcga_types:
-                    return True
-            return False
-
-        cancer_mask = exclusion_df.apply(match_cancer_type, axis=1)
-        cancer_row = exclusion_df[cancer_mask]
-
-        if cancer_row.empty:
-            raise ValueError(
-                f"Cancer type '{cancer_type}' not found in "
-                f"exclusion matrix at {location}"
-            )
-
-        # Get signature columns (all columns after the first 4)
-        sig_cols = exclusion_df.columns[4:]
-
-        # Get signatures to exclude (where value is 1)
-        cancer_row = cancer_row.iloc[0]
-        excluded_sigs = [
-            sig for sig in sig_cols if cancer_row[sig] == 1
-        ]
-
-        # Expand signatures like SBS10 to include SBS10a,
-        # SBS10b, etc.
-        # Get all available signatures from the matrix or
-        # default set
         if signatures is not None:
             available_sigs = list(signatures)
         elif signature_database is not None:
-            # Read signature database to get available
-            # signatures
             sig_db = pd.read_csv(signature_database, sep="\t")
             available_sigs = sig_db.columns[1:].tolist()
         else:
-            # Use default COSMIC signatures
-            # Will be expanded by SigProfilerAssignment
-            available_sigs = sig_cols.tolist()
+            available_sigs = None  # resolve_exclusion_list uses the
+            # exclusion table's own columns in this case
 
-        # Expand base signatures to include subvariants
-        expanded_excluded = []
-        for excl_sig in excluded_sigs:
-            expanded_excluded.append(excl_sig)
-            # Check for subvariants (e.g., SBS10 -> SBS10a,
-            # SBS10b, etc.)
-            for avail_sig in available_sigs:
-                if (
-                    avail_sig.startswith(excl_sig)
-                    and len(avail_sig) > len(excl_sig)
-                    and avail_sig[len(excl_sig)]
-                    in "abcdefghijklmnopqrstuvwxyz"
-                ):
-                    expanded_excluded.append(avail_sig)
-
-        exclude_signature_subgroups = expanded_excluded
+        exclude_signature_subgroups = resolve_exclusion_list(
+            cancer_type,
+            location=location,
+            available_sigs=available_sigs,
+            treatment_naive=treatment_naive,
+            exclude_artifacts=exclude_artifacts,
+        )
 
     # Process include_signature_subgroups if it's a tuple
     # (sets the signatures parameter to the included list)
@@ -336,64 +511,25 @@ def run_signature_decomposition(
         location, cancer_type = include_signature_subgroups
         location = Path(location)
 
-        # Read the inclusion matrix
         inclusion_df = pd.read_csv(location, sep="\t")
+        sig_cols = list(inclusion_df.columns[4:])
 
-        # Find the cancer type row using same logic as exclude
-        def match_cancer_type(row):
-            if row["PCAWG"] == cancer_type:
-                return True
-            tcga_val = row["Applicable_TCGA"]
-            if pd.notna(tcga_val):
-                tcga_types = [
-                    t.strip() for t in str(tcga_val).split(",")
-                ]
-                if cancer_type in tcga_types:
-                    return True
-            return False
+        rows = _match_cancer_type_rows(inclusion_df, cancer_type)
+        included_sigs = _signatures_from_rows(
+            rows, sig_cols, "inclusion"
+        )
 
-        cancer_mask = inclusion_df.apply(match_cancer_type, axis=1)
-        cancer_row = inclusion_df[cancer_mask]
-
-        if cancer_row.empty:
-            raise ValueError(
-                f"Cancer type '{cancer_type}' not found in "
-                f"inclusion matrix at {location}"
-            )
-
-        # Get signature columns (all columns after the first 4)
-        sig_cols = inclusion_df.columns[4:]
-
-        # Get signatures to INCLUDE (where value is 1)
-        cancer_row = cancer_row.iloc[0]
-        included_sigs = [
-            sig for sig in sig_cols if cancer_row[sig] == 1
-        ]
-
-        # Get all available signatures
         if signatures is not None:
             available_sigs = list(signatures)
         elif signature_database is not None:
             sig_db = pd.read_csv(signature_database, sep="\t")
             available_sigs = sig_db.columns[1:].tolist()
         else:
-            # Use default COSMIC signatures
-            available_sigs = sig_cols.tolist()
+            available_sigs = sig_cols
 
-        # Expand base signatures to include subvariants
-        expanded_included = []
-        for incl_sig in included_sigs:
-            expanded_included.append(incl_sig)
-            # Check for subvariants (e.g., SBS10 -> SBS10a,
-            # SBS10b, etc.)
-            for avail_sig in available_sigs:
-                if (
-                    avail_sig.startswith(incl_sig)
-                    and len(avail_sig) > len(incl_sig)
-                    and avail_sig[len(incl_sig)]
-                    in "abcdefghijklmnopqrstuvwxyz"
-                ):
-                    expanded_included.append(avail_sig)
+        expanded_included = _expand_subvariants(
+            included_sigs, available_sigs
+        )
 
         # Set signatures to the included list
         # (this is more reliable than using exclude)
@@ -537,93 +673,38 @@ def signature_decomposition(
             location = Path(location)
 
             inclusion_df = pd.read_csv(location, sep="\t")
+            sig_cols = list(inclusion_df.columns[4:])
+            available_sigs = [
+                col
+                for col in assignments.columns
+                if col.startswith("SBS")
+            ]
 
-            def match_cancer_type(row):
-                if row["PCAWG"] == cancer_type:
-                    return True
-                tcga_val = row["Applicable_TCGA"]
-                if pd.notna(tcga_val):
-                    tcga_types = [
-                        t.strip() for t in str(tcga_val).split(",")
-                    ]
-                    if cancer_type in tcga_types:
-                        return True
-                return False
-
-            cancer_mask = inclusion_df.apply(
-                match_cancer_type, axis=1
+            rows = _match_cancer_type_rows(inclusion_df, cancer_type)
+            included_sigs = _signatures_from_rows(
+                rows, sig_cols, "inclusion"
             )
-            cancer_row = inclusion_df[cancer_mask]
+            expanded_included = _expand_subvariants(
+                included_sigs, available_sigs
+            )
 
-            if not cancer_row.empty:
-                sig_cols = inclusion_df.columns[4:]
-                cancer_row = cancer_row.iloc[0]
-                included_sigs = [
-                    sig for sig in sig_cols if cancer_row[sig] == 1
-                ]
-
-                # Expand to include subvariants
-                available_sigs = [
-                    col
-                    for col in assignments.columns
-                    if col.startswith("SBS")
-                ]
-                expanded_included = []
-                for incl_sig in included_sigs:
-                    expanded_included.append(incl_sig)
-                    for avail_sig in available_sigs:
-                        if (
-                            avail_sig.startswith(incl_sig)
-                            and len(avail_sig) > len(incl_sig)
-                            and avail_sig[len(incl_sig)]
-                            in "abcdefghijklmnopqrstuvwxyz"
-                        ):
-                            expanded_included.append(avail_sig)
-
-                # Keep only included signatures
-                # (also exclude signatures that are not
-                # included and not subvariants of included
-                # signatures)
-                available_sigs = [
-                    col
-                    for col in assignments.columns
-                    if col.startswith("SBS")
-                ]
-
-                # Build exclusion list from signatures not
-                # in expanded_included
-                sigs_to_exclude = []
-                for avail_sig in available_sigs:
-                    if avail_sig not in expanded_included:
-                        # Check if it's a subvariant of an
-                        # included signature
-                        is_subvariant = False
-                        for incl_sig in included_sigs:
-                            if (
-                                avail_sig.startswith(incl_sig)
-                                and len(avail_sig) > len(incl_sig)
-                                and avail_sig[len(incl_sig)]
-                                in "abcdefghijklmnopqrstuvwxyz"
-                            ):
-                                is_subvariant = True
-                                break
-                        if not is_subvariant:
-                            sigs_to_exclude.append(avail_sig)
-
-                # Keep only signatures not in exclusion list
-                sigs_to_keep = [
-                    col
-                    for col in assignments.columns
-                    if col not in sigs_to_exclude
-                ]
-                assignments = assignments[sigs_to_keep]
-                logger.info(
-                    f"Filtered assignments to "
-                    f"{len(sigs_to_keep)} included "
-                    f"signatures (excluded "
-                    f"{len(sigs_to_exclude)} signatures) "
-                    f"for cancer type '{cancer_type}'"
-                )
+            sigs_to_keep = [
+                col
+                for col in assignments.columns
+                if not col.startswith("SBS")
+                or col in expanded_included
+            ]
+            n_excluded = len(available_sigs) - len(
+                [c for c in sigs_to_keep if c.startswith("SBS")]
+            )
+            assignments = assignments[sigs_to_keep]
+            logger.info(
+                f"Filtered assignments to "
+                f"{len(sigs_to_keep)} included "
+                f"signatures (excluded "
+                f"{n_excluded} signatures) "
+                f"for cancer type '{cancer_type}'"
+            )
 
     elif "exclude_signature_subgroups" in kwargs:
         exclude_param = kwargs["exclude_signature_subgroups"]
@@ -632,65 +713,34 @@ def signature_decomposition(
             and len(exclude_param) == 2
         ):
             location, cancer_type = exclude_param
-            location = Path(location)
+            available_sigs = [
+                col
+                for col in assignments.columns
+                if col.startswith("SBS")
+            ]
 
-            exclusion_df = pd.read_csv(location, sep="\t")
-
-            def match_cancer_type(row):
-                if row["PCAWG"] == cancer_type:
-                    return True
-                tcga_val = row["Applicable_TCGA"]
-                if pd.notna(tcga_val):
-                    tcga_types = [
-                        t.strip() for t in str(tcga_val).split(",")
-                    ]
-                    if cancer_type in tcga_types:
-                        return True
-                return False
-
-            cancer_mask = exclusion_df.apply(
-                match_cancer_type, axis=1
+            expanded_excluded = resolve_exclusion_list(
+                cancer_type,
+                location=location,
+                available_sigs=available_sigs,
+                treatment_naive=kwargs.get("treatment_naive", True),
+                exclude_artifacts=kwargs.get(
+                    "exclude_artifacts", False
+                ),
             )
-            cancer_row = exclusion_df[cancer_mask]
 
-            if not cancer_row.empty:
-                sig_cols = exclusion_df.columns[4:]
-                cancer_row = cancer_row.iloc[0]
-                excluded_sigs = [
-                    sig for sig in sig_cols if cancer_row[sig] == 1
-                ]
-
-                # Expand to include subvariants
-                available_sigs = [
-                    col
-                    for col in assignments.columns
-                    if col.startswith("SBS")
-                ]
-                expanded_excluded = []
-                for excl_sig in excluded_sigs:
-                    expanded_excluded.append(excl_sig)
-                    for avail_sig in available_sigs:
-                        if (
-                            avail_sig.startswith(excl_sig)
-                            and len(avail_sig) > len(excl_sig)
-                            and avail_sig[len(excl_sig)]
-                            in "abcdefghijklmnopqrstuvwxyz"
-                        ):
-                            expanded_excluded.append(avail_sig)
-
-                # Remove excluded signatures
-                sigs_to_keep = [
-                    col
-                    for col in assignments.columns
-                    if col not in expanded_excluded
-                ]
-                assignments = assignments[sigs_to_keep]
-                logger.info(
-                    f"Filtered assignments to remove "
-                    f"{len(expanded_excluded)} excluded "
-                    f"signatures for cancer type "
-                    f"'{cancer_type}'"
-                )
+            sigs_to_keep = [
+                col
+                for col in assignments.columns
+                if col not in expanded_excluded
+            ]
+            assignments = assignments[sigs_to_keep]
+            logger.info(
+                f"Filtered assignments to remove "
+                f"{len(expanded_excluded)} excluded "
+                f"signatures for cancer type "
+                f"'{cancer_type}'"
+            )
 
     logger.info("... done.")
     print()

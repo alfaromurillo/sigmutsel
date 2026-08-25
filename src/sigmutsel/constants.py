@@ -1,9 +1,49 @@
 """Constants that we use in multiple modules."""
 
+import pandas as pd
+
+from .locations import location_cosmic_signature_etiology
+
 # Random seed, set to a value if you want to replicate the results,
 # this seed would be used in the sampling
 random_seed = None
 # random_seed = 777
+
+
+def _load_signature_etiology_lists():
+    """Load ARTIFACT_SIGNATURES / TREATMENT_ASSOCIATED_SIGNATURES.
+
+    Source: `cosmic_signature_etiology.tsv`, built by
+    `data-raw/build_cosmic_signature_etiology.py` directly from
+    COSMIC's own per-signature "Proposed aetiology" text (not from a
+    third-party tool's interpretation of it -- see that script's
+    module docstring and its `TREATMENT_OVERRIDES` for the handful of
+    manually-reviewed corrections to naive keyword matching).
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        (artifact_signatures, treatment_associated_signatures)
+    """
+    if not location_cosmic_signature_etiology.exists():
+        return [], []
+    df = pd.read_csv(location_cosmic_signature_etiology, sep="\t")
+    artifact = df.loc[df["artifact"], "signature"].tolist()
+    treatment = df.loc[
+        df["treatment_associated"], "signature"
+    ].tolist()
+    return artifact, treatment
+
+
+# Signatures COSMIC's own aetiology text flags as likely sequencing
+# artifacts. Handled by mutation-level removal (see
+# sigmutsel.signature_attribution / sigmutsel.qc), never passed to
+# exclude_signature_subgroups directly -- excluding the signature
+# column from the NNLS fit would force its mutations onto whichever
+# real signature fits next-best instead of making them disappear.
+ARTIFACT_SIGNATURES, TREATMENT_ASSOCIATED_SIGNATURES = (
+    _load_signature_etiology_lists()
+)
 
 
 # These are the cuts that we use to define if the mutation burden in a

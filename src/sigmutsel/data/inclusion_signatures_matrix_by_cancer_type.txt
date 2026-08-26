@@ -42,3 +42,5 @@ SoftTissue-Liposarc	NA	19	liposarcoma soft tissue	1	1	1	0	1	0	0	0	0	0	0	0	0	0	1	
 Stomach-AdenoCA	STAD	452	stomach adenocarcinoma	1	1	1	0	1	1	0	0	0	0	1	0	1	1	1	1	0	0	1	1	1	0	1	1	1	0	1	1	0	0	0	0	1	1	0	0	0	0	0	1	0	0	0	0	0	1	1	0	1	0	0	1	1	0	0	0	0	0	1	0
 Thy-AdenoCA	THCA	67	thyroid low-grade adenocarcinoma	1	1	0	0	1	1	0	0	0	0	0	0	0	0	1	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	1	0	0	0	0	0	0	0	0	0	0	1	0	0	0	0	0	1	1	0	0	0	0	0	0	0
 Uterus-AdenoCA	UCEC	291	uterus adenocarcinoma	1	1	1	0	1	1	1	1	0	1	0	0	1	1	1	1	0	0	1	1	1	0	0	0	0	0	1	1	0	0	0	0	1	1	0	1	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0	1	1	0	0	0	0	0	0	0
+ACC-TCGA-self-derived	ACC	8	adrenocortical carcinoma; no PCAWG row; see mutation_rates TODO.md 2026-08-26	1	1	0	1	1	1	0	0	0	0	0	0	0	0	0	0	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+DLBC-TCGA-self-derived	DLBC	21	diffuse large B-cell lymphoma; no PCAWG row; see mutation_rates TODO.md 2026-08-26	1	0	0	0	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	1	0	0	0	0	0	0	0	0	0	0

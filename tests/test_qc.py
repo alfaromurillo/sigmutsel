@@ -187,7 +187,7 @@ def test_detect_mnv_dbs_skips_already_tagged_rows():
     # The already-tagged row keeps its original reason and can't
     # chain the untagged one into a false pair.
     assert tagged.loc[0, "problem"] == "duplicate_record"
-    assert tagged.loc[1, "problem"] is None
+    assert pd.isna(tagged.loc[1, "problem"])
 
 
 # --- apply_qc ---------------------------------------------------------

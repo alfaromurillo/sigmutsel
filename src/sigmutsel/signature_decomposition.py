@@ -376,6 +376,87 @@ def resolve_exclusion_list(
     return _expand_subvariants(sorted(combined), available_sigs)
 
 
+def compute_prevalence_overrides(
+    assignments, candidate_signatures, min_prevalence=0.15
+):
+    """Signatures recurring often enough in a cohort's own fit to
+    override the per-cancer-type table's tissue-absence exclusion.
+
+    The per-cancer-type table (see :func:`resolve_exclusion_list`) is
+    a 2020, PCAWG-derived prior -- useful, but not necessarily correct
+    for every present-day TCGA cohort. A signature the table excludes
+    but that recurs across many of a cohort's own tumors, even at low
+    per-tumor magnitude, is better evidence of real, cohort-specific
+    biology than that prior. This is a **prior override, not a table
+    replacement**: it only ever adds signatures back, and the caller
+    is responsible for restricting `candidate_signatures` to the
+    table's own tissue-absence exclusions -- never to
+    `constants.TREATMENT_ASSOCIATED_SIGNATURES` or
+    `constants.ARTIFACT_SIGNATURES`, which stay hard, unconditional
+    exclusions regardless of prevalence (a treatment signature
+    recurring in a "treatment-naive" cohort is evidence for
+    :func:`sigmutsel.qc.flag_treatment_signature_samples`, not
+    evidence it's real biology for the cohort; an artifact signature's
+    exclusion is about mechanism, not tissue, so prevalence is
+    irrelevant to it).
+
+    Prevalence is a tumor-*count* criterion (fraction of tumors with
+    any nonzero exposure), not a magnitude one -- "recurs often, even
+    if small each time" is the intended signal, distinct from "large
+    in a few tumors" (see the mutation_rates project's 2026-08-25
+    groundwork for why: a real signature genuinely absent from most
+    tumors but large in the few it appears in looks different from one
+    recurring broadly at low level, and only the latter is the kind of
+    evidence this function is meant to catch).
+
+    Parameters
+    ----------
+    assignments : pandas.DataFrame
+        Per-sample signature exposure counts (rows = samples, columns
+        = signatures), from an unrestricted or artifact-only-excluded
+        fit. Restrict this to whatever population the override should
+        be judged over *before* calling -- typically a cohort's
+        adequately-powered (e.g. burden >= 100 mutations) samples,
+        and, if sample-level treatment QC
+        (:func:`sigmutsel.qc.flag_treatment_signature_samples`) is
+        also in use, only the samples that survive it. Order matters:
+        a treatment-contaminated tumor about to be dropped could
+        otherwise inflate the apparent prevalence of whatever
+        signature it leaks into, falsely justifying an override that
+        only looks real because of the exact samples that QC step
+        exists to remove.
+    candidate_signatures : iterable of str
+        Signatures to check -- the table's own tissue-absence
+        exclusions for this cohort, with treatment/artifact signatures
+        already excluded from consideration by the caller.
+    min_prevalence : float, default 0.15
+        A signature is overridden (removed from the exclusion set) if
+        it has nonzero exposure in at least this fraction of
+        `assignments`' rows. Not derived from theory -- tune against
+        the real per-cohort distribution (see this project's plan;
+        15% found no candidate in most well-powered cohorts checked
+        except ESCA-ESCC/SBS16, a documented real signature in
+        esophageal squamous-cell carcinoma the table currently
+        excludes for that subcohort).
+
+    Returns
+    -------
+    set of str
+        The subset of `candidate_signatures` meeting the prevalence
+        bar.
+    """
+    overrides = set()
+    if len(assignments) == 0:
+        return overrides
+    for sig in candidate_signatures:
+        if sig not in assignments.columns:
+            continue
+        prevalence = (assignments[sig] > 0).mean()
+        if prevalence >= min_prevalence:
+            overrides.add(sig)
+    return overrides
+
+
 def run_signature_decomposition(
     samples,
     output,

@@ -18,6 +18,7 @@ from sigmutsel.qc import (
     flag_exact_duplicates,
     flag_germline_variants,
     flag_repetitive_regions,
+    flag_treatment_signature_samples,
     load_repeat_intervals,
     summarize_problems,
     validate_full_with_problems,
@@ -364,6 +365,60 @@ def test_flag_artifact_signature_mutations_missing_series_entries_not_flagged():
     )
     assert tagged.loc[10, "problem"] == "artifact_signature_mutation"
     assert pd.isna(tagged.loc[11, "problem"])
+
+
+# --- flag_treatment_signature_samples -------------------------------------
+
+
+def test_flag_treatment_signature_samples_flags_whole_sample():
+    df = pd.DataFrame(
+        [
+            _valid_snv_row(Tumor_Sample_Barcode="S1"),
+            _valid_snv_row(Tumor_Sample_Barcode="S1"),
+            _valid_snv_row(Tumor_Sample_Barcode="S2"),
+        ]
+    )
+    treatment_load = pd.Series({"S1": 0.9, "S2": 0.05})
+    tagged = flag_treatment_signature_samples(
+        df, treatment_load, threshold=0.2
+    )
+    assert (
+        tagged.loc[[0, 1], "problem"] == "treatment_signature_sample"
+    ).all()
+    assert pd.isna(tagged.loc[2, "problem"])
+
+
+def test_flag_treatment_signature_samples_exactly_at_threshold_not_flagged():
+    df = pd.DataFrame([_valid_snv_row(Tumor_Sample_Barcode="S1")])
+    treatment_load = pd.Series({"S1": 0.2})
+    tagged = flag_treatment_signature_samples(
+        df, treatment_load, threshold=0.2
+    )
+    assert pd.isna(tagged.loc[0, "problem"])
+
+
+def test_flag_treatment_signature_samples_nan_load_never_flagged():
+    """A sample below the caller's burden gate should be passed in
+    with NaN load, not 0 or omitted -- confirms NaN never flags
+    regardless of threshold, the mechanism this project's low-burden
+    NNLS-noise gating in run_two_pass_signature_decomposition relies
+    on."""
+    df = pd.DataFrame([_valid_snv_row(Tumor_Sample_Barcode="S1")])
+    treatment_load = pd.Series({"S1": float("nan")})
+    tagged = flag_treatment_signature_samples(
+        df, treatment_load, threshold=0.0
+    )
+    assert pd.isna(tagged.loc[0, "problem"])
+
+
+def test_flag_treatment_signature_samples_respects_prior_tags():
+    df = pd.DataFrame([_valid_snv_row(Tumor_Sample_Barcode="S1")])
+    df["problem"] = ["germline_variant_site"]
+    treatment_load = pd.Series({"S1": 0.9})
+    tagged = flag_treatment_signature_samples(
+        df, treatment_load, threshold=0.2
+    )
+    assert tagged.loc[0, "problem"] == "germline_variant_site"
 
 
 def test_load_repeat_intervals_parses_rmsk_format(tmp_path):

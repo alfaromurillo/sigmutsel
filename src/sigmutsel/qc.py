@@ -437,6 +437,71 @@ def flag_artifact_signature_mutations(
     return df
 
 
+def flag_treatment_signature_samples(
+    df, treatment_load, threshold=0.2
+):
+    """Tag every mutation of a sample with implausible treatment load.
+
+    TCGA's "treatment-naive" clinical annotation is retrospective
+    self-report and can miss real cases (e.g. neoadjuvant chemotherapy
+    before resection, common for several cancer types, is not always
+    captured). This check flags whole *samples* rather than individual
+    mutations, unlike :func:`flag_artifact_signature_mutations` --
+    real treatment mutagenesis, once present, reshapes a tumor's whole
+    subsequent evolutionary history rather than a confinable subset of
+    mutations the way a sequencing artifact does, so dropping the
+    sample is the right granularity (same as the purity/VAF-shape
+    sample-level QC in ``tcga_analysis``, not the artifact mechanism).
+
+    Like :func:`flag_artifact_signature_mutations`, this needs
+    dataset-wide input from a signature-decomposition fit and is meant
+    to be called once, explicitly, on the whole cohort's mutation
+    database -- not one of :func:`apply_qc`'s per-file checks.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Mutation dataframe with a ``"Tumor_Sample_Barcode"`` column
+        (e.g. a dataset's whole-cohort ``mutation_db``).
+    treatment_load : pandas.Series
+        Per-sample fraction of fitted mutation burden attributed to
+        ``constants.TREATMENT_ASSOCIATED_SIGNATURES``, indexed by
+        ``Tumor_Sample_Barcode``. Compute this from an
+        unrestricted fit only -- a fit that already excludes
+        treatment signatures can never show this signal. Samples the
+        caller considers too low-burden for this fraction to be
+        trustworthy should be ``NaN`` here, not left out or set to 0:
+        ``NaN > threshold`` is ``False``, so they're never flagged,
+        which is the desired behavior (see the mutation_rates
+        project's 2026-08-25 groundwork -- a naive threshold with no
+        burden gate is dominated by low-count NNLS noise, not real
+        contamination).
+    threshold : float, default 0.2
+        A sample is flagged if its treatment-signature load exceeds
+        this fraction of its fitted burden. Not derived from theory --
+        tune against the real per-cohort distribution (see this
+        project's plan).
+
+    Returns
+    -------
+    pandas.DataFrame
+        *df* with ``"problem"`` added/updated
+        (``"treatment_signature_sample"`` for every row of a flagged
+        sample).
+    """
+    df = _ensure_problem_column(df)
+    untagged_mask = df["problem"].isna()
+    if not untagged_mask.any():
+        return df
+
+    flagged_samples = treatment_load[treatment_load > threshold].index
+    sample_mask = df["Tumor_Sample_Barcode"].isin(flagged_samples)
+
+    flag_mask = untagged_mask & sample_mask
+    df.loc[flag_mask, "problem"] = "treatment_signature_sample"
+    return df
+
+
 def apply_qc(
     df,
     *,

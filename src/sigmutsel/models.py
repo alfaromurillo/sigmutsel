@@ -1365,58 +1365,84 @@ class MutationDataset:
         exome=None,
         cosmic_version=None,
         genome_build="GRCh38",
+        treatment_load_threshold=None,
+        prevalence_override_min_fraction=None,
+        min_burden_for_diagnostics=100,
         **kwargs,
     ):
-        """Two-pass, artifact-aware signature decomposition.
+        """Two-pass, diagnostic-aware signature decomposition.
 
-        Fits signature decomposition twice rather than once, so that
-        technical-artifact signatures (`constants.ARTIFACT_SIGNATURES`)
-        never contaminate real signatures' exposure and never count as
-        observed mutations downstream, without simply excluding them
-        from the fit (which would just force their mutations onto
-        whichever real signature fits next-best -- see this project's
-        plan for the full rationale):
+        Fits signature decomposition twice rather than once. Pass A is
+        a fully unrestricted diagnostic fit -- no per-cancer-type
+        table, no `treatment_naive`, artifact signatures included --
+        used to compute up to three independent signals before pass B:
 
-        1. **Pass A**: fit with artifact signatures present in the
-           basis (`exclude_artifacts=False`), so they can honestly
-           compete for -- and absorb -- their own mutations, via
-           :meth:`run_signature_decomposition`. Its raw output lives
-           in the standard
-           ``{location_maf_files}/signature_decomposition/{signature_class}/``
-           directory (kept for caching/debugging), but is an
-           intermediate result, *not* the final one.
-        2. Compute each mutation's probability mass on artifact
-           signatures from pass A's fit
+        1. **Artifact-mutation detection** (always on): each
+           mutation's probability mass on
+           `constants.ARTIFACT_SIGNATURES`
            (`signature_attribution.compute_signature_probability_mass`),
-           and drop (:func:`qc.flag_artifact_signature_mutations`,
-           then filtering ``problem.isna()``) the ones above
-           `artifact_threshold` from ``self.mutation_db`` --
-           guaranteeing they're excluded from burden, gene presence,
-           and every other downstream calculation that reads
-           `mutation_db`, not just from pass B's fit.
-        3. **Pass B**: rebuild the SBS96 matrix directly from the
-           artifact-mutation-cleaned `mutation_db` (not the original
-           MAF files -- single source of truth with what
-           `mutation_db` now holds) and refit with artifact signatures
-           excluded (`exclude_artifacts=True`). This becomes the
-           "official" result: ``self.sig_assignments`` /
-           ``self.signature_matrix`` are overwritten with pass B's,
-           and ``self.mutation_db`` is overwritten with the cleaned
-           version, once this method returns.
+           used to drop (:func:`qc.flag_artifact_signature_mutations`)
+           mutations dominantly attributed to a technical artifact --
+           without simply excluding artifact signatures from the fit,
+           which would just force their mutations onto whichever real
+           signature fits next-best (see this project's plan for the
+           full rationale).
+        2. **Treatment-signature-load sample QC** (opt-in via
+           `treatment_load_threshold`): TCGA's "treatment-naive"
+           clinical annotation is retrospective self-report and can
+           miss real cases. A sample whose *unrestricted* fit
+           attributes an implausible fraction of its burden to
+           `constants.TREATMENT_ASSOCIATED_SIGNATURES` is dropped
+           entirely (:func:`qc.flag_treatment_signature_samples`) --
+           sample-level, not mutation-level, because real treatment
+           mutagenesis reshapes a tumor's whole subsequent
+           evolutionary history, unlike a sequencing artifact. Gated
+           by `min_burden_for_diagnostics`: a naive threshold with no
+           burden gate is dominated by low-count NNLS noise, not real
+           contamination (see this project's plan and TODO.md's
+           2026-08-25 groundwork).
+        3. **Prevalence-based per-cancer-type table override** (opt-in
+           via `prevalence_override_min_fraction`): a signature the
+           table excludes for this cancer type but that recurs across
+           enough of the cohort's own adequately-powered tumors is
+           kept in pass B's basis instead
+           (`signature_decomposition.compute_prevalence_overrides`) --
+           a prior override, not a table replacement, and it never
+           touches the treatment or artifact lists (see that
+           function's docstring for the full rationale). Computed
+           *after* step 2 removes treatment-flagged samples, so a
+           contaminated tumor about to be dropped can't inflate the
+           apparent prevalence of whatever signature it leaks into.
+
+        Then:
+
+        - Samples flagged by step 2 and mutations flagged by step 1
+          are dropped from `self.mutation_db` -- guaranteeing they're
+          excluded from burden, gene presence, and every other
+          downstream calculation that reads `mutation_db`, not just
+          from pass B's fit.
+        - **Pass B**: rebuild the SBS96 matrix directly from the
+          cleaned `mutation_db` (not the original MAF files -- single
+          source of truth with what `mutation_db` now holds) and refit
+          with the final exclusion set (per-cancer-type table, net of
+          any step-3 overrides, unioned with the treatment list if
+          `treatment_naive` and always with `ARTIFACT_SIGNATURES`).
+          This becomes the "official" result: ``self.sig_assignments``
+          / ``self.signature_matrix`` are overwritten with pass B's,
+          and ``self.mutation_db`` is overwritten with the cleaned
+          version, once this method returns.
 
         Requires ``self.mutation_db`` to already be built (e.g.
         ``self.generate_mutation_db(qc_mode=True, ...)``) *before*
-        calling this -- pass A's artifact-probability computation
-        needs it, and it can't be built afterward without regenerating
-        over the cleaned data. When wiring this into
-        :meth:`build_full_dataset`, pass ``regenerate_mutation_db=False``
-        there, since this method already updated ``mutation_db`` and a
-        default rebuild would silently overwrite the cleaned version
-        with the original.
+        calling this -- pass A's diagnostics need it, and it can't be
+        built afterward without regenerating over the cleaned data.
+        When wiring this into :meth:`build_full_dataset`, pass
+        ``regenerate_mutation_db=False`` there, since this method
+        already updated ``mutation_db`` and a default rebuild would
+        silently overwrite the cleaned version with the original.
 
-        Only supports ``signature_class="SBS"`` (the matrix rebuild in
-        step 3 uses `constants.canonical_types_order`, which is
-        SBS96-specific).
+        Only supports ``signature_class="SBS"`` (the matrix rebuild
+        uses `constants.canonical_types_order`, which is SBS96-specific).
 
         Parameters
         ----------
@@ -1424,14 +1450,38 @@ class MutationDataset:
             Forwarded to `qc.flag_artifact_signature_mutations`. Not
             derived from theory -- tune against the real distribution
             observed on a few pilot cohorts (see this project's plan).
+        treatment_load_threshold : float, optional
+            Forwarded to `qc.flag_treatment_signature_samples` as
+            `threshold`. `None` (default) disables step 2 entirely --
+            no sample is dropped for treatment-signature load.
+        prevalence_override_min_fraction : float, optional
+            Forwarded to `signature_decomposition.compute_prevalence_overrides`
+            as `min_prevalence`. `None` (default) disables step 3
+            entirely -- the per-cancer-type table is used as-is.
+        min_burden_for_diagnostics : int, default 100
+            Minimum fitted mutation count (pass A's per-sample
+            assignment total) for a sample to be eligible for either
+            step 2 or step 3 -- both are per-sample/per-cohort
+            statistics that are too noisy to trust below this count
+            (see this project's plan). Samples below this count are
+            never flagged by step 2 and never contribute to step 3's
+            prevalence counts.
         force_generation, exome, cosmic_version, genome_build :
             Forwarded to both passes (see :meth:`run_signature_decomposition`
             for defaults).
         **kwargs : dict
-            Forwarded to both passes -- e.g. `exclude_signature_subgroups`
-            (a cancer-type shorthand or explicit list) and
-            `treatment_naive`. `exclude_artifacts` is set explicitly by
-            this method for each pass and must not be passed here.
+            Forwarded to pass A unchanged, *except*
+            `exclude_signature_subgroups` and `treatment_naive`, which
+            this method consumes itself (pass A must not receive
+            either -- it has to stay fully unrestricted to serve as
+            steps 2 and 3's diagnostic fit) and re-applies to pass B
+            after resolving step 3's overrides.
+            `exclude_signature_subgroups` may be a cancer-type
+            shorthand, a `(location, cancer_type)` tuple, or an
+            explicit signature list (e.g. main.py's missing-PCAWG-row
+            fallback); step 3 only has a table to override against for
+            the first two forms. `exclude_artifacts` is set explicitly
+            by this method for each pass and must not be passed here.
 
         Returns
         -------
@@ -1450,8 +1500,7 @@ class MutationDataset:
             raise ValueError(
                 "mutation_db must be built first (e.g. "
                 "generate_mutation_db(qc_mode=True, ...)) -- pass A's "
-                "per-mutation artifact-probability computation needs "
-                "it."
+                "diagnostics need it."
             )
         if "exclude_artifacts" in kwargs:
             raise TypeError(
@@ -1460,19 +1509,34 @@ class MutationDataset:
                 "run_two_pass_signature_decomposition."
             )
 
-        from .constants import ARTIFACT_SIGNATURES
-        from .qc import flag_artifact_signature_mutations
+        from .constants import (
+            ARTIFACT_SIGNATURES,
+            TREATMENT_ASSOCIATED_SIGNATURES,
+        )
+        from .qc import (
+            flag_artifact_signature_mutations,
+            flag_treatment_signature_samples,
+        )
         from .signature_attribution import (
             compute_signature_probability_mass,
         )
         from .signature_decomposition import (
             build_sbs96_matrix_from_mutation_db,
+            compute_prevalence_overrides,
+            resolve_exclusion_list,
         )
         from .signature_decomposition import (
             signature_decomposition as run_sig_decomp,
         )
 
-        title = "Two-pass signature decomposition: pass A (artifact detection)"
+        # Consumed here, not forwarded to pass A -- pass A must be
+        # fully unrestricted to serve as the diagnostic fit for steps
+        # 2 and 3 below, which is a real change from a design where
+        # pass A already excluded the table and treatment signatures.
+        raw_exclude = kwargs.pop("exclude_signature_subgroups", None)
+        treatment_naive = kwargs.pop("treatment_naive", True)
+
+        title = "Two-pass signature decomposition: pass A (unrestricted diagnostic fit)"
         print("=" * len(title))
         print(title)
         print("=" * len(title))
@@ -1493,22 +1557,137 @@ class MutationDataset:
             )
         print()
 
+        pass_a_totals = pass_a_assignments.sum(axis=1)
+
+        # --- Step 2: treatment-signature-load sample QC (opt-in) ---
+        working_db = self.mutation_db
+        if treatment_load_threshold is not None:
+            treatment_cols = [
+                c
+                for c in TREATMENT_ASSOCIATED_SIGNATURES
+                if c in pass_a_assignments.columns
+            ]
+            treatment_totals = (
+                pass_a_assignments[treatment_cols].sum(axis=1)
+                if treatment_cols
+                else pd.Series(0.0, index=pass_a_assignments.index)
+            )
+            treatment_load = treatment_totals / pass_a_totals.replace(
+                0, pd.NA
+            )
+            treatment_load = treatment_load.astype(float)
+            # Below the burden gate, an unrestricted fit's fraction is
+            # too noisy to trust as a QC signal -- never flag these
+            # (NaN > threshold is False, so this is sufficient).
+            treatment_load[
+                pass_a_totals < min_burden_for_diagnostics
+            ] = float("nan")
+
+            tagged_samples_db = flag_treatment_signature_samples(
+                working_db,
+                treatment_load,
+                threshold=treatment_load_threshold,
+            )
+            flagged_mask = (
+                tagged_samples_db["problem"]
+                == "treatment_signature_sample"
+            )
+            n_samples_flagged = tagged_samples_db.loc[
+                flagged_mask, "Tumor_Sample_Barcode"
+            ].nunique()
+            logger.info(
+                f"Pass A: {n_samples_flagged} sample(s) flagged as "
+                "treatment-signature-contaminated "
+                f"(threshold={treatment_load_threshold}, "
+                f"min_burden={min_burden_for_diagnostics}) and "
+                "dropped entirely."
+            )
+            working_db = tagged_samples_db[
+                tagged_samples_db["problem"].isna()
+            ].drop(columns="problem")
+
+        surviving_samples = set(
+            working_db["Tumor_Sample_Barcode"].unique()
+        )
+        diagnostic_pool = pass_a_assignments.loc[
+            pass_a_assignments.index.isin(surviving_samples)
+            & (pass_a_totals >= min_burden_for_diagnostics)
+        ]
+
+        # --- Resolve pass B's exclusion set, always explicit -------
+        # Built by hand rather than forwarded as a cancer-type
+        # shorthand, so `exclude_artifacts` is never silently a no-op
+        # (it only has an effect when exclude_signature_subgroups
+        # resolves from a string/tuple, not when it's already a list
+        # -- true for the missing-PCAWG-row fallback case below, so
+        # this method never relies on that parameter at all).
+        location = None
+        cancer_type = None
+        if isinstance(raw_exclude, str):
+            cancer_type = raw_exclude
+        elif isinstance(raw_exclude, tuple) and len(raw_exclude) == 2:
+            location, cancer_type = raw_exclude
+
+        if cancer_type is not None:
+            base_table_exclusion = set(
+                resolve_exclusion_list(
+                    cancer_type,
+                    location=location,
+                    treatment_naive=False,
+                    exclude_artifacts=False,
+                )
+            )
+        elif raw_exclude is None:
+            base_table_exclusion = set()
+        else:
+            # Already an explicit list.
+            base_table_exclusion = (
+                set(raw_exclude)
+                - set(TREATMENT_ASSOCIATED_SIGNATURES)
+                - set(ARTIFACT_SIGNATURES)
+            )
+
+        # --- Step 3: prevalence-based table override (opt-in) ------
+        overrides = set()
+        if (
+            prevalence_override_min_fraction is not None
+            and base_table_exclusion
+        ):
+            overrides = compute_prevalence_overrides(
+                diagnostic_pool,
+                base_table_exclusion,
+                min_prevalence=prevalence_override_min_fraction,
+            )
+            if overrides:
+                logger.info(
+                    f"Pass A: prevalence override -- {sorted(overrides)} "
+                    f"recur in >= {100 * prevalence_override_min_fraction:.0f}% "
+                    f"of {len(diagnostic_pool)} adequately-powered "
+                    "tumors despite the per-cancer-type table "
+                    "excluding them; kept in pass B's basis."
+                )
+
+        final_exclusion = base_table_exclusion - overrides
+        if treatment_naive:
+            final_exclusion |= set(TREATMENT_ASSOCIATED_SIGNATURES)
+        final_exclusion |= set(ARTIFACT_SIGNATURES)
+
         logger.info(
             "Computing per-mutation artifact-signature probability "
             "mass from pass A's fit..."
         )
         artifact_mass = compute_signature_probability_mass(
-            self.mutation_db,
+            working_db,
             pass_a_assignments,
             pass_a_signature_matrix,
             target_signatures=ARTIFACT_SIGNATURES,
         )
         artifact_mass = pd.Series(
-            artifact_mass, index=self.mutation_db.index
+            artifact_mass, index=working_db.index
         )
 
         tagged_db = flag_artifact_signature_mutations(
-            self.mutation_db,
+            working_db,
             artifact_mass,
             threshold=artifact_threshold,
         )
@@ -1565,7 +1744,7 @@ class MutationDataset:
             exome=resolved_exome,
             cosmic_version=resolved_cosmic_version,
             genome_build=genome_build,
-            exclude_artifacts=True,
+            exclude_signature_subgroups=sorted(final_exclusion),
             **kwargs,
         )
 

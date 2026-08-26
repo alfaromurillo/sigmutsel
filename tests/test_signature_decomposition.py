@@ -17,6 +17,7 @@ from sigmutsel.signature_decomposition import (
     _signatures_from_rows,
     _write_filtered_signature_database,
     build_sbs96_matrix_from_mutation_db,
+    compute_prevalence_overrides,
     resolve_exclusion_list,
 )
 
@@ -237,6 +238,59 @@ def test_resolve_exclusion_list_artifact_carve_out_survives_table(
         exclude_artifacts=False,
     )
     assert "SBS45" not in excluded
+
+
+# --- compute_prevalence_overrides --------------------------------------
+
+
+def test_compute_prevalence_overrides_recurring_signature_kept():
+    # SIG_B: nonzero in 2/3 samples, small magnitude each time --
+    # prevalence, not magnitude, is the criterion.
+    assignments = pd.DataFrame(
+        {"SIG_A": [8, 9, 10], "SIG_B": [2, 1, 0]},
+        index=["S1", "S2", "S3"],
+    )
+    overrides = compute_prevalence_overrides(
+        assignments, ["SIG_B"], min_prevalence=0.5
+    )
+    assert overrides == {"SIG_B"}
+
+
+def test_compute_prevalence_overrides_rare_signature_not_overridden():
+    assignments = pd.DataFrame(
+        {"SIG_A": [8, 9, 10], "SIG_B": [5, 0, 0]},
+        index=["S1", "S2", "S3"],
+    )
+    overrides = compute_prevalence_overrides(
+        assignments, ["SIG_B"], min_prevalence=0.5
+    )
+    assert overrides == set()
+
+
+def test_compute_prevalence_overrides_exactly_at_threshold_included():
+    assignments = pd.DataFrame(
+        {"SIG_B": [1, 1, 0, 0]}, index=["S1", "S2", "S3", "S4"]
+    )
+    overrides = compute_prevalence_overrides(
+        assignments, ["SIG_B"], min_prevalence=0.5
+    )
+    assert overrides == {"SIG_B"}
+
+
+def test_compute_prevalence_overrides_missing_signature_ignored():
+    assignments = pd.DataFrame({"SIG_A": [8, 9]}, index=["S1", "S2"])
+    overrides = compute_prevalence_overrides(
+        assignments, ["SIG_NOT_PRESENT"], min_prevalence=0.1
+    )
+    assert overrides == set()
+
+
+def test_compute_prevalence_overrides_empty_pool_returns_no_overrides():
+    assignments = pd.DataFrame(columns=["SIG_B"])
+    overrides = compute_prevalence_overrides(
+        assignments, ["SIG_B"], min_prevalence=0.1
+    )
+    assert overrides == set()
 
 
 # --- build_sbs96_matrix_from_mutation_db ------------------------------

@@ -1441,6 +1441,26 @@ class MutationDataset:
         already updated ``mutation_db`` and a default rebuild would
         silently overwrite the cleaned version with the original.
 
+        **Caching pitfall, found the hard way (2026-08-26): pass A and
+        pass B cache in *two separate directories*, and
+        `force_generation=False`'s cache check is existence-only, with
+        no awareness of `cosmic_version`/exclusion lists/thresholds
+        changing between calls.** Pass A caches under the standard
+        ``{location_maf_files}/signature_decomposition/{signature_class}/``
+        directory (shared with any plain :meth:`run_signature_decomposition`
+        call); pass B caches separately, under a
+        ``..._{signature_class}_artifact_cleaned`` directory. Clearing
+        or backing up only one of the two before a rerun with
+        different parameters (e.g. a COSMIC version bump) lets the
+        *other* one silently serve stale results with no error and no
+        warning -- caught only because pass B's stale cache reflected
+        a different set of cleaned tumors than pass A's fresh one,
+        producing a one-tumor mismatch between ``mutation_db`` and
+        ``sig_assignments`` that surfaced as an all-NaN row deep in
+        downstream covariate-effect estimation, far from the actual
+        cause. Any rerun with different fit parameters must clear (or
+        back up) **both** directories, not just one.
+
         Only supports ``signature_class="SBS"`` (the matrix rebuild
         uses `constants.canonical_types_order`, which is SBS96-specific).
 

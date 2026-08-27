@@ -4911,6 +4911,7 @@ class Model:
         burn=1000,
         tol=0.05,
         excluded_samples=None,
+        train_genes=None,
     ):
         """Estimate covariate effect coefficients via MAP or MCMC.
 
@@ -4960,6 +4961,21 @@ class Model:
             implemented -- PyMC's `Bernoulli` likelihood here has no
             native per-observation weight argument; see the L_low
             low-burden-correction plan for why this was deferred.
+        train_genes : collection of str or pd.Index or None, default None
+            Ensembl gene IDs to restrict fitting to, intersected with
+            the usual passenger-genes-with-complete-covariates set.
+            Use together with ``genes`` on
+            :meth:`estimate_passenger_genes_r2` to score on a
+            disjoint held-out gene set for gene-level cross-
+            validation (see :func:`cross_validation.
+            gene_cv_passenger_r2`). Does not affect which genes
+            :meth:`compute_mu_gs`/:meth:`compute_mu_ms` compute rates
+            for -- only which genes contribute to the coefficient
+            fit -- nor the gene set used by this method's own
+            automatic `estimate_passenger_genes_r2()` call (Step 5),
+            which remains unrestricted unless you call
+            `estimate_passenger_genes_r2(genes=...)` again yourself
+            afterward.
 
         Returns
         -------
@@ -5252,6 +5268,16 @@ class Model:
         passenger_cov = self.cov_matrix.loc[passenger_gene_ids]
         complete_mask = ~passenger_cov.isna().any(axis=1)
         passenger_genes_complete = passenger_gene_ids[complete_mask]
+
+        # Step 2: Optionally restrict to a caller-supplied gene set
+        # (gene-level cross-validation train fold; see train_genes
+        # above). passenger_genes_complete is a numpy.ndarray here
+        # (boolean-masked from filter_passenger_genes_ensembl's
+        # ndarray output), not a pd.Index, so wrap before intersecting.
+        if train_genes is not None:
+            passenger_genes_complete = pd.Index(
+                passenger_genes_complete
+            ).intersection(pd.Index(train_genes))
 
         # Step 2: Optionally subsample genes if integer provided
         if draws > 1 and isinstance(sample, int):
@@ -5609,7 +5635,7 @@ class Model:
         return [f"signature_{i}" for i in range(n_signatures)]
 
     def estimate_passenger_genes_r2(
-        self, sample_weights=None, excluded_samples=None
+        self, sample_weights=None, excluded_samples=None, genes=None
     ):
         """Estimate R² for passenger gene mutation frequency predictions.
 
@@ -5647,6 +5673,13 @@ class Model:
             :func:`sample_qc.combine_sample_flags`, when dropping
             rather than downweighting). Applied before
             `sample_weights`.
+        genes : collection of str or pd.Index or None, default None
+            Ensembl gene IDs to restrict scoring to, intersected with
+            the usual passenger-gene set. Use together with
+            ``train_genes`` on :meth:`estimate_cov_effects` to fit on
+            a disjoint training gene set and score here on the
+            held-out genes, for gene-level cross-validation (see
+            :func:`cross_validation.gene_cv_passenger_r2`).
 
         Returns
         -------
@@ -5784,6 +5817,15 @@ class Model:
         passenger_gene_ids = filter_passenger_genes_ensembl(
             self._mu_gs.index
         )
+
+        # Optionally restrict to a caller-supplied gene set
+        # (gene-level cross-validation test fold; see genes above).
+        # filter_passenger_genes_ensembl returns a numpy.ndarray, not
+        # a pd.Index, so wrap before intersecting.
+        if genes is not None:
+            passenger_gene_ids = pd.Index(
+                passenger_gene_ids
+            ).intersection(pd.Index(genes))
 
         # Restrict to passenger genes. genes_present's crosstab is
         # built only from genes that appear at least once in the

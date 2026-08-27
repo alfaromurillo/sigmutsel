@@ -22,10 +22,12 @@ except ImportError:
         __version__ = "unknown"
 
 from sigmutsel import locations
+from sigmutsel.cross_validation import gene_cv_passenger_r2
 from sigmutsel.models import Model, MutationDataset
 
 __all__ = [
     "Model",
     "MutationDataset",
+    "gene_cv_passenger_r2",
     "locations",
 ]

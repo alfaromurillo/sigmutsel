@@ -2086,10 +2086,15 @@ class Model:
         Optional keyword arguments ``L_low``, ``L_high``,
         ``cut_at_L_low``,
         ``cov_effects_per_sigma``,
-        ``prob_g_tau_tau_independent``, and ``signature_selection``
-        can be provided at initialization to automatically run
-        the corresponding setup steps (mutation burdens, baseline
-        rates, and optional signature aggregation).
+        ``prob_g_tau_tau_independent``, ``signature_selection``, and
+        ``include_other`` can be provided at initialization to
+        automatically run the corresponding setup steps (mutation
+        burdens, baseline rates, and optional signature
+        aggregation). ``include_other`` (default False) is forwarded
+        to :meth:`aggregate_signatures`: set it to True to bucket
+        every signature not named in ``signature_selection`` into a
+        single ``"other"`` group instead of dropping it from
+        coefficient fitting entirely.
     prob_g_tau_tau_independent : bool or None
         Flag indicating whether base_mus were computed using
         type-independent gene probabilities. Set by
@@ -2174,6 +2179,9 @@ class Model:
     _auto_signature_selection: list | None = field(
         default=None, init=False, repr=False
     )
+    _auto_include_other: bool = field(
+        default=False, init=False, repr=False
+    )
 
     def __init__(
         self,
@@ -2187,6 +2195,7 @@ class Model:
         cov_effects_per_sigma: bool | None = None,
         prob_g_tau_tau_independent: bool | None = None,
         signature_selection: list | tuple | None = None,
+        include_other: bool = False,
     ):
         self.dataset = dataset
         self.cov_matrix = cov_matrix
@@ -2220,6 +2229,7 @@ class Model:
             if signature_selection is not None
             else None
         )
+        self._auto_include_other = include_other
         self._saved_location = None
 
         self.__post_init__()
@@ -2278,7 +2288,10 @@ class Model:
             self.compute_base_mus(prob_g_tau_tau_independent=False)
 
         if self._auto_signature_selection:
-            self.aggregate_signatures(self._auto_signature_selection)
+            self.aggregate_signatures(
+                self._auto_signature_selection,
+                include_other=self._auto_include_other,
+            )
 
     def __repr__(self):
         """Show model configuration and loaded results (custom repr)."""
@@ -3568,13 +3581,25 @@ class Model:
             # keys, splitting any "sigA+sigB" name back into a
             # tuple. This matches what aggregate_signatures
             # would have been called with, since base_mus'
-            # keys *are* the resulting group names.
-            selection = self._auto_signature_selection or [
-                tuple(key.split("+")) if "+" in key else key
-                for key in self._base_mus
-            ]
+            # keys *are* the resulting group names. The synthetic
+            # "other" key (from aggregate_signatures'
+            # include_other=True) has no corresponding raw
+            # signature name to split back out of -- reconstruct
+            # it via _aggregate_signature_dict's own
+            # include_other mechanism instead of naming it
+            # explicitly in the selection.
+            if self._auto_signature_selection is not None:
+                selection = self._auto_signature_selection
+                include_other = self._auto_include_other
+            else:
+                selection = [
+                    tuple(key.split("+")) if "+" in key else key
+                    for key in self._base_mus
+                    if key != "other"
+                ]
+                include_other = "other" in self._base_mus
             mu_taus_for_g_taus = _aggregate_signature_dict(
-                self._mu_taus, selection
+                self._mu_taus, selection, include_other=include_other
             )
 
         use_cov = (
@@ -5844,7 +5869,10 @@ class Model:
         (e.g., SBS10), and optionally group all remaining signatures
         into an "other" category.
 
-        The aggregated result replaces self._base_mus.
+        The aggregated result replaces self._base_mus. Equivalent to
+        passing ``signature_selection``/``include_other`` directly to
+        :meth:`Model.__init__`, which calls this method automatically
+        as part of construction.
 
         Parameters
         ----------

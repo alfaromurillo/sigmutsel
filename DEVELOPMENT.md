@@ -16,6 +16,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `compute_mutation_burden.py` | Synonymous burden, ℓ̂ estimation |
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
+| `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
 | `tcga_sample_selection.py` | Which downloaded MAF files to use: sample-type filter + per-case duplicate policy (see below) |
@@ -198,6 +199,46 @@ decision:
   clonal-architecture tool.
 - `combine_sample_flags(*flags, how="any"/"all")`: unions or
   intersects multiple flag `Series`, aligned on their combined index.
+
+## Consequence-split opportunities (`consequence_contexts_by_gene.py`)
+
+`contexts_by_gene.py` counts trinucleotide *contexts*; nothing about a
+context says what a mutation *does* (the same context/substitution is
+synonymous at one codon position and missense at another). This module
+adds that axis, as a strictly additive sibling:
+
+- `compute_consequence_contexts_by_gene()` returns
+  `(contexts_by_gene_syn, contexts_by_gene_nonsyn)`, both genes × the
+  **96** canonical SBS types — 96, not 32, because synonymy depends on
+  which alternate base is substituted, not only on the context.
+- The two tables satisfy, exactly, `syn[τ] + nonsyn[τ] ==
+  contexts_by_gene[extract_context(τ)]` for all 96 τ (each of the 3
+  types sharing a context splits that context's count). That identity
+  is what makes `p_gτ^(syn) + p_gτ^(nonsyn) == p_gτ` — and hence
+  `μ_g^(syn) + μ_g^(nonsyn) == μ_g` — exact downstream, so it is
+  tested directly against an independent `compute_contexts_by_gene`
+  run rather than assumed.
+- Preserving it dictates two implementation choices that would
+  otherwise look arbitrary: the walk visits exactly the positions
+  `compute_contexts_by_gene` counts (centres `1 .. len(seq) - 2` with
+  an unambiguous window), and a position whose *codon* can't be
+  resolved (truncated CDS, ambiguous base) is counted as
+  non-synonymous rather than dropped — the non-synonymous channel is
+  the remainder by definition. Measured over the full CDS FASTA that
+  fallback covers 537 of 39.6M positions (0.001%).
+- FASTA parsing, gene restriction and longest-transcript selection are
+  *shared* helpers imported from `contexts_by_gene.py`
+  (`normalize_fasta_paths`, `resolve_keep_ids`,
+  `select_longest_sequences`), not reimplemented — two different
+  transcript choices would break the identity silently.
+- `MutationDataset.generate_consequence_contexts_by_gene()` is the
+  call site, and it **raises unless `signature_class == "SBS"`**:
+  "synonymous" is codon-level and has no clean analogue for
+  DBS/ID/CN/SV, which this mechanism must leave structurally
+  untouched. `build_full_dataset()` deliberately does *not* call it
+  (a second full CDS pass, ~47s genome-wide, for output nothing
+  consumes yet); the tables are saved/loaded when present and absent
+  otherwise.
 
 ## General conventions
 

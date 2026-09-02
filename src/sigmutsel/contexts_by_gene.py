@@ -19,6 +19,100 @@ from .locations import location_cds_fasta
 logger = logging.getLogger(__name__)
 
 
+def normalize_fasta_paths(
+    fasta_files: str | Path | list[str | Path] | None,
+) -> list[Path]:
+    """Normalise the *fasta_files* argument to a list of Paths.
+
+    ``None`` falls back to :data:`locations.location_cds_fasta`.
+    Shared with :mod:`consequence_contexts_by_gene` so both tables
+    are always built from the same FASTA resolution rules.
+    """
+    if fasta_files is None:
+        fasta_files = location_cds_fasta
+
+    if isinstance(fasta_files, (str, Path)):
+        fasta_files = [fasta_files]
+
+    return [Path(p) for p in fasta_files]
+
+
+def resolve_keep_ids(
+    restrict_to_db: pd.DataFrame | Iterable[str] | None,
+) -> set[str] | None:
+    """Turn a *restrict_to_db* argument into a set of Ensembl IDs.
+
+    Returns ``None`` when every gene in the FASTA(s) should be kept.
+    A DataFrame is filtered to rows having both a ``'variant'`` and
+    an ``'ensembl_gene_id'``; any other iterable is taken as the IDs
+    themselves.
+    """
+    if restrict_to_db is None:
+        return None
+
+    if isinstance(restrict_to_db, pd.DataFrame):
+        # keep rows that have both a variant name *and* a gene ID
+        mask = (
+            restrict_to_db["variant"].notna()
+            & restrict_to_db["ensembl_gene_id"].notna()
+        )
+        return set(
+            restrict_to_db.loc[mask, "ensembl_gene_id"].astype(str)
+        )
+
+    return set(map(str, restrict_to_db))
+
+
+def extract_ensg(desc: str) -> str | None:
+    """Return the stable ENSG (no version) of a FASTA header, or None."""
+    for tok in desc.split():
+        if tok.startswith("gene:ENSG"):
+            ensg = tok.split(":")[1].split(".")[0]
+
+            # ----- hard-coded HGNC catch-up (FAM153B) ----------------
+            if ensg == "ENSG00000289731":
+                ensg = "ENSG00000182230"
+            # ---------------------------------------------------------
+            return ensg
+    return None
+
+
+def select_longest_sequences(
+    fasta_paths: list[Path], keep_ids: set[str] | None
+) -> dict[str, str]:
+    """Map each Ensembl gene ID to its longest transcript sequence.
+
+    Scans *fasta_paths* and keeps, per stable Ensembl gene ID, the
+    longest (upper-cased) sequence seen.  *keep_ids* restricts the
+    scan to those IDs; ``None`` keeps everything.
+
+    Factored out of :func:`compute_contexts_by_gene` so that
+    :mod:`consequence_contexts_by_gene` walks *exactly* the same
+    sequences --- if the two ever selected different transcripts the
+    ``syn + nonsyn == contexts`` identity would silently break.
+    """
+    best_seq: dict[str, str] = {}
+
+    for fasta in fasta_paths:
+        for rec in SeqIO.parse(fasta, "fasta"):
+            ensg = extract_ensg(rec.description)
+            if ensg is None:
+                logger.warning(
+                    "Header without Ensembl gene ID skipped: "
+                    f"{rec.id}"
+                )
+                continue
+
+            if keep_ids is not None and ensg not in keep_ids:
+                continue
+
+            seq = str(rec.seq).upper()
+            if len(seq) > len(best_seq.get(ensg, "")):
+                best_seq[ensg] = seq
+
+    return best_seq
+
+
 def compute_contexts_by_gene(
     fasta_files: str | Path | list[str | Path] | None = None,
     restrict_to_db: pd.DataFrame | Iterable[str] | None = None,
@@ -56,29 +150,10 @@ def compute_contexts_by_gene(
         "Build a 32-context table for the longest transcript of each gene...."
     )
     # ---- normalise inputs ------------------------------------------------
-    if fasta_files is None:
-        fasta_files = location_cds_fasta
-
-    if isinstance(fasta_files, (str, Path)):
-        fasta_files = [fasta_files]
-    fasta_paths = [Path(p) for p in fasta_files]
+    fasta_paths = normalize_fasta_paths(fasta_files)
 
     # set of IDs to keep (None means keep all)
-    if restrict_to_db is None:
-        keep_ids = None
-
-    elif isinstance(restrict_to_db, pd.DataFrame):
-        # keep rows that have both a variant name *and* a gene ID
-        mask = (
-            restrict_to_db["variant"].notna()
-            & restrict_to_db["ensembl_gene_id"].notna()
-        )
-        keep_ids = set(
-            restrict_to_db.loc[mask, "ensembl_gene_id"].astype(str)
-        )
-
-    else:
-        keep_ids = set(map(str, restrict_to_db))
+    keep_ids = resolve_keep_ids(restrict_to_db)
 
     # ---- precompute helpers ---------------------------------------------
     contexts32 = [
@@ -90,38 +165,8 @@ def compute_contexts_by_gene(
     comp = str.maketrans("ACGT", "TGCA")
     valid = set("ACGT")
 
-    best_seq: dict[str, str] = {}
-
-    def extract_ensg(desc: str) -> str | None:
-        """Return stable ENSG (no version) or None."""
-        for tok in desc.split():
-            if tok.startswith("gene:ENSG"):
-                ensg = tok.split(":")[1].split(".")[0]
-
-                # ----- hard-coded HGNC catch-up (FAM153B) ----------------
-                if ensg == "ENSG00000289731":
-                    ensg = "ENSG00000182230"
-                # ---------------------------------------------------------
-                return ensg
-        return None
-
     # ---- pass 1: pick longest transcript per gene -----------------------
-    for fasta in fasta_paths:
-        for rec in SeqIO.parse(fasta, "fasta"):
-            ensg = extract_ensg(rec.description)
-            if ensg is None:
-                logger.warning(
-                    "Header without Ensembl gene ID skipped: "
-                    f"{rec.id}"
-                )
-                continue
-
-            if keep_ids is not None and ensg not in keep_ids:
-                continue
-
-            seq = str(rec.seq).upper()
-            if len(seq) > len(best_seq.get(ensg, "")):
-                best_seq[ensg] = seq
+    best_seq = select_longest_sequences(fasta_paths, keep_ids)
 
     # ---- pass 2: count contexts -----------------------------------------
     rows = []

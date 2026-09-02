@@ -81,6 +81,15 @@ class MutationDataset:
         gene. Thus, gene mutation rates can only be obtained for
         genes with this information, and so the index of
         contexts_by_gene is the maximal scope of the analysis.
+    contexts_by_gene_syn, contexts_by_gene_nonsyn : pd.DataFrame or None
+        Consequence-split opportunity counts (genes × 96 canonical SBS
+        types): the synonymous and non-synonymous share of the same
+        opportunities `contexts_by_gene` counts, so that
+        ``syn[τ] + nonsyn[τ] == contexts_by_gene[context(τ)]`` for
+        every type τ. SBS-only (see
+        generate_consequence_contexts_by_gene()) and lazy-loaded --
+        nothing in the default pipeline populates or consumes them
+        yet.
     signature_reference_genome : str or None
         Reference genome (same as genome_build) used when generating
         mutational matrices for signature decomposition. Populated
@@ -154,6 +163,8 @@ class MutationDataset:
     _signature_genome_build: str | None = None
     _contexts_by_gene: pd.DataFrame = None
     _contexts_by_gene_gene_universe: str | None = None
+    _contexts_by_gene_syn: pd.DataFrame = None
+    _contexts_by_gene_nonsyn: pd.DataFrame = None
     _sample_qc_flags: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
@@ -213,6 +224,11 @@ class MutationDataset:
         if self._contexts_by_gene is not None:
             loaded.append(
                 f"contexts_by_gene: {self._contexts_by_gene.shape}"
+            )
+        if self._contexts_by_gene_syn is not None:
+            loaded.append(
+                "contexts_by_gene_syn/nonsyn: "
+                f"{self._contexts_by_gene_syn.shape}"
             )
         if self._sample_qc_flags is not None:
             loaded.append(
@@ -302,6 +318,18 @@ class MutationDataset:
                 "csv",
             ),
             (
+                "contexts_by_gene_syn",
+                "_contexts_by_gene_syn",
+                "contexts_by_gene_syn.csv",
+                "csv",
+            ),
+            (
+                "contexts_by_gene_nonsyn",
+                "_contexts_by_gene_nonsyn",
+                "contexts_by_gene_nonsyn.csv",
+                "csv",
+            ),
+            (
                 "sample_qc_flags",
                 "_sample_qc_flags",
                 "sample_qc_flags.parquet",
@@ -350,10 +378,14 @@ class MutationDataset:
 
         manifest = {
             # Bumped 2 -> adds sample_qc_flags (see the L_low
-            # low-burden-correction plan). Not read/validated on
+            # low-burden-correction plan); 3 -> adds the optional
+            # consequence-split opportunity tables
+            # (contexts_by_gene_syn/nonsyn). Not read/validated on
             # load -- documentary only, so an old manifest (version
-            # 1, no sample_qc_flags file) still loads fine.
-            "version": 2,
+            # 1, no sample_qc_flags file) still loads fine, and a
+            # version-3 manifest without the split tables is the
+            # normal case, not a defect.
+            "version": 3,
             "signature_class": self.signature_class,
             "location_maf_files": str(self.location_maf_files),
             "source_maf": (
@@ -968,6 +1000,45 @@ class MutationDataset:
     def contexts_by_gene(self, value):
         """Set trinucleotide context counts by gene."""
         self._contexts_by_gene = value
+
+    @property
+    def contexts_by_gene_syn(self):
+        """Synonymous SBS opportunity counts by gene (lazy loaded)."""
+        if self._contexts_by_gene_syn is None:
+            raise ValueError(
+                "Synonymous opportunity counts not loaded. Call "
+                "generate_consequence_contexts_by_gene() or "
+                "load_dataset() first."
+            )
+        return self._contexts_by_gene_syn
+
+    @contexts_by_gene_syn.setter
+    def contexts_by_gene_syn(self, value):
+        """Set synonymous SBS opportunity counts by gene."""
+        self._contexts_by_gene_syn = value
+
+    @property
+    def contexts_by_gene_nonsyn(self):
+        """Non-synonymous SBS opportunity counts by gene (lazy)."""
+        if self._contexts_by_gene_nonsyn is None:
+            raise ValueError(
+                "Non-synonymous opportunity counts not loaded. Call "
+                "generate_consequence_contexts_by_gene() or "
+                "load_dataset() first."
+            )
+        return self._contexts_by_gene_nonsyn
+
+    @contexts_by_gene_nonsyn.setter
+    def contexts_by_gene_nonsyn(self, value):
+        """Set non-synonymous SBS opportunity counts by gene."""
+        self._contexts_by_gene_nonsyn = value
+
+    def has_consequence_contexts_by_gene(self):
+        """Whether the consequence-split opportunity tables exist."""
+        return (
+            self._contexts_by_gene_syn is not None
+            and self._contexts_by_gene_nonsyn is not None
+        )
 
     def has_mutational_matrices(self):
         """Check if mutational matrices have been generated.
@@ -1863,7 +1934,24 @@ class MutationDataset:
         """
         from .contexts_by_gene import compute_contexts_by_gene
 
-        # Ensure mutation_db is loaded
+        restrict_to_db = self._resolve_gene_universe(gene_universe)
+
+        self._contexts_by_gene = compute_contexts_by_gene(
+            fastas, restrict_to_db=restrict_to_db
+        )
+        self._contexts_by_gene_gene_universe = gene_universe
+
+        return self._contexts_by_gene
+
+    def _resolve_gene_universe(self, gene_universe):
+        """Turn a gene_universe name into a `restrict_to_db` argument.
+
+        Shared by :meth:`generate_contexts_by_gene` and
+        :meth:`generate_consequence_contexts_by_gene` so the two
+        opportunity tables can never be built over different gene
+        sets. See :meth:`generate_contexts_by_gene` for what the
+        accepted values mean.
+        """
         if self._mutation_db is None:
             raise ValueError(
                 "Mutation database must be loaded before computing "
@@ -1872,8 +1960,9 @@ class MutationDataset:
             )
 
         if gene_universe == "own_cohort":
-            restrict_to_db = self.mutation_db
-        elif gene_universe == "wes_target":
+            return self.mutation_db
+
+        if gene_universe == "wes_target":
             from .wes_target import get_wes_target_gene_ids
 
             own_mask = self.mutation_db["variant"].notna() & (
@@ -1884,19 +1973,95 @@ class MutationDataset:
                     own_mask, "ensembl_gene_id"
                 ].astype(str)
             )
-            restrict_to_db = get_wes_target_gene_ids() | own_ids
-        else:
+            return get_wes_target_gene_ids() | own_ids
+
+        raise ValueError(
+            f"Unknown gene_universe {gene_universe!r}; expected "
+            "'own_cohort' or 'wes_target'."
+        )
+
+    def generate_consequence_contexts_by_gene(
+        self, fastas=None, gene_universe="own_cohort"
+    ):
+        """Generate synonymous/non-synonymous opportunity counts.
+
+        Splits the same per-gene CDS opportunities that
+        :meth:`generate_contexts_by_gene` counts into a synonymous and
+        a non-synonymous channel, bucketed by the 96 canonical SBS
+        types, and stores them in ``self._contexts_by_gene_syn`` and
+        ``self._contexts_by_gene_nonsyn``. See
+        :mod:`sigmutsel.consequence_contexts_by_gene` for the exact
+        counting rules and caveats.
+
+        Nothing in the default pipeline calls this method or consumes
+        its output yet: it is additive infrastructure for the
+        consequence-split rate model, and
+        :meth:`build_full_dataset` deliberately does not run it (it
+        costs a second full pass over the CDS FASTA).
+
+        Parameters
+        ----------
+        fastas : str, Path, list, or None, default None
+            Forwarded to
+            :func:`consequence_contexts_by_gene.compute_consequence_contexts_by_gene`.
+            Must be a **CDS** FASTA (the default,
+            ``locations.location_cds_fasta``, is one) -- a sequence
+            with no reading frame has no synonymous channel.
+        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+            Same meaning as in :meth:`generate_contexts_by_gene`. Use
+            the same value there and here: the sum identity below only
+            holds gene-by-gene for genes present in both tables.
+
+        Returns
+        -------
+        (pd.DataFrame, pd.DataFrame)
+            ``(contexts_by_gene_syn, contexts_by_gene_nonsyn)``, both
+            genes × 96 canonical SBS types.
+
+        Raises
+        ------
+        ValueError
+            If ``signature_class`` is not ``"SBS"``. "Synonymous" is a
+            codon-level concept that only makes sense for single-base
+            substitutions; DBS/ID/CN/SV have no analogue and are left
+            structurally untouched by this mechanism.
+
+        Notes
+        -----
+        For every gene and every SBS type τ::
+
+            contexts_by_gene_syn[τ] + contexts_by_gene_nonsyn[τ]
+                == contexts_by_gene[extract_context(τ)]
+
+        which is what makes ``p_gτ^(syn) + p_gτ^(nonsyn) == p_gτ``
+        exact downstream.
+        """
+        from .consequence_contexts_by_gene import (
+            compute_consequence_contexts_by_gene,
+        )
+
+        if self.signature_class != "SBS":
             raise ValueError(
-                f"Unknown gene_universe {gene_universe!r}; expected "
-                "'own_cohort' or 'wes_target'."
+                "Consequence-split opportunity counts are SBS-only; "
+                f"this dataset has signature_class="
+                f"{self.signature_class!r}. Synonymous/non-synonymous "
+                "is a codon-level distinction with no clean analogue "
+                "for DBS/ID/CN/SV."
             )
 
-        self._contexts_by_gene = compute_contexts_by_gene(
+        restrict_to_db = self._resolve_gene_universe(gene_universe)
+
+        (
+            self._contexts_by_gene_syn,
+            self._contexts_by_gene_nonsyn,
+        ) = compute_consequence_contexts_by_gene(
             fastas, restrict_to_db=restrict_to_db
         )
-        self._contexts_by_gene_gene_universe = gene_universe
 
-        return self._contexts_by_gene
+        return (
+            self._contexts_by_gene_syn,
+            self._contexts_by_gene_nonsyn,
+        )
 
     def build_full_dataset(
         self,

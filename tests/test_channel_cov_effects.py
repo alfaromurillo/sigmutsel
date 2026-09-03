@@ -420,3 +420,16 @@ def test_passenger_genes_r2_rejects_unknown_target(tmp_path):
     model.estimate_channel_cov_effects(sample="MAP")
     with pytest.raises(ValueError, match="Unknown target"):
         model.estimate_passenger_genes_r2(target="silent")
+
+
+def test_passenger_genes_r2_rejects_nan_rates(tmp_path):
+    """A NaN rate fails silently under pandas' NaN-skipping .sum()
+    (the gene is scored as expecting 0), so it must raise instead --
+    this is what a cov_matrix with NaN rows for genes lacking
+    covariate data produces, and it cost 0.08 of R² on COAD with no
+    error anywhere."""
+    model = _model_with_channels(tmp_path)
+    model.estimate_channel_cov_effects(sample="MAP")
+    model._mu_gs.iloc[0, 0] = np.nan
+    with pytest.raises(ValueError, match="NaN rate"):
+        model.estimate_passenger_genes_r2()

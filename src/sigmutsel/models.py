@@ -6566,6 +6566,25 @@ class Model:
             passenger_gene_ids, fill_value=0
         )
 
+        # A NaN rate is always a bug (most often a cov_matrix with NaN
+        # rows for genes that have no covariates, whose exp(η) then
+        # poisons mu_gs), and it fails *silently* below: pandas'
+        # `.sum()` skips NaN, so such a gene is scored as expecting 0
+        # mutations rather than raising. Caught the hard way while
+        # reproducing a saved COAD fit locally -- it cost 0.08 of R²
+        # with no error anywhere.
+        n_nan = int(mu_gs_passenger.isna().values.sum())
+        if n_nan:
+            n_genes = int(mu_gs_passenger.isna().any(axis=1).sum())
+            raise ValueError(
+                f"{n_nan} NaN rate(s) across {n_genes} passenger "
+                "gene(s) in the matrix being scored. Summing would "
+                "silently treat those genes as expecting 0 mutations "
+                "and report a too-low R². The usual cause is a "
+                "cov_matrix carrying NaN rows for genes without "
+                "covariate data -- drop them before fitting."
+            )
+
         if excluded_samples is not None:
             keep = mu_gs_passenger.columns.difference(
                 excluded_samples

@@ -270,13 +270,24 @@ class MutationDataset:
             f")"
         )
 
-    def save_dataset(self, directory):
-        """Persist loaded dataset artifacts to a directory."""
+    def save_dataset(self, directory, overwrite=False):
+        """Persist loaded dataset artifacts to a directory.
+
+        Parameters
+        ----------
+        directory : str or Path
+            Where to write the dataset.
+        overwrite : bool, default False
+            Replace an existing dataset without asking. The default
+            prompts interactively, which is right at a console but
+            hangs an unattended pipeline -- pass True from scripts,
+            mirroring :meth:`Model.save_model`.
+        """
 
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
 
-        if manifest_path.exists():
+        if manifest_path.exists() and not overwrite:
             response = (
                 input(
                     f"Dataset already exists at {directory}. "

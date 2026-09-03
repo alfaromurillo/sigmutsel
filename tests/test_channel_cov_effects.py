@@ -603,3 +603,26 @@ def test_count_target_requires_count_matrices(tmp_path):
     model.estimate_channel_cov_effects(sample="MAP")
     with pytest.raises(ValueError, match="Non-silent gene count"):
         model.estimate_passenger_genes_r2(target="non_silent_counts")
+
+
+def test_save_dataset_overwrite_does_not_prompt(
+    tmp_path, monkeypatch
+):
+    """save_dataset prompts on an existing directory, which hangs an
+    unattended pipeline. overwrite=True must skip the prompt
+    entirely, not answer it."""
+    dataset = MutationDataset(location_maf_files=tmp_path / "src")
+    dataset._mutation_db = _mutation_db()
+    dataset.compute_gene_presence()
+
+    out = tmp_path / "ds"
+    dataset.save_dataset(out)
+
+    def _explode(*args, **kwargs):
+        raise AssertionError(
+            "save_dataset prompted despite overwrite"
+        )
+
+    monkeypatch.setattr("builtins.input", _explode)
+    dataset.save_dataset(out, overwrite=True)
+    assert (out / "dataset_manifest.json").exists()

@@ -2464,7 +2464,8 @@ class Model:
     _passenger_genes_r2_non_silent_counts: float = None
     _rg_theta: float = None
     _rg_statistics: dict = None
-    _rg_separate_c: bool = False
+    _rg_separate_c: bool | str = False
+    _rg_delta_intercept: float = None
     _channel_cov_effects: np.ndarray = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
@@ -2527,6 +2528,7 @@ class Model:
         self._rg_theta = None
         self._rg_statistics = None
         self._rg_separate_c = False
+        self._rg_delta_intercept = None
         self._channel_cov_effects = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
@@ -6446,9 +6448,14 @@ class Model:
             ``excluded_samples`` must be used here and in any later
             ``r_g`` or R² call, since the per-gene statistics are sums
             over whichever samples were kept.
-        separate_c : bool, default False
-            If True, fit a separate coefficient vector per channel
-            instead of one shared vector (``r_g`` and θ stay shared).
+        separate_c : bool | str, default False
+            ``False`` (shared), ``"intercept"`` (shared slopes, own
+            non-synonymous intercept) or ``True`` (own vector per
+            channel); ``r_g`` and θ stay shared in all three. The
+            intercept absorbs a calibration offset between channels,
+            so testing ``True`` against ``False`` conflates that
+            with the slopes -- go through ``"intercept"`` to
+            separate them. See :mod:`sigmutsel.estimate_rg`.
             The result lands in :attr:`channel_cov_effects` with shape
             ``(2, n_coeffs)`` -- row 0 synonymous, row 1
             non-synonymous -- and **not** in ``cov_effects``, because
@@ -6550,6 +6557,7 @@ class Model:
         )
         self._rg_separate_c = separate_c
 
+        self._rg_delta_intercept = None
         if is_mcmc:
             import arviz as az
 
@@ -6566,6 +6574,12 @@ class Model:
                     .values
                 )
             )
+            if separate_c == "intercept":
+                self._rg_delta_intercept = float(
+                    az.extract(result, var_names=["delta_intercept"])
+                    .mean(dim="sample")
+                    .values
+                )
             summary = az.summary(result, var_names=["c", "log_theta"])
             logger.info("Posterior summary:\n%s", summary.to_string())
             candidates = (
@@ -6584,6 +6598,11 @@ class Model:
         else:
             self.cov_effects = result["c"]
             self._rg_theta = float(np.exp(result["log_theta"]))
+            self._rg_delta_intercept = (
+                float(result["delta_intercept"])
+                if "delta_intercept" in result
+                else None
+            )
             candidates = (self.cov_effects, self.cov_effects)
             mode_desc = "MAP estimates"
 
@@ -6606,7 +6625,7 @@ class Model:
                 mode_desc=mode_desc,
             )
 
-        if separate_c:
+        if separate_c is True:
             # A single mu_gs is not defined by one `c` here, so the
             # usual recomputation would be meaningless. Move the
             # coefficients out of `cov_effects` entirely so nothing
@@ -6622,7 +6641,7 @@ class Model:
 
         if is_mcmc:
             return self.cov_effects_posteriors
-        elif separate_c:
+        elif separate_c is True:
             return self._channel_cov_effects
         else:
             return self.cov_effects
@@ -6670,13 +6689,17 @@ class Model:
             [np.ones((cov.shape[0], 1)), cov], axis=1
         )
 
-        if self._rg_separate_c:
+        if self._rg_separate_c is True:
             coeffs = self.channel_cov_effects
             eta_silent = cov_ext @ coeffs[0]
             eta_non_silent = cov_ext @ coeffs[1]
         else:
             eta_silent = cov_ext @ np.asarray(self.cov_effects)
-            eta_non_silent = None
+            eta_non_silent = (
+                eta_silent + self._rg_delta_intercept
+                if self._rg_delta_intercept is not None
+                else None
+            )
 
         return float(
             channel_rg_log_likelihood(

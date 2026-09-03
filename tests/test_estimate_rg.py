@@ -400,3 +400,40 @@ def test_log_likelihood_at_fit_requires_a_fit(tmp_path):
     model = _rg_model(tmp_path)
     with pytest.raises(ValueError, match="No r_g fit available"):
         model.channel_rg_log_likelihood_at_fit()
+
+
+def test_intercept_mode_is_between_shared_and_separate(tmp_path):
+    """The three c parameterisations are nested, so their maximised
+    log-likelihoods must be ordered shared <= intercept <= separate.
+    Testing separate against shared alone would conflate the
+    calibration offset with the slopes."""
+    lls = {}
+    for mode in (False, "intercept", True):
+        model = _rg_model(tmp_path)
+        model.estimate_channel_rg_cov_effects(
+            sample="MAP", separate_c=mode
+        )
+        lls[str(mode)] = model.channel_rg_log_likelihood_at_fit()
+
+    assert lls["False"] <= lls["intercept"] + 1e-6
+    assert lls["intercept"] <= lls["True"] + 1e-6
+
+
+def test_intercept_mode_keeps_shared_c_shape(tmp_path):
+    """`intercept` shares the slopes, so `c` stays 1-D and the
+    downstream mu_gs recomputation is still meaningful."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c="intercept"
+    )
+    assert np.asarray(model.cov_effects).ndim == 1
+    assert model._rg_delta_intercept is not None
+    assert np.isfinite(model._rg_delta_intercept)
+
+
+def test_unknown_separate_c_raises(tmp_path):
+    model = _rg_model(tmp_path)
+    with pytest.raises(ValueError, match="separate_c must be"):
+        model.estimate_channel_rg_cov_effects(
+            sample="MAP", separate_c="slopes"
+        )

@@ -224,6 +224,15 @@ def channel_rg_log_likelihood(
     )
 
 
+def _c_mode_label(separate_c):
+    """Human-readable name for the three nested c parameterisations."""
+    if separate_c is True:
+        return "separate c"
+    if separate_c == "intercept":
+        return "separate intercept, shared slopes"
+    return "shared c"
+
+
 def _np_gammaln(x):
     from scipy.special import gammaln
 
@@ -264,15 +273,26 @@ def estimate_channel_rg_effect(
     cov_matrix : ndarray, shape (n_genes, n_covariates)
         Gene covariates; a column of ones is prepended for the
         intercept.
-    separate_c : bool, default False
-        If False, both channels share one coefficient vector. If
-        True, each channel gets its own, and ``c`` comes back with
-        shape ``(2, n_coeffs)`` -- row 0 synonymous, row 1
-        non-synonymous. ``r_g`` and ``θ`` stay shared either way.
-        The shared model is nested inside the separate one at
-        ``c^(syn) = c^(nonsyn)``, so ``2 * (ll_separate -
-        ll_shared)`` is a likelihood-ratio statistic on
-        ``n_coeffs`` degrees of freedom.
+    separate_c : bool | str, default False
+        Three nested models, in increasing order of freedom:
+
+        * ``False`` -- both channels share one coefficient vector.
+        * ``"intercept"`` -- shared slopes, but the non-synonymous
+          channel gets its own intercept (one extra parameter,
+          returned as ``delta_intercept``).
+        * ``True`` -- each channel gets its own full vector; ``c``
+          comes back with shape ``(2, n_coeffs)``, row 0 synonymous.
+
+        ``r_g`` and ``θ`` stay shared in all three. The ladder
+        matters because the intercept absorbs a *calibration*
+        offset between the two channels -- any systematic mismatch
+        in the opportunity split lands there -- while the slopes
+        carry the biological question. Comparing ``True`` against
+        ``"intercept"`` tests the slopes alone; comparing
+        ``"intercept"`` against ``False`` tests only the offset. A
+        test of ``True`` against ``False`` conflates the two and
+        will look overwhelmingly significant on the strength of the
+        offset.
     draws, lower_bounds_c, upper_bounds_c, burn, chains, save_path, kwargs
         As in :func:`estimate_covariates_effect.estimate_covariates_effect`.
     log_theta_bounds : (float, float), default (-5, 10)
@@ -301,6 +321,12 @@ def estimate_channel_rg_effect(
     if kwargs is None:
         kwargs = {}
 
+    if separate_c not in (True, False, "intercept"):
+        raise ValueError(
+            f"separate_c must be False, True or 'intercept'; got "
+            f"{separate_c!r}."
+        )
+
     n_genes = counts_silent.shape[0]
     for name, arr in (
         ("baseline_silent", baseline_silent),
@@ -321,7 +347,7 @@ def estimate_channel_rg_effect(
 
     n_in_non_silent = int((baseline_non_silent > 0).sum())
     logger.info(
-        f"r_g mode ({'separate' if separate_c else 'shared'} c): "
+        f"r_g mode ({_c_mode_label(separate_c)}): "
         f"{n_genes} genes in the silent channel, "
         f"{n_in_non_silent} also in the non-silent channel, "
         f"{cov_matrix.shape[1]} covariate(s)"
@@ -341,7 +367,7 @@ def estimate_channel_rg_effect(
             name="c",
             lower=lower_bounds_c,
             upper=upper_bounds_c,
-            shape=(2, n_coeffs) if separate_c else n_coeffs,
+            shape=(2, n_coeffs) if separate_c is True else n_coeffs,
         )
         log_theta = pm.Uniform(
             name="log_theta",
@@ -351,9 +377,17 @@ def estimate_channel_rg_effect(
         theta = tt.exp(log_theta)
 
         cov32 = pm.Data("cov_ext", cov_ext)
-        if separate_c:
+        if separate_c is True:
             eta_silent = tt.dot(cov32, c[0])
             eta_non_silent = tt.dot(cov32, c[1])
+        elif separate_c == "intercept":
+            delta = pm.Uniform(
+                name="delta_intercept",
+                lower=lower_bounds_c,
+                upper=upper_bounds_c,
+            )
+            eta_silent = tt.dot(cov32, c)
+            eta_non_silent = eta_silent + delta
         else:
             eta_silent = tt.dot(cov32, c)
             eta_non_silent = None
@@ -389,7 +423,7 @@ def estimate_channel_rg_effect(
         if draws == 1:
             logger.info(
                 "Finding MAP estimate for "
-                f"{n_coeffs * (2 if separate_c else 1)} "
+                f"{n_coeffs * (2 if separate_c is True else 1)} "
                 "coefficient(s) plus log_theta"
             )
             results = pm.find_MAP(

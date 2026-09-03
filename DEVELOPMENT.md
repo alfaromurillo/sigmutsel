@@ -240,6 +240,57 @@ adds that axis, as a strictly additive sibling:
   consumes yet); the tables are saved/loaded when present and absent
   otherwise.
 
+## Two-channel (syn/non-syn) covariate fit
+
+Built on the opportunity tables above; the merged single-channel path
+is untouched and still the default everywhere.
+
+- `estimate_mus.compute_mu_g_channel_per_tumor()` is
+  `compute_mu_g_per_tumor()` with the **numerator** taken from one
+  consequence channel's 96-type table and the **denominator left as
+  the full τ-site count**. That denominator is the whole trick:
+  `p_gτ^(syn)` multiplies `μ̄_τ^j` (the *total* type-τ rate), so it
+  must not be renormalised over synonymous sites only — doing so
+  overcounts by ≈4×. Consequence: it does not sum to 1 over genes, it
+  sums to the genome-wide synonymous fraction (≈0.23).
+- The two `p_gτ` paths normalise differently, and the asymmetry is
+  real: τ-**dependent** uses `Σ_g contexts[g, c(τ)]` unchanged (for a
+  *given* τ a position offers exactly one opportunity), while
+  τ-**independent** collapses over types, where each position offers
+  **3** opportunities, so its denominator is `3 × contexts.sum()`.
+  Both are covered by the `μ_g^(syn) + μ_g^(nonsyn) == μ_g` test.
+- `MutationDataset.compute_gene_presence_silent()` mirrors the
+  non-silent pair via `compute_genes_present(db, scope="silent")` —
+  the scope was already supported, just unused. Like its sibling it is
+  saved/loaded when present; `build_full_dataset()` does not compute
+  it.
+- `Model.compute_channel_base_mus()` splits `base_mus`, inheriting
+  `prob_g_tau_tau_independent` from whatever `compute_base_mus()` used
+  (pass it explicitly only to deliberately diverge — otherwise the
+  channels would not sum back).
+- `Model.estimate_channel_cov_effects()` fits **one shared `c`**
+  against two Bernoulli terms: the silent channel over all genes with
+  complete covariates (`include_drivers=True`, the point of the whole
+  exercise — a driver's silent counts are selection-free) and the
+  non-silent channel over passengers only. `include_drivers=False`
+  restricts the silent channel to the same passenger set, isolating
+  the value of the finer-grained observation from the value of the
+  driver genes.
+- **This is not a re-parameterisation of the merged fit.** `1[silent
+  or non-silent]` is an OR of two events; observing the pair jointly
+  is strictly more informative than the OR, so the numbers differ even
+  with `include_drivers=False`. Expect *close*, not identical; a large
+  gap there means the split is wrong, not that the model improved.
+- `Model.estimate_passenger_genes_r2(target=...)`: `"any"` (default,
+  unchanged behavior) scores `genes_present` against merged `mu_gs`;
+  `"non_silent"` scores `genes_present_non_silent` against the
+  **non-synonymous channel's** rates, since predicting a non-silent
+  target from a total rate is biased high by construction. The two
+  land in separate attributes (`passenger_genes_r2` /
+  `passenger_genes_r2_non_silent`) on purpose — silently redefining
+  what "the R²" means depending on the last call's argument is exactly
+  the ambiguity this evaluation exists to remove.
+
 ## General conventions
 
 - **No titles in matplotlib figures** — titles go in captions.

@@ -301,6 +301,197 @@ def estimate_covariates_effect(
     return results
 
 
+def estimate_channel_covariates_effect(
+    mus_silent: np.ndarray,
+    presence_silent: np.ndarray,
+    cov_matrix_silent: np.ndarray,
+    mus_non_silent: np.ndarray,
+    presence_non_silent: np.ndarray,
+    cov_matrix_non_silent: np.ndarray,
+    draws: int = 4000,
+    lower_bounds_c: float | np.ndarray | None = -2,
+    upper_bounds_c: float | np.ndarray = 2,
+    burn: int = 1000,
+    chains: int = 4,
+    save_path: str | Path | None = None,
+    kwargs: dict | None = None,
+) -> az.InferenceData | dict:
+    """Fit one shared ``c`` against two consequence channels jointly.
+
+    The two-channel counterpart of
+    :func:`estimate_covariates_effect`'s signature-independent mode.
+    Instead of one Bernoulli likelihood over a single presence
+    matrix, this builds **two** Bernoulli terms -- one per consequence
+    channel -- that share a single coefficient vector ``c``:
+
+    * silent channel: gene set ``G``, observed
+      ``1[gene g has a silent mutation in sample j]``;
+    * non-silent channel: gene set ``P`` (passenger genes), observed
+      ``1[gene g has a non-silent mutation in sample j]``.
+
+    The two gene sets are deliberately **allowed to differ**: the
+    whole point of the split is that a driver gene's silent channel
+    is selection-free and can therefore contribute to the rate model
+    even though its non-silent channel cannot. The two ``cov_matrix``
+    arguments are the covariate rows for each channel's own genes,
+    in the same row order as that channel's ``mus``/``presence``
+    columns.
+
+    This is **not** a re-parameterisation of the single-channel fit.
+    ``1[silent or non-silent]`` is an OR of two events; observing the
+    pair jointly is strictly more informative than observing the OR,
+    so the split changes the answer even with ``G == P``. See the
+    project's staging notes: the drivers-off result is expected to be
+    *close* to the merged baseline, not identical to it.
+
+    Parameters
+    ----------
+    mus_silent : ndarray, shape (n_tumors, n_genes_silent)
+        Baseline silent-channel rates ``μ̄_g^(syn,j)``.
+    presence_silent : ndarray, shape (n_tumors, n_genes_silent)
+        Binary silent-mutation presence.
+    cov_matrix_silent : ndarray, shape (n_genes_silent, n_covariates)
+        Covariates for the silent channel's genes. A column of ones
+        is prepended internally for the intercept.
+    mus_non_silent, presence_non_silent, cov_matrix_non_silent
+        The same three, for the non-silent channel's (passenger)
+        genes. ``n_covariates`` must match the silent channel's,
+        since the coefficients are shared.
+    draws, lower_bounds_c, upper_bounds_c, burn, chains, save_path, kwargs
+        As in :func:`estimate_covariates_effect`.
+
+    Returns
+    -------
+    arviz.InferenceData | dict
+        As in :func:`estimate_covariates_effect`: a dict with key
+        ``c`` for ``draws == 1`` (MAP), otherwise posterior samples.
+        ``c`` has shape ``(n_covariates + 1,)`` either way -- one
+        shared vector, not one per channel.
+
+    Raises
+    ------
+    ValueError
+        If a channel's covariate matrix does not have that channel's
+        gene count as rows, or if the two channels disagree on the
+        number of covariates.
+    """
+    if kwargs is None:
+        kwargs = {}
+
+    n_tumors_silent, n_genes_silent = mus_silent.shape
+    n_tumors_non_silent, n_genes_non_silent = mus_non_silent.shape
+
+    if cov_matrix_silent.shape[0] != n_genes_silent:
+        raise ValueError(
+            "cov_matrix_silent must have one row per silent-channel "
+            f"gene ({n_genes_silent}), got "
+            f"{cov_matrix_silent.shape[0]}."
+        )
+    if cov_matrix_non_silent.shape[0] != n_genes_non_silent:
+        raise ValueError(
+            "cov_matrix_non_silent must have one row per "
+            f"non-silent-channel gene ({n_genes_non_silent}), got "
+            f"{cov_matrix_non_silent.shape[0]}."
+        )
+    if cov_matrix_silent.shape[1] != cov_matrix_non_silent.shape[1]:
+        raise ValueError(
+            "Both channels must use the same covariates, since `c` "
+            f"is shared: got {cov_matrix_silent.shape[1]} and "
+            f"{cov_matrix_non_silent.shape[1]} columns."
+        )
+
+    logger.info(
+        "Two-channel mode: silent channel "
+        f"{n_tumors_silent} tumors × {n_genes_silent} genes, "
+        f"non-silent channel {n_tumors_non_silent} tumors × "
+        f"{n_genes_non_silent} genes"
+    )
+
+    def _extend(cov):
+        ones = np.ones((cov.shape[0], 1), dtype=np.float32)
+        return np.concatenate(
+            [ones, np.asarray(cov, dtype=np.float32)], axis=1
+        )
+
+    cov_ext_silent = _extend(cov_matrix_silent)
+    cov_ext_non_silent = _extend(cov_matrix_non_silent)
+    n_coeffs = cov_ext_silent.shape[1]
+
+    if lower_bounds_c is None:
+        lower_bounds_c = -upper_bounds_c
+
+    with pm.Model():
+        c = pm.Uniform(
+            name="c",
+            lower=lower_bounds_c,
+            upper=upper_bounds_c,
+            shape=n_coeffs,
+        )
+
+        for channel, cov_ext, mus, presence in (
+            ("silent", cov_ext_silent, mus_silent, presence_silent),
+            (
+                "non_silent",
+                cov_ext_non_silent,
+                mus_non_silent,
+                presence_non_silent,
+            ),
+        ):
+            cov32 = pm.Data(f"cov_ext_{channel}", cov_ext)
+            mus32 = pm.Data(
+                f"mus_{channel}",
+                np.clip(mus.astype("float32"), 1e-12, np.inf),
+            )
+            pres8 = pm.Data(
+                f"pres_{channel}", presence.astype("uint8")
+            )
+
+            eta = tt.dot(cov32, c).dimshuffle("x", 0)
+            mus_full = mus32 * tt.exp(eta)
+            Ps = tt.clip(1.0 - tt.exp(-mus_full), 1e-10, 1.0 - 1e-10)
+            pm.Bernoulli(
+                name=f"genes_observed_{channel}",
+                p=Ps,
+                observed=pres8,
+            )
+
+        if draws == 1:
+            logger.info(
+                f"Finding MAP estimate for {n_coeffs} shared "
+                "coefficient(s) across 2 channels"
+            )
+            results = pm.find_MAP(
+                seed=constants.random_seed, **kwargs
+            )
+            logger.info("MAP optimization completed")
+        else:
+            logger.info(
+                f"Sampling posterior: {draws} draws across "
+                f"{chains} chains ({int(draws / chains)} per chain), "
+                f"{burn} tuning steps"
+            )
+            results = pmjax.sample_numpyro_nuts(
+                draws=int(draws / chains),
+                chain_method="parallel",
+                tune=burn,
+                chains=chains,
+                target_accept=0.9,
+                random_seed=constants.random_seed,
+                **kwargs,
+            )
+            logger.info("MCMC sampling completed")
+
+    if save_path is not None:
+        base_path = Path(save_path)
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        if draws == 1:
+            np.savez(f"{base_path}.npz", **results)
+        else:
+            results.to_netcdf(f"{base_path}.nc")
+
+    return results
+
+
 def estimate_all_cov_effects(
     mus: pd.DataFrame | dict[int | str, pd.DataFrame],
     presence_matrix: pd.DataFrame,

@@ -49,6 +49,11 @@ class MutationDataset:
     genes_present_non_silent : pd.DataFrame or None
         Same as genes_present but for non-silent mutations
         only. Lazy-loaded.
+    genes_present_silent : pd.DataFrame or None
+        Same as genes_present but for silent (synonymous)
+        mutations only -- the other half of the consequence split,
+        and the one that stays selection-free in driver genes too.
+        Lazy-loaded.
     variant_db : pd.DataFrame or None
         Table of unique variants annotated with genomic context
         and mutation types. Lazy-loaded via generate_variant_db()
@@ -153,6 +158,7 @@ class MutationDataset:
     _mutation_db: pd.DataFrame = None
     _genes_present: pd.DataFrame = None
     _genes_present_non_silent: pd.DataFrame = None
+    _genes_present_silent: pd.DataFrame = None
     _variant_db: pd.DataFrame = None
     _variants_present: pd.DataFrame = None
     _sig_assignments: pd.DataFrame = None
@@ -204,6 +210,11 @@ class MutationDataset:
             loaded.append(
                 f"genes_present_non_silent: "
                 f"{self._genes_present_non_silent.shape}"
+            )
+        if self._genes_present_silent is not None:
+            loaded.append(
+                f"genes_present_silent: "
+                f"{self._genes_present_silent.shape}"
             )
         if self._variant_db is not None:
             loaded.append(
@@ -285,6 +296,12 @@ class MutationDataset:
                 "genes_present_non_silent",
                 "_genes_present_non_silent",
                 "genes_present_non_silent.parquet",
+                "parquet",
+            ),
+            (
+                "genes_present_silent",
+                "_genes_present_silent",
+                "genes_present_silent.parquet",
                 "parquet",
             ),
             (
@@ -559,6 +576,21 @@ class MutationDataset:
     def genes_present_non_silent(self, value):
         """Set non-silent gene presence matrix."""
         self._genes_present_non_silent = value
+
+    @property
+    def genes_present_silent(self):
+        """Gene presence matrix for silent mutations (lazy loaded)."""
+        if self._genes_present_silent is None:
+            raise ValueError(
+                "Silent gene presence matrix not computed. "
+                "Call compute_gene_presence_silent() first."
+            )
+        return self._genes_present_silent
+
+    @genes_present_silent.setter
+    def genes_present_silent(self, value):
+        """Set silent gene presence matrix."""
+        self._genes_present_silent = value
 
     @property
     def variant_db(self):
@@ -837,6 +869,10 @@ class MutationDataset:
         """Check if non-silent gene presence has been computed."""
         return self._genes_present_non_silent is not None
 
+    def has_silent_presence(self):
+        """Check if silent gene presence has been computed."""
+        return self._genes_present_silent is not None
+
     def has_variants(self):
         """Check if variants have been loaded."""
         return self._variant_db is not None
@@ -896,6 +932,20 @@ class MutationDataset:
 
         self._genes_present_non_silent = compute_genes_present(
             self.mutation_db, scope="non-silent"
+        )
+
+    def compute_gene_presence_silent(self):
+        """Compute silent (synonymous) gene presence matrix.
+
+        Calls compute_genes_present() with scope='silent' to create a
+        binary matrix for silent mutations only -- the mirror of
+        :meth:`compute_gene_presence_non_silent`, and the channel
+        that stays selection-free inside driver genes.
+        """
+        from .estimate_presence import compute_genes_present
+
+        self._genes_present_silent = compute_genes_present(
+            self.mutation_db, scope="silent"
         )
 
     def compute_variants_present(self):
@@ -2315,9 +2365,12 @@ class Model:
 
     # Results (populated by run functions, lazy-loaded)
     _base_mus: dict | pd.DataFrame = None
+    _base_mus_syn: dict | pd.DataFrame = None
+    _base_mus_nonsyn: dict | pd.DataFrame = None
     cov_effects: np.ndarray = None
     _n_in_cov_effects_estimation: int = None
     _passenger_genes_r2: float = None
+    _passenger_genes_r2_non_silent: float = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
     mu_ms: pd.DataFrame = None
@@ -2369,9 +2422,12 @@ class Model:
         )
 
         self._base_mus = None
+        self._base_mus_syn = None
+        self._base_mus_nonsyn = None
         self.cov_effects = None
         self._n_in_cov_effects_estimation = None
         self._passenger_genes_r2 = None
+        self._passenger_genes_r2_non_silent = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
         self.mu_ms = None
@@ -2494,6 +2550,11 @@ class Model:
             loaded.append(f"cov_effects: {self.cov_effects.shape}")
         if self._passenger_genes_r2 is not None:
             loaded.append(f"R²={self._passenger_genes_r2:.4f}")
+        if self._passenger_genes_r2_non_silent is not None:
+            loaded.append(
+                "R²(non-silent)="
+                f"{self._passenger_genes_r2_non_silent:.4f}"
+            )
         if self.cov_effects_posteriors is not None:
             loaded.append("posteriors: available")
         if self._mu_gs is not None:
@@ -2700,6 +2761,20 @@ class Model:
         # estimate_passenger_genes_r2)
         return None
 
+    @property
+    def passenger_genes_r2_non_silent(self):
+        """Passenger-gene R² against the non-silent target.
+
+        The honest number whenever the model being scored has seen
+        silent counts (see
+        :meth:`estimate_passenger_genes_r2`'s ``target``). Unlike
+        :attr:`passenger_genes_r2`, this is never computed
+        automatically -- call
+        ``estimate_passenger_genes_r2(target="non_silent")``
+        explicitly, since it needs the consequence-split baselines.
+        """
+        return self._passenger_genes_r2_non_silent
+
     def assign_cov_matrix(
         self,
         cov_matrix,
@@ -2902,6 +2977,33 @@ class Model:
                 "Call compute_base_mus() first."
             )
         return self._base_mus
+
+    @property
+    def base_mus_syn(self):
+        """Synonymous-channel baseline rates (lazy loaded)."""
+        if self._base_mus_syn is None:
+            raise ValueError(
+                "Synonymous-channel baseline rates not computed. "
+                "Call compute_channel_base_mus() first."
+            )
+        return self._base_mus_syn
+
+    @property
+    def base_mus_nonsyn(self):
+        """Non-synonymous-channel baseline rates (lazy loaded)."""
+        if self._base_mus_nonsyn is None:
+            raise ValueError(
+                "Non-synonymous-channel baseline rates not computed. "
+                "Call compute_channel_base_mus() first."
+            )
+        return self._base_mus_nonsyn
+
+    def has_channel_base_mus(self):
+        """Whether both consequence channels' baselines exist."""
+        return (
+            self._base_mus_syn is not None
+            and self._base_mus_nonsyn is not None
+        )
 
     @base_mus.setter
     def base_mus(self, value):
@@ -4918,6 +5020,132 @@ class Model:
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
         return self._base_mus
 
+    def compute_channel_base_mus(
+        self, prob_g_tau_tau_independent=None
+    ):
+        """Split baseline rates into synonymous/non-synonymous channels.
+
+        Computes ``μ̄_g^(syn,j)`` and ``μ̄_g^(nonsyn,j)`` from the
+        dataset's consequence-split opportunity tables (see
+        :meth:`MutationDataset.generate_consequence_contexts_by_gene`)
+        and stores them in ``self.base_mus_syn`` /
+        ``self.base_mus_nonsyn``. ``compute_base_mus()``'s merged
+        ``base_mus`` is left untouched, and the two channels sum back
+        to it exactly.
+
+        Parameters
+        ----------
+        prob_g_tau_tau_independent : bool or None, default None
+            Which ``p_gτ`` variant to use. ``None`` (default) reuses
+            whatever :meth:`compute_base_mus` last used, so the
+            channels always match the merged baseline; pass an
+            explicit value only if you deliberately want them to
+            differ.
+
+        Returns
+        -------
+        (pd.DataFrame, pd.DataFrame) or (dict, dict)
+            ``(base_mus_syn, base_mus_nonsyn)``, in the same
+            signature-independent or signature-separated shape as
+            ``base_mus``.
+
+        Raises
+        ------
+        ValueError
+            If ``mu_taus``, the merged ``base_mus`` (when
+            *prob_g_tau_tau_independent* is left at None), or the
+            dataset's split opportunity tables are missing.
+        """
+        from .estimate_mus import compute_mu_g_channel_per_tumor
+
+        if self._mu_taus is None:
+            raise ValueError(
+                "Mutation burdens (mu_taus) not computed. "
+                "Call compute_mu_taus() first."
+            )
+
+        if not self.dataset.has_consequence_contexts_by_gene():
+            raise ValueError(
+                "Consequence-split opportunity counts not available "
+                "in dataset. Call "
+                "dataset.generate_consequence_contexts_by_gene() or "
+                "load_dataset() first."
+            )
+
+        if prob_g_tau_tau_independent is None:
+            if self._prob_g_tau_tau_independent is None:
+                raise ValueError(
+                    "prob_g_tau_tau_independent is None and no "
+                    "merged base_mus has been computed to inherit it "
+                    "from. Call compute_base_mus() first, or pass the "
+                    "value explicitly."
+                )
+            prob_g_tau_tau_independent = (
+                self._prob_g_tau_tau_independent
+            )
+
+        contexts = self.dataset.contexts_by_gene
+        channels = {}
+        for name, channel_contexts in (
+            ("syn", self.dataset.contexts_by_gene_syn),
+            ("nonsyn", self.dataset.contexts_by_gene_nonsyn),
+        ):
+            channels[name] = compute_mu_g_channel_per_tumor(
+                mu_taus=self._mu_taus,
+                channel_contexts_by_gene=channel_contexts,
+                contexts_by_gene=contexts,
+                prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+            )
+
+        self._base_mus_syn = channels["syn"]
+        self._base_mus_nonsyn = channels["nonsyn"]
+
+        return self._base_mus_syn, self._base_mus_nonsyn
+
+    def compute_channel_mu_gs(self, channel):
+        """Covariate-scaled per-gene rates for one consequence channel.
+
+        The channel counterpart of :meth:`compute_mu_gs`: applies the
+        same (shared) ``cov_effects`` to that channel's baseline
+        rates. Nothing is stored -- the result is returned, since
+        these are cheap to recompute and only evaluation code needs
+        them.
+
+        Parameters
+        ----------
+        channel : {"syn", "nonsyn"}
+            Which channel's rates to scale.
+
+        Returns
+        -------
+        pd.DataFrame
+            Genes × samples rates for that channel.
+        """
+        from .estimate_mus import compute_mus_per_gene_per_sample
+
+        if channel == "syn":
+            base = self._base_mus_syn
+        elif channel == "nonsyn":
+            base = self._base_mus_nonsyn
+        else:
+            raise ValueError(
+                f"Unknown channel {channel!r}; expected 'syn' or "
+                "'nonsyn'."
+            )
+
+        if base is None:
+            raise ValueError(
+                f"Baseline rates for the {channel!r} channel not "
+                "computed. Call compute_channel_base_mus() first."
+            )
+
+        return compute_mus_per_gene_per_sample(
+            db=self.dataset.mutation_db,
+            base_mus=base,
+            cov_effect=self.cov_effects,
+            cov_matrix=self.cov_matrix,
+        )
+
     def compute_mu_gs(self, assign_base_mus_to_rest=True, **kwargs):
         """Compute per-gene, per-sample mutation rates.
 
@@ -5643,6 +5871,314 @@ class Model:
         else:
             return self.cov_effects
 
+    def estimate_channel_cov_effects(
+        self,
+        sample="MAP",
+        chains=4,
+        burn=1000,
+        tol=0.05,
+        excluded_samples=None,
+        include_drivers=True,
+    ):
+        """Fit one shared ``c`` against both consequence channels.
+
+        The channel-split sibling of :meth:`estimate_cov_effects`.
+        Where that method fits a single Bernoulli likelihood over
+        "gene mutated at all", restricted to passenger genes, this one
+        fits **two** Bernoulli likelihoods sharing a single
+        coefficient vector:
+
+        * **silent channel** over gene set ``G`` -- all genes with
+          complete covariates, *drivers included*, since a synonymous
+          mutation is selection-free in any gene;
+        * **non-silent channel** over gene set ``P`` -- passenger
+          genes only, exactly as today's fit.
+
+        Splitting the two also splits the baseline rate: each channel
+        is scored against its own ``μ̄_g^(syn/nonsyn,j)`` from
+        :meth:`compute_channel_base_mus`, not against the merged
+        ``base_mus``.
+
+        This is **not** a re-parameterisation of the merged fit.
+        ``1[silent or non-silent]`` is an OR of two events, and
+        observing the pair jointly is strictly more informative than
+        the OR alone, so results differ even with
+        ``include_drivers=False``. Expect the drivers-off number to
+        land *close* to the merged baseline; a large gap there is a
+        signal to debug the split, not a result.
+
+        Parameters
+        ----------
+        sample : {"MAP", "full"} | int, default "MAP"
+            As in :meth:`estimate_cov_effects`.
+        chains, burn, tol, excluded_samples
+            As in :meth:`estimate_cov_effects`.
+        include_drivers : bool, default True
+            If True, the silent channel runs over every gene with
+            complete covariates (``G``). If False, it is restricted to
+            the same passenger set as the non-silent channel (``P``),
+            isolating the value of the finer-grained observation from
+            the value of the driver genes it lets in.
+
+        Returns
+        -------
+        np.ndarray | arviz.InferenceData
+            As in :meth:`estimate_cov_effects`; ``c`` is a single
+            shared vector, not one per channel.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``base_mus`` is signature-separated. The two-channel
+            likelihood has no multi-signature mode yet.
+        ValueError
+            If the channel baselines, either presence matrix, or the
+            covariate matrix are missing.
+
+        Notes
+        -----
+        The gene sets are deliberately allowed to differ between
+        channels, which is the whole point: a driver's non-silent
+        counts are selection-contaminated by construction, but its
+        silent counts are not, so it can inform the shared covariate
+        effects through the silent channel only.
+
+        As in :meth:`estimate_cov_effects`, ``mu_gs``, ``mu_ms`` and
+        the passenger-gene R² are recomputed afterwards, so the merged
+        ``mu_gs`` stays consistent with the newly fitted ``c`` (which
+        is shared, so it scales both channels and hence their sum).
+        """
+        from .constants import random_seed
+        from .estimate_covariates_effect import (
+            estimate_channel_covariates_effect,
+        )
+        from .estimate_presence import filter_passenger_genes_ensembl
+
+        cov_effects_kwargs = dict(self.cov_effects_kwargs)
+        signature = inspect.signature(
+            estimate_channel_covariates_effect
+        )
+        default_lower_bound = signature.parameters[
+            "lower_bounds_c"
+        ].default
+        default_upper_bound = signature.parameters[
+            "upper_bounds_c"
+        ].default
+        lower_bounds_value = cov_effects_kwargs.get(
+            "lower_bounds_c", default_lower_bound
+        )
+        upper_bounds_value = cov_effects_kwargs.get(
+            "upper_bounds_c", default_upper_bound
+        )
+
+        if not self.has_channel_base_mus():
+            raise ValueError(
+                "Channel baseline rates not computed. Call "
+                "compute_channel_base_mus() first."
+            )
+
+        if isinstance(self._base_mus_syn, dict):
+            raise NotImplementedError(
+                "estimate_channel_cov_effects has no "
+                "signature-separated mode; build the model without "
+                "cov_effects_per_sigma/signature_selection."
+            )
+
+        if self.dataset._genes_present_silent is None:
+            raise ValueError(
+                "Silent gene presence matrix not computed in "
+                "dataset. Call dataset.compute_gene_presence_silent() "
+                "first."
+            )
+
+        if self.dataset._genes_present_non_silent is None:
+            raise ValueError(
+                "Non-silent gene presence matrix not computed in "
+                "dataset. Call "
+                "dataset.compute_gene_presence_non_silent() first."
+            )
+
+        if self.cov_matrix is None:
+            raise ValueError(
+                "Covariate matrix is None. Cannot estimate covariate "
+                "effects without covariates. Create model with "
+                "cov_matrix or use assign_cov_matrix()."
+            )
+
+        if isinstance(sample, int) or (
+            isinstance(sample, str) and sample.lower() == "full"
+        ):
+            draws = 4000
+            is_mcmc = True
+        elif isinstance(sample, str) and sample.lower() == "map":
+            draws = 1
+            is_mcmc = False
+        else:
+            raise ValueError(
+                f"sample must be 'MAP', 'full', or an integer, "
+                f"got {sample}"
+            )
+
+        # Gene sets: complete covariates for both, passenger-only for
+        # the non-silent channel, everything (or the same passenger
+        # set) for the silent one.
+        complete_genes = self.cov_matrix.index[
+            ~self.cov_matrix.isna().any(axis=1)
+        ]
+        passenger_genes = pd.Index(
+            filter_passenger_genes_ensembl(complete_genes)
+        )
+        silent_genes = (
+            complete_genes if include_drivers else passenger_genes
+        )
+
+        if draws > 1 and isinstance(sample, int):
+            logger.info(
+                f"Subsampling {sample} genes per channel from "
+                f"{len(silent_genes)} silent / "
+                f"{len(passenger_genes)} non-silent genes"
+            )
+            silent_genes = pd.Index(
+                silent_genes.to_series().sample(
+                    min(sample, len(silent_genes)),
+                    random_state=random_seed,
+                )
+            )
+            passenger_genes = pd.Index(
+                passenger_genes.to_series().sample(
+                    min(sample, len(passenger_genes)),
+                    random_state=random_seed,
+                )
+            )
+
+        # Reported as the non-silent channel's gene count -- the
+        # directly comparable number to estimate_cov_effects's.
+        self._n_in_cov_effects_estimation = len(passenger_genes)
+
+        logger.info(
+            "Estimating shared covariate effects across two "
+            f"channels: {len(silent_genes)} genes in the silent "
+            f"channel (drivers "
+            f"{'included' if include_drivers else 'excluded'}), "
+            f"{len(passenger_genes)} in the non-silent channel, "
+            f"{self.cov_matrix.shape[1]} covariate(s)"
+        )
+
+        channel_inputs = {}
+        for name, genes, base_mus, presence_source in (
+            (
+                "silent",
+                silent_genes,
+                self._base_mus_syn,
+                self.dataset.genes_present_silent,
+            ),
+            (
+                "non_silent",
+                passenger_genes,
+                self._base_mus_nonsyn,
+                self.dataset.genes_present_non_silent,
+            ),
+        ):
+            mus = base_mus.loc[genes]
+            if excluded_samples is not None:
+                mus = mus[mus.columns.difference(excluded_samples)]
+            # Align presence onto the rate matrix's own sample axis:
+            # both come from the same dataset, but they are built by
+            # different routes (mu_taus' index vs a crosstab), and
+            # past the `.T.values` below there is no labelled axis
+            # left to catch a mismatch. Genes or samples absent from
+            # the crosstab were never observed mutated in this
+            # channel, i.e. 0, not missing.
+            presence = presence_source.reindex(
+                index=genes, columns=mus.columns, fill_value=0
+            )
+            channel_inputs[name] = (
+                mus.T.values,
+                presence.T.values,
+                self.cov_matrix.loc[genes].values,
+            )
+
+        result = estimate_channel_covariates_effect(
+            mus_silent=channel_inputs["silent"][0],
+            presence_silent=channel_inputs["silent"][1],
+            cov_matrix_silent=channel_inputs["silent"][2],
+            mus_non_silent=channel_inputs["non_silent"][0],
+            presence_non_silent=channel_inputs["non_silent"][1],
+            cov_matrix_non_silent=channel_inputs["non_silent"][2],
+            draws=draws,
+            chains=chains,
+            burn=burn,
+            **cov_effects_kwargs,
+        )
+
+        if is_mcmc:
+            import arviz as az
+
+            self.cov_effects_posteriors = result
+            self.cov_effects = (
+                az.extract(result, var_names=["c"])
+                .mean(dim="sample")
+                .values
+            )
+            summary = az.summary(result, var_names=["c"])
+            logger.info("Posterior summary:\n%s", summary.to_string())
+            candidates = (
+                (
+                    summary["hdi_3%"].to_numpy(),
+                    summary["hdi_97%"].to_numpy(),
+                )
+                if {"hdi_3%", "hdi_97%"} <= set(summary.columns)
+                else None
+            )
+            mode_desc = "Posterior HDI"
+        else:
+            self.cov_effects = result["c"]
+            candidates = (self.cov_effects, self.cov_effects)
+            mode_desc = "MAP estimates"
+
+        lower_bounds_arr, upper_bounds_arr = (
+            self._resolve_covariate_bounds(
+                self.cov_effects.shape,
+                lower_bounds_value,
+                upper_bounds_value,
+            )
+        )
+        if candidates is None:
+            logger.warning(
+                "Posterior summary missing HDI columns; skipping "
+                "bounds proximity check for posterior."
+            )
+        else:
+            self._warn_if_near_bounds(
+                lower_candidate=candidates[0],
+                upper_candidate=candidates[1],
+                lower_bounds=lower_bounds_arr,
+                upper_bounds=upper_bounds_arr,
+                tol=tol,
+                mode_desc=mode_desc,
+            )
+
+        self.compute_mu_gs()
+        # Variant-level rates are not needed by this stage's
+        # channel-holdout evaluation, and a dataset can legitimately
+        # have none (the split fit only needs gene-level presence),
+        # so skip rather than fail -- loudly, since any previously
+        # computed mu_ms is now stale with respect to the new `c`.
+        if self.dataset.has_variants():
+            self.compute_mu_ms()
+        elif self.mu_ms is not None:
+            logger.warning(
+                "No variant database: mu_ms was NOT recomputed and is "
+                "now stale with respect to the newly fitted "
+                "coefficients."
+            )
+        self.estimate_passenger_genes_r2()
+
+        if is_mcmc:
+            return self.cov_effects_posteriors
+        else:
+            return self.cov_effects
+
     def _resolve_covariate_bounds(
         self, coeffs_shape, lower_value, upper_value
     ):
@@ -5799,7 +6335,10 @@ class Model:
         return [f"signature_{i}" for i in range(n_signatures)]
 
     def estimate_passenger_genes_r2(
-        self, sample_weights=None, excluded_samples=None
+        self,
+        sample_weights=None,
+        excluded_samples=None,
+        target="any",
     ):
         """Estimate R² for passenger gene mutation frequency predictions.
 
@@ -5837,6 +6376,24 @@ class Model:
             :func:`sample_qc.combine_sample_flags`, when dropping
             rather than downweighting). Applied before
             `sample_weights`.
+        target : {"any", "non_silent"}, default "any"
+            Which observed presence to score against.
+
+            - ``"any"`` (default, today's behavior): "gene mutated at
+              all", i.e. `dataset.genes_present`, predicted from the
+              merged `mu_gs`.
+            - ``"non_silent"``: only non-silent mutations, i.e.
+              `dataset.genes_present_non_silent`, predicted from the
+              **non-synonymous channel's** rates
+              (:meth:`compute_channel_mu_gs`) rather than the merged
+              ones -- predicting a non-silent target from a total rate
+              would be biased high by construction.
+
+            The two are not interchangeable: ≈25% of presence events
+            in the "any" target involve a silent mutation, which is
+            exactly the part any silent-driven per-gene correction can
+            leak into. Report the non-silent number whenever the model
+            being scored has seen silent counts.
 
         Returns
         -------
@@ -5943,6 +6500,12 @@ class Model:
 
         from .estimate_presence import filter_passenger_genes_ensembl
 
+        if target not in ("any", "non_silent"):
+            raise ValueError(
+                f"Unknown target {target!r}; expected 'any' or "
+                "'non_silent'."
+            )
+
         # Check if mu_gs need to be computed
         if self._mu_gs is None:
             # Check if this is a model without covariates
@@ -5963,16 +6526,32 @@ class Model:
             # Compute mu_gs
             self.compute_mu_gs()
 
-        # Ensure genes_present has been computed
-        if self.dataset._genes_present is None:
-            raise ValueError(
-                "Gene presence matrix not computed in dataset. "
-                "Call dataset.compute_gene_presence() first."
-            )
+        # Ensure the presence matrix this target scores against has
+        # been computed
+        if target == "any":
+            if self.dataset._genes_present is None:
+                raise ValueError(
+                    "Gene presence matrix not computed in dataset. "
+                    "Call dataset.compute_gene_presence() first."
+                )
+            observed_source = self.dataset.genes_present
+            rates = self._mu_gs
+        else:
+            if self.dataset._genes_present_non_silent is None:
+                raise ValueError(
+                    "Non-silent gene presence matrix not computed in "
+                    "dataset. Call "
+                    "dataset.compute_gene_presence_non_silent() "
+                    "first."
+                )
+            observed_source = self.dataset.genes_present_non_silent
+            # Score the non-silent target against the non-silent
+            # channel's own rate, not the merged one.
+            rates = self.compute_channel_mu_gs("nonsyn")
 
         # Identify passenger genes
         passenger_gene_ids = filter_passenger_genes_ensembl(
-            self._mu_gs.index
+            rates.index
         )
 
         # Restrict to passenger genes. genes_present's crosstab is
@@ -5982,8 +6561,8 @@ class Model:
         # by construction, genes never observed as mutated in this
         # cohort (not an unknown/missing state), so their observed
         # presence is 0 in every sample, not a lookup error.
-        mu_gs_passenger = self._mu_gs.loc[passenger_gene_ids]
-        genes_present_passenger = self.dataset.genes_present.reindex(
+        mu_gs_passenger = rates.loc[passenger_gene_ids]
+        genes_present_passenger = observed_source.reindex(
             passenger_gene_ids, fill_value=0
         )
 
@@ -6019,8 +6598,16 @@ class Model:
         # Compute R² between expected and observed
         r2 = r2_score(present_sum, expected)
 
-        # Store result
-        self._passenger_genes_r2 = r2
+        # Store result. The two targets are kept in separate
+        # attributes on purpose: `passenger_genes_r2` is the number
+        # every existing caller (and every saved model) already means
+        # by "the R²", and silently redefining it depending on the
+        # last call's `target` is exactly the kind of ambiguity this
+        # evaluation is supposed to remove.
+        if target == "any":
+            self._passenger_genes_r2 = r2
+        else:
+            self._passenger_genes_r2_non_silent = r2
 
         return r2
 

@@ -364,6 +364,159 @@ def compute_mu_g_per_tumor(
     return out
 
 
+def compute_mu_g_channel_per_tumor(
+    mu_taus: pd.DataFrame | dict[int | str, pd.DataFrame],
+    channel_contexts_by_gene: pd.DataFrame,
+    contexts_by_gene: pd.DataFrame,
+    prob_g_tau_tau_independent: bool = False,
+    separate_per_tau: bool = False,
+) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
+    """Per-gene rate for one consequence channel (syn or non-syn).
+
+    The consequence-channel counterpart of
+    :func:`compute_mu_g_per_tumor`: identical in every respect except
+    that the *numerator* of ``p_gτ`` comes from a consequence-split
+    opportunity table (genes × 96 SBS types, from
+    :func:`consequence_contexts_by_gene.compute_consequence_contexts_by_gene`)
+    while the **denominator stays the full τ-site count** taken from
+    ``contexts_by_gene``.
+
+    That denominator is the whole point, and getting it wrong is the
+    easiest way to break this: ``p_gτ^(syn)`` has to match what it
+    multiplies (``μ̄_τ^j``, the *total* type-τ rate), so it does not
+    sum to 1 over genes -- it sums to the genome-wide synonymous
+    fraction (≈0.23). Normalising by the synonymous column sums
+    instead would overcount by ≈4×.
+
+    Because the two channels' numerators add up to
+    ``contexts_by_gene`` exactly (guaranteed by construction, see
+    :mod:`consequence_contexts_by_gene`) and the denominator is
+    shared, this function satisfies::
+
+        compute_mu_g_channel_per_tumor(mu_taus, syn, contexts, ...)
+        + compute_mu_g_channel_per_tumor(mu_taus, nonsyn, contexts, ...)
+        == compute_mu_g_per_tumor(mu_taus, contexts, ...)
+
+    for both ``prob_g_tau_tau_independent`` settings, which is the
+    ``μ_g = μ_g^(syn) + μ_g^(nonsyn)`` identity the channel-split
+    model rests on. Tested directly in
+    ``tests/test_channel_cov_effects.py``.
+
+    Parameters
+    ----------
+    mu_taus : pandas.DataFrame | dict[int | str, pandas.DataFrame]
+        Tumors × 96 SBS types, or a per-signature dict of such
+        frames. Same as :func:`compute_mu_g_per_tumor`.
+    channel_contexts_by_gene : pandas.DataFrame
+        Genes × 96 canonical SBS types: this channel's share of the
+        opportunities. Either output of
+        :func:`consequence_contexts_by_gene.compute_consequence_contexts_by_gene`.
+    contexts_by_gene : pandas.DataFrame
+        Genes × 32 contexts, the *full* opportunity table -- used
+        only for the denominator, never the numerator. Must cover
+        exactly the same genes as ``channel_contexts_by_gene``.
+    prob_g_tau_tau_independent : bool, default False
+        As in :func:`compute_mu_g_per_tumor`.
+    separate_per_tau : bool | Sequence[str], default False
+        As in :func:`compute_mu_g_per_tumor`.
+
+    Returns
+    -------
+    pandas.DataFrame | dict
+        Same shapes and modes as :func:`compute_mu_g_per_tumor`.
+
+    Notes
+    -----
+    The two paths normalise differently, and the asymmetry is real
+    rather than an oversight:
+
+    * τ-**dependent**: for a *given* type τ, a position offers exactly
+      one opportunity, so the per-type denominator
+      ``Σ_g' contexts[g', c(τ)]`` is already in opportunity units --
+      it is used unchanged.
+    * τ-**independent**: the aggregate collapses over types, and each
+      position offers **3** opportunities (one per alternate base),
+      while ``contexts_by_gene`` counts positions. The denominator is
+      therefore ``3 × contexts_by_gene.values.sum()``, which equals
+      the full table's total opportunity count exactly.
+    """
+    if isinstance(mu_taus, dict):
+        return {
+            sigma: compute_mu_g_channel_per_tumor(
+                mu_taus=mu_tau_sigma,
+                channel_contexts_by_gene=channel_contexts_by_gene,
+                contexts_by_gene=contexts_by_gene,
+                prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+                separate_per_tau=separate_per_tau,
+            )
+            for sigma, mu_tau_sigma in mu_taus.items()
+        }
+
+    from .constants import canonical_types_order, extract_context
+
+    if set(channel_contexts_by_gene.index) != set(
+        contexts_by_gene.index
+    ):
+        raise ValueError(
+            "channel_contexts_by_gene and contexts_by_gene must "
+            "cover the same genes -- the denominator is a sum over "
+            "genes, so a mismatched gene universe silently rescales "
+            "every rate."
+        )
+
+    channel = channel_contexts_by_gene.loc[contexts_by_gene.index]
+
+    tau_list = (
+        canonical_types_order
+        if separate_per_tau is True
+        else list(separate_per_tau) if separate_per_tau else None
+    )
+
+    if prob_g_tau_tau_independent:
+        # 3 opportunities per position; contexts_by_gene counts
+        # positions, channel counts opportunities.
+        probs_g = channel.sum(axis=1) / (
+            3 * np.sum(contexts_by_gene.values)
+        )
+
+        if tau_list is not None:
+            out = {
+                tau: probs_g.to_frame(0).dot(
+                    mu_taus[tau].to_frame(0).T
+                )
+                for tau in tau_list
+            }
+        else:
+            mu_tumor = mu_taus.sum(axis=1)
+            out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
+
+    else:
+        denominators = contexts_by_gene.sum(axis=0)[
+            [extract_context(x) for x in canonical_types_order]
+        ]
+        denominators.index = canonical_types_order
+
+        probs_g_tau = channel[canonical_types_order] / denominators
+
+        if tau_list is not None:
+            out = {
+                tau: probs_g_tau[tau]
+                .to_frame(0)
+                .dot(mu_taus[tau].to_frame(0).T)
+                for tau in tau_list
+            }
+        else:
+            out = probs_g_tau.dot(mu_taus[canonical_types_order].T)
+
+    if tau_list is not None:
+        for tau_out in out.values():
+            tau_out.index.name = "ensembl_gene_id"
+    else:
+        out.index.name = "ensembl_gene_id"
+
+    return out
+
+
 def compute_n_taus(contexts_by_gene_or_db):
     """Compute counts per mutation type from contexts or a MAF.
 

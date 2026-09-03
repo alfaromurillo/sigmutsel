@@ -79,6 +79,21 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   `False` (default) computes type-specific p(g|τ) from per-context
   opportunities — see the function's own docstring for the exact
   formulas.
+- **For the consequence-split model, keep the default (`False`).**
+  There, `True` is not merely a coarser approximation: it averages
+  the synonymous fraction over τ, and synonymy is a property of the
+  genetic code rather than of the gene. Under `True` the ratio
+  `μ̄_g^(syn)/μ̄_g^(nonsyn)` is a per-gene constant — identical for
+  every sample whatever its mutational spectrum; under `False` it
+  follows the spectrum, because whether a substitution is
+  synonymous depends on *which* substitution it is. Measured over a
+  human exome, the per-type synonymous fraction within a gene has
+  roughly **9× the spread** of the per-gene aggregate (median
+  within-gene sd 0.167 against between-gene sd 0.018), ranging from
+  types that are essentially never synonymous to types synonymous
+  about half the time. So `True` averages away most of what the
+  split exists to capture, and it does so per *sample*, which no
+  per-gene correction can recover.
 
 ## Gamma estimation (`estimate_gammas.py`)
 

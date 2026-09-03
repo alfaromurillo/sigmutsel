@@ -416,7 +416,14 @@ def compute_mu_g_channel_per_tumor(
         only for the denominator, never the numerator. Must cover
         exactly the same genes as ``channel_contexts_by_gene``.
     prob_g_tau_tau_independent : bool, default False
-        As in :func:`compute_mu_g_per_tumor`.
+        As in :func:`compute_mu_g_per_tumor`. **Leave this at
+        False for channel work.** ``True`` averages the synonymous
+        fraction over τ, which makes
+        ``μ̄_g^(syn)/μ̄_g^(nonsyn)`` a per-gene constant that no
+        longer responds to a sample's mutational spectrum -- see
+        this module's note in ``DEVELOPMENT.md``. It stays
+        available so the two channels can still be built to match
+        a τ-independent merged baseline.
     separate_per_tau : bool | Sequence[str], default False
         As in :func:`compute_mu_g_per_tumor`.
 

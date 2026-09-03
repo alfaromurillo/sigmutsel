@@ -5153,7 +5153,11 @@ class Model:
             whatever :meth:`compute_base_mus` last used, so the
             channels always match the merged baseline; pass an
             explicit value only if you deliberately want them to
-            differ.
+            differ. Note that a τ-**independent** merged baseline
+            propagates here and flattens the split: the resulting
+            syn/non-syn ratio is then the same for every sample
+            regardless of its spectrum. Prefer building the merged
+            baseline τ-dependently when the channels are the point.
 
         Returns
         -------

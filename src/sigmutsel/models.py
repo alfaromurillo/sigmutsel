@@ -5234,6 +5234,10 @@ class Model:
         these are cheap to recompute and only evaluation code needs
         them.
 
+        After a ``separate_c="intercept"`` fit, the non-synonymous
+        channel additionally carries that fit's own intercept
+        (``exp(delta)``), which lives outside ``cov_effects``.
+
         Parameters
         ----------
         channel : {"syn", "nonsyn"}
@@ -5262,12 +5266,26 @@ class Model:
                 "computed. Call compute_channel_base_mus() first."
             )
 
-        return compute_mus_per_gene_per_sample(
+        rates = compute_mus_per_gene_per_sample(
             db=self.dataset.mutation_db,
             base_mus=base,
             cov_effect=self.cov_effects,
             cov_matrix=self.cov_matrix,
         )
+
+        # A `separate_c="intercept"` fit puts the non-synonymous
+        # channel's own intercept in `_rg_delta_intercept` rather than
+        # in `cov_effects` (which stays shared and 1-D). Applying it
+        # here is not optional: without it the channel rates silently
+        # omit the very offset that was fitted, and the offset is
+        # large -- 13-18% on real cohorts.
+        if (
+            channel == "nonsyn"
+            and self._rg_delta_intercept is not None
+        ):
+            rates = rates * np.exp(self._rg_delta_intercept)
+
+        return rates
 
     def compute_mu_gs(self, assign_base_mus_to_rest=True, **kwargs):
         """Compute per-gene, per-sample mutation rates.

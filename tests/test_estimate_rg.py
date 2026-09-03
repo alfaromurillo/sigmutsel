@@ -437,3 +437,28 @@ def test_unknown_separate_c_raises(tmp_path):
         model.estimate_channel_rg_cov_effects(
             sample="MAP", separate_c="slopes"
         )
+
+
+def test_intercept_delta_reaches_the_nonsyn_channel_rates(tmp_path):
+    """The fitted per-channel intercept must actually be applied
+    downstream. It lives outside `cov_effects`, so it is easy to
+    drop silently -- and it is a 13-18% correction on real data."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c="intercept"
+    )
+    delta = model._rg_delta_intercept
+    assert delta is not None
+
+    nonsyn_with = model.compute_channel_mu_gs("nonsyn")
+    syn = model.compute_channel_mu_gs("syn")
+
+    # the syn channel is untouched by the delta; the nonsyn one is
+    # scaled by exactly exp(delta)
+    model._rg_delta_intercept = None
+    nonsyn_without = model.compute_channel_mu_gs("nonsyn")
+    syn_again = model.compute_channel_mu_gs("syn")
+
+    pd.testing.assert_frame_equal(syn, syn_again)
+    ratio = (nonsyn_with / nonsyn_without).values
+    assert np.allclose(ratio, np.exp(delta))

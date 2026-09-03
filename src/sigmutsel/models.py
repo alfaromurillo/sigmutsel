@@ -4384,6 +4384,47 @@ class Model:
 
             files["gamma_files"] = gamma_files
 
+        # The r_g fit is not recoverable from the saved rate
+        # matrices: theta, the per-channel intercept and the
+        # sufficient statistics all live outside them. Without
+        # persisting them a reloaded model silently drops the
+        # channel corrections instead of failing, so they are saved
+        # whenever a fit is present.
+        if self._rg_theta is not None:
+            if self._base_mus_syn is not None:
+                files["base_mus_syn"] = _save_dataframe(
+                    self._base_mus_syn, "base_mus_syn.parquet"
+                )
+            if self._base_mus_nonsyn is not None:
+                files["base_mus_nonsyn"] = _save_dataframe(
+                    self._base_mus_nonsyn, "base_mus_nonsyn.parquet"
+                )
+            if self._channel_cov_effects is not None:
+                files["channel_cov_effects"] = _save_array(
+                    self._channel_cov_effects,
+                    "channel_cov_effects.npy",
+                )
+            if self._rg_statistics is not None:
+                stats = self._rg_statistics
+                frame = pd.DataFrame(
+                    {
+                        "counts_silent": stats["counts_silent"],
+                        "counts_non_silent": stats[
+                            "counts_non_silent"
+                        ],
+                        "baseline_silent": stats["baseline_silent"],
+                        "baseline_non_silent": stats[
+                            "baseline_non_silent"
+                        ],
+                    }
+                )
+                frame["in_non_silent"] = frame.index.isin(
+                    stats["in_non_silent"]
+                )
+                files["rg_statistics"] = _save_dataframe(
+                    frame, "rg_statistics.parquet"
+                )
+
         dataset_snapshot = getattr(
             self.dataset, "dataset_directory", None
         )
@@ -4405,6 +4446,9 @@ class Model:
             ),
             "covariate_names": self.covariate_names,
             "mu_taus_separate": isinstance(self._mu_taus, dict),
+            "rg_theta": self._rg_theta,
+            "rg_delta_intercept": self._rg_delta_intercept,
+            "rg_separate_c": self._rg_separate_c,
             "prob_g_tau_tau_independent": (
                 self._prob_g_tau_tau_independent
             ),
@@ -4534,6 +4578,32 @@ class Model:
             if "gamma_gs" in files:
                 path = directory / files["gamma_gs"]
                 model.gammas.update(json.loads(path.read_text()))
+
+        model._rg_theta = manifest.get("rg_theta")
+        model._rg_delta_intercept = manifest.get("rg_delta_intercept")
+        model._rg_separate_c = manifest.get("rg_separate_c", False)
+        if "base_mus_syn" in files:
+            model._base_mus_syn = _load_dataframe(
+                files["base_mus_syn"]
+            )
+        if "base_mus_nonsyn" in files:
+            model._base_mus_nonsyn = _load_dataframe(
+                files["base_mus_nonsyn"]
+            )
+        if "channel_cov_effects" in files:
+            model._channel_cov_effects = np.load(
+                directory / files["channel_cov_effects"]
+            )
+        if "rg_statistics" in files:
+            frame = _load_dataframe(files["rg_statistics"])
+            model._rg_statistics = {
+                "genes": frame.index,
+                "counts_silent": frame["counts_silent"],
+                "counts_non_silent": frame["counts_non_silent"],
+                "baseline_silent": frame["baseline_silent"],
+                "baseline_non_silent": frame["baseline_non_silent"],
+                "in_non_silent": frame.index[frame["in_non_silent"]],
+            }
 
         model._prob_g_tau_tau_independent = manifest.get(
             "prob_g_tau_tau_independent"

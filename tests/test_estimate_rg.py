@@ -475,3 +475,40 @@ def test_intercept_is_the_default(tmp_path):
     model.estimate_channel_rg_cov_effects(sample="MAP")
     assert model._rg_separate_c == "intercept"
     assert model._rg_delta_intercept is not None
+
+
+def test_rg_fit_survives_save_and_load(tmp_path):
+    """The r_g fit is not recoverable from the saved rate matrices,
+    so it must be persisted explicitly. Without it a reloaded model
+    silently drops the channel corrections rather than failing."""
+    from sigmutsel.models import Model
+
+    model = _rg_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+
+    before = {
+        "theta": model.rg_theta,
+        "delta": model._rg_delta_intercept,
+        "mode": model._rg_separate_c,
+        "nonsyn": model.compute_channel_mu_gs("nonsyn"),
+        "r_g": model.compute_r_g_for_evaluation(),
+    }
+
+    out = tmp_path / "model"
+    model.save_model(out)
+    loaded = Model.load_model(out)
+
+    assert loaded.rg_theta == pytest.approx(before["theta"])
+    assert loaded._rg_delta_intercept == pytest.approx(
+        before["delta"]
+    )
+    assert loaded._rg_separate_c == before["mode"]
+    # the corrections actually reach the rates after a round trip
+    pd.testing.assert_frame_equal(
+        loaded.compute_channel_mu_gs("nonsyn"), before["nonsyn"]
+    )
+    pd.testing.assert_series_equal(
+        loaded.compute_r_g_for_evaluation(), before["r_g"]
+    )

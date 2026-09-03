@@ -376,7 +376,9 @@ def test_separate_c_beats_or_matches_shared_in_likelihood(tmp_path):
     fit's parameter space, so its log-likelihood cannot be lower
     (up to optimiser tolerance)."""
     shared = _rg_model(tmp_path)
-    shared.estimate_channel_rg_cov_effects(sample="MAP")
+    shared.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
     ll_shared = shared.channel_rg_log_likelihood_at_fit()
 
     separate = _rg_model(tmp_path)
@@ -391,7 +393,9 @@ def test_separate_c_beats_or_matches_shared_in_likelihood(tmp_path):
 
 def test_channel_cov_effects_raises_without_separate_fit(tmp_path):
     model = _rg_model(tmp_path)
-    model.estimate_channel_rg_cov_effects(sample="MAP")
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
     with pytest.raises(ValueError, match="No separate-c fit"):
         _ = model.channel_cov_effects
 
@@ -462,3 +466,12 @@ def test_intercept_delta_reaches_the_nonsyn_channel_rates(tmp_path):
     pd.testing.assert_frame_equal(syn, syn_again)
     ratio = (nonsyn_with / nonsyn_without).values
     assert np.allclose(ratio, np.exp(delta))
+
+
+def test_intercept_is_the_default(tmp_path):
+    """The default carries a fitted per-channel intercept, because a
+    shared one leaves the channels miscalibrated by 13-18%."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    assert model._rg_separate_c == "intercept"
+    assert model._rg_delta_intercept is not None

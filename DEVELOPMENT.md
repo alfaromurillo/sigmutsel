@@ -363,6 +363,15 @@ the silent channel can inform its own rate.
   ~1 to ~250 on this data). θ landing on a prior bound is a signal to
   investigate, not a number to report. Subdividing θ (e.g. by gene
   length) is deliberately not offered as a first pass.
+- **`separate_c` defaults to `"intercept"`**, not to the shared
+  model. A shared intercept leaves the two channels miscalibrated
+  against each other: the fitted offset is 0.10–0.43 in log space
+  (mean 0.16, i.e. the non-synonymous channel needing 13–18% more
+  rate than its opportunity share predicts), with likelihood ratios
+  up to 724 on 1 df. Correcting it improves the non-silent count R²
+  on 10 of 15 cohorts (median +0.005) — the better-specified model,
+  but **not** a uniform win, since five cohorts lose up to 0.005.
+  Pass `separate_c=False` for the strictly shared model.
 - `separate_c=True` fits a coefficient vector per channel instead
   of one shared vector, with `r_g` and θ still shared — only the
   covariate-driven part of the rate is allowed to differ by

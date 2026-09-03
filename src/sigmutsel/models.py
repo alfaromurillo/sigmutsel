@@ -6439,7 +6439,7 @@ class Model:
         tol=0.05,
         excluded_samples=None,
         include_drivers=True,
-        separate_c=False,
+        separate_c="intercept",
     ):
         """Fit the full unified model: shared ``c``, ``θ`` and ``r_g``.
 
@@ -6466,14 +6466,18 @@ class Model:
             ``excluded_samples`` must be used here and in any later
             ``r_g`` or R² call, since the per-gene statistics are sums
             over whichever samples were kept.
-        separate_c : bool | str, default False
+        separate_c : bool | str, default "intercept"
             ``False`` (shared), ``"intercept"`` (shared slopes, own
             non-synonymous intercept) or ``True`` (own vector per
             channel); ``r_g`` and θ stay shared in all three. The
             intercept absorbs a calibration offset between channels,
             so testing ``True`` against ``False`` conflates that
             with the slopes -- go through ``"intercept"`` to
-            separate them. See :mod:`sigmutsel.estimate_rg`.
+            separate them. It is the default because a shared
+            intercept leaves the channels miscalibrated against each
+            other by 13--18% in every cohort measured; see
+            :mod:`sigmutsel.estimate_rg` for the numbers and for the
+            caveat that correcting it is not a uniform win.
             The result lands in :attr:`channel_cov_effects` with shape
             ``(2, n_coeffs)`` -- row 0 synonymous, row 1
             non-synonymous -- and **not** in ``cov_effects``, because

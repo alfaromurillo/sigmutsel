@@ -22,7 +22,10 @@ from sigmutsel.estimate_mus import (
     compute_mu_g_channel_per_tumor,
     compute_mu_g_per_tumor,
 )
-from sigmutsel.estimate_presence import compute_genes_present
+from sigmutsel.estimate_presence import (
+    compute_genes_counts,
+    compute_genes_present,
+)
 from sigmutsel.models import Model, MutationDataset
 
 _GENES = ["ENSG_A", "ENSG_B", "ENSG_C"]
@@ -433,3 +436,170 @@ def test_passenger_genes_r2_rejects_nan_rates(tmp_path):
     model._mu_gs.iloc[0, 0] = np.nan
     with pytest.raises(ValueError, match="NaN rate"):
         model.estimate_passenger_genes_r2()
+
+
+# ---------------------------------------------------------------
+# Stage 3: Poisson/count likelihood
+# ---------------------------------------------------------------
+
+
+def test_counts_binarise_to_presence():
+    """compute_genes_counts is compute_genes_present before the
+    censoring step -- same mutations, same tumors, same shape."""
+    db = _mutation_db()
+    for scope in (None, "silent", "non-silent"):
+        counts = compute_genes_counts(db, scope=scope)
+        present = compute_genes_present(db, scope=scope)
+        pd.testing.assert_frame_equal(
+            (counts > 0).astype(int), present, check_dtype=False
+        )
+
+
+def test_counts_are_not_all_binary():
+    """A (gene, sample) with two mutations must show 2, not 1 --
+    otherwise the count likelihood is fitting censored data."""
+    db = _mutation_db()
+    # ENSG_A/T1 has one silent and one missense; add a second silent
+    db = pd.concat(
+        [
+            db,
+            pd.DataFrame(
+                [("ENSG_A", "T1", "Silent", "X p.A1B")],
+                columns=[
+                    "ensembl_gene_id",
+                    "Tumor_Sample_Barcode",
+                    "Variant_Classification",
+                    "variant",
+                ],
+            ),
+        ],
+        ignore_index=True,
+    )
+    counts = compute_genes_counts(db, scope="silent")
+    assert counts.loc["ENSG_A", "T1"] == 2
+    assert (
+        compute_genes_present(db, scope="silent").loc["ENSG_A", "T1"]
+        == 1
+    )
+
+
+def test_compute_gene_counts_channels(tmp_path):
+    dataset = MutationDataset(location_maf_files=tmp_path)
+    dataset._mutation_db = _mutation_db()
+    assert not dataset.has_channel_counts()
+
+    silent, non_silent = dataset.compute_gene_counts_channels()
+    assert dataset.has_channel_counts()
+    pd.testing.assert_frame_equal(silent, dataset.genes_counts_silent)
+    pd.testing.assert_frame_equal(
+        non_silent, dataset.genes_counts_non_silent
+    )
+    # the two channels partition every mutation in the database
+    total = silent.values.sum() + non_silent.values.sum()
+    assert total == len(dataset._mutation_db)
+
+
+def test_channel_counts_properties_raise_before_computing(tmp_path):
+    dataset = MutationDataset(location_maf_files=tmp_path)
+    with pytest.raises(ValueError, match="Silent gene count"):
+        _ = dataset.genes_counts_silent
+    with pytest.raises(ValueError, match="Non-silent gene count"):
+        _ = dataset.genes_counts_non_silent
+
+
+def test_channel_counts_survive_save_load(tmp_path):
+    dataset = MutationDataset(location_maf_files=tmp_path / "src")
+    dataset._mutation_db = _mutation_db()
+    dataset.compute_gene_counts_channels()
+
+    save_dir = tmp_path / "saved"
+    dataset.save_dataset(save_dir)
+    loaded = MutationDataset.load_dataset(save_dir)
+
+    pd.testing.assert_frame_equal(
+        loaded.genes_counts_silent,
+        dataset.genes_counts_silent,
+        check_dtype=False,
+    )
+    pd.testing.assert_frame_equal(
+        loaded.genes_counts_non_silent,
+        dataset.genes_counts_non_silent,
+        check_dtype=False,
+    )
+
+
+def test_estimate_channel_cov_effects_poisson(tmp_path):
+    model = _model_with_channels(tmp_path)
+    model.dataset.compute_gene_counts_channels()
+    result = model.estimate_channel_cov_effects(
+        sample="MAP", likelihood="poisson"
+    )
+    assert result.shape == (2,)
+    assert np.all(np.isfinite(result))
+
+
+def test_poisson_requires_count_matrices(tmp_path):
+    model = _model_with_channels(tmp_path)
+    with pytest.raises(ValueError, match="Channel count matrices"):
+        model.estimate_channel_cov_effects(
+            sample="MAP", likelihood="poisson"
+        )
+
+
+def test_unknown_likelihood_raises(tmp_path):
+    model = _model_with_channels(tmp_path)
+    with pytest.raises(ValueError, match="Unknown likelihood"):
+        model.estimate_channel_cov_effects(
+            sample="MAP", likelihood="negbinom"
+        )
+
+
+def test_count_target_r2_has_no_censoring(tmp_path):
+    """The count target must use Σ_j μ directly, not Σ_j (1-e^-μ) --
+    the latter caps each gene at the sample count."""
+    from sklearn.metrics import r2_score
+
+    from sigmutsel.estimate_presence import (
+        filter_passenger_genes_ensembl,
+    )
+
+    model = _model_with_channels(tmp_path)
+    model.dataset.compute_gene_counts_channels()
+    model.estimate_channel_cov_effects(
+        sample="MAP", likelihood="poisson"
+    )
+    r2 = model.estimate_passenger_genes_r2(target="non_silent_counts")
+
+    rates = model.compute_channel_mu_gs("nonsyn")
+    passengers = filter_passenger_genes_ensembl(rates.index)
+    observed = model.dataset.genes_counts_non_silent.reindex(
+        passengers, fill_value=0
+    ).sum(axis=1)
+    expected = rates.loc[passengers].sum(axis=1)
+    assert np.isclose(r2, r2_score(observed, expected))
+    assert model.passenger_genes_r2_non_silent_counts == r2
+
+
+def test_count_target_stored_separately(tmp_path):
+    """Three targets, three attributes -- no call can overwrite
+    another's number."""
+    model = _model_with_channels(tmp_path)
+    model.dataset.compute_gene_counts_channels()
+    model.estimate_channel_cov_effects(
+        sample="MAP", likelihood="poisson"
+    )
+    r2_any = model.estimate_passenger_genes_r2(target="any")
+    r2_ns = model.estimate_passenger_genes_r2(target="non_silent")
+    r2_counts = model.estimate_passenger_genes_r2(
+        target="non_silent_counts"
+    )
+    assert model.passenger_genes_r2 == r2_any
+    assert model.passenger_genes_r2_non_silent == r2_ns
+    assert model.passenger_genes_r2_non_silent_counts == r2_counts
+
+
+def test_count_target_requires_count_matrices(tmp_path):
+    model = _model_with_channels(tmp_path)
+    model.estimate_channel_cov_effects(sample="MAP")
+    with pytest.raises(ValueError, match="Non-silent gene count"):
+        model.estimate_passenger_genes_r2(target="non_silent_counts")

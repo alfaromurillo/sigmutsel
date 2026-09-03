@@ -285,11 +285,36 @@ is untouched and still the default everywhere.
   unchanged behavior) scores `genes_present` against merged `mu_gs`;
   `"non_silent"` scores `genes_present_non_silent` against the
   **non-synonymous channel's** rates, since predicting a non-silent
-  target from a total rate is biased high by construction. The two
-  land in separate attributes (`passenger_genes_r2` /
-  `passenger_genes_r2_non_silent`) on purpose — silently redefining
-  what "the R²" means depending on the last call's argument is exactly
-  the ambiguity this evaluation exists to remove.
+  target from a total rate is biased high by construction;
+  `"non_silent_counts"` scores `genes_counts_non_silent` against
+  `Σ_j μ_g^(nonsyn,j)` with **no** `1 - exp(-μ)` step. Each target
+  lands in its own attribute (`passenger_genes_r2` /
+  `..._non_silent` / `..._non_silent_counts`) on purpose — silently
+  redefining what "the R²" means depending on the last call's
+  argument is exactly the ambiguity this evaluation exists to remove.
+  Match the target to the likelihood the model was fit with.
+
+### Count (Poisson) likelihood
+
+- `estimate_presence.compute_genes_counts()` is
+  `compute_genes_present()` before the censoring step; they share
+  `_crosstab_genes_by_tumor` so they can never disagree about scope or
+  columns. `MutationDataset.compute_gene_counts_channels()` builds
+  both channels at once — computing one without the other invites
+  scoring a model against a channel it was not fit on.
+- `estimate_channel_cov_effects(likelihood="poisson")` swaps both
+  Bernoulli terms for `pm.Poisson` on those counts. Presence is a
+  censored count (`I = 1[N ≥ 1]`), and the Fisher information a
+  Bernoulli retains about `log μ` relative to a Poisson is
+  `μe^-μ/(1-e^-μ)`: 95% at μ=0.1 but 58% at μ=1 and 3% at μ=5 —
+  i.e. presence says least exactly in the hypermutated samples that
+  carry most of a cohort's mutation mass. Poisson also gets "trust
+  the samples with more mutations more" for free via `k log μ - μ`,
+  with no separate weighting mechanism.
+- Poisson thinning makes the two channels *exactly* independent given
+  μ, so unlike the Bernoulli split there is no overlap to correct.
+- The counts come from `mutation_db` grouped differently, not from
+  anything new extracted from the MAFs.
 
 ## General conventions
 

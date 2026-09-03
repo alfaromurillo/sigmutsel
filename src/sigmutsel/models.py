@@ -54,6 +54,12 @@ class MutationDataset:
         mutations only -- the other half of the consequence split,
         and the one that stays selection-free in driver genes too.
         Lazy-loaded.
+    genes_counts_silent, genes_counts_non_silent : pd.DataFrame or None
+        The same two matrices *before* they are censored to 0/1:
+        mutation counts per gene per sample. Presence is a censored
+        count, and the censoring throws away most of the information
+        precisely in the hypermutated samples that carry most of a
+        cohort's mutation mass. Lazy-loaded.
     variant_db : pd.DataFrame or None
         Table of unique variants annotated with genomic context
         and mutation types. Lazy-loaded via generate_variant_db()
@@ -159,6 +165,8 @@ class MutationDataset:
     _genes_present: pd.DataFrame = None
     _genes_present_non_silent: pd.DataFrame = None
     _genes_present_silent: pd.DataFrame = None
+    _genes_counts_silent: pd.DataFrame = None
+    _genes_counts_non_silent: pd.DataFrame = None
     _variant_db: pd.DataFrame = None
     _variants_present: pd.DataFrame = None
     _sig_assignments: pd.DataFrame = None
@@ -215,6 +223,11 @@ class MutationDataset:
             loaded.append(
                 f"genes_present_silent: "
                 f"{self._genes_present_silent.shape}"
+            )
+        if self._genes_counts_silent is not None:
+            loaded.append(
+                "genes_counts_silent/non_silent: "
+                f"{self._genes_counts_silent.shape}"
             )
         if self._variant_db is not None:
             loaded.append(
@@ -302,6 +315,18 @@ class MutationDataset:
                 "genes_present_silent",
                 "_genes_present_silent",
                 "genes_present_silent.parquet",
+                "parquet",
+            ),
+            (
+                "genes_counts_silent",
+                "_genes_counts_silent",
+                "genes_counts_silent.parquet",
+                "parquet",
+            ),
+            (
+                "genes_counts_non_silent",
+                "_genes_counts_non_silent",
+                "genes_counts_non_silent.parquet",
                 "parquet",
             ),
             (
@@ -593,6 +618,36 @@ class MutationDataset:
         self._genes_present_silent = value
 
     @property
+    def genes_counts_silent(self):
+        """Silent mutation counts per gene per tumor (lazy loaded)."""
+        if self._genes_counts_silent is None:
+            raise ValueError(
+                "Silent gene count matrix not computed. "
+                "Call compute_gene_counts_channels() first."
+            )
+        return self._genes_counts_silent
+
+    @genes_counts_silent.setter
+    def genes_counts_silent(self, value):
+        """Set silent gene count matrix."""
+        self._genes_counts_silent = value
+
+    @property
+    def genes_counts_non_silent(self):
+        """Non-silent mutation counts per gene per tumor (lazy)."""
+        if self._genes_counts_non_silent is None:
+            raise ValueError(
+                "Non-silent gene count matrix not computed. "
+                "Call compute_gene_counts_channels() first."
+            )
+        return self._genes_counts_non_silent
+
+    @genes_counts_non_silent.setter
+    def genes_counts_non_silent(self, value):
+        """Set non-silent gene count matrix."""
+        self._genes_counts_non_silent = value
+
+    @property
     def variant_db(self):
         """Variant database (lazy loaded)."""
         if self._variant_db is None:
@@ -873,6 +928,13 @@ class MutationDataset:
         """Check if silent gene presence has been computed."""
         return self._genes_present_silent is not None
 
+    def has_channel_counts(self):
+        """Check if both channels' count matrices exist."""
+        return (
+            self._genes_counts_silent is not None
+            and self._genes_counts_non_silent is not None
+        )
+
     def has_variants(self):
         """Check if variants have been loaded."""
         return self._variant_db is not None
@@ -946,6 +1008,34 @@ class MutationDataset:
 
         self._genes_present_silent = compute_genes_present(
             self.mutation_db, scope="silent"
+        )
+
+    def compute_gene_counts_channels(self):
+        """Compute per-channel mutation *count* matrices.
+
+        The uncensored counterparts of
+        :meth:`compute_gene_presence_silent` and
+        :meth:`compute_gene_presence_non_silent`, stored in
+        ``genes_counts_silent`` / ``genes_counts_non_silent``. Both
+        are built in one call because the count likelihood always
+        needs the pair, and computing one without the other invites
+        scoring a model against a channel it was not fit on.
+
+        Nothing new is extracted from the MAFs -- these are the same
+        mutations ``compute_genes_present`` groups, just not
+        collapsed to 0/1.
+        """
+        from .estimate_presence import compute_genes_counts
+
+        self._genes_counts_silent = compute_genes_counts(
+            self.mutation_db, scope="silent"
+        )
+        self._genes_counts_non_silent = compute_genes_counts(
+            self.mutation_db, scope="non-silent"
+        )
+        return (
+            self._genes_counts_silent,
+            self._genes_counts_non_silent,
         )
 
     def compute_variants_present(self):
@@ -2371,6 +2461,7 @@ class Model:
     _n_in_cov_effects_estimation: int = None
     _passenger_genes_r2: float = None
     _passenger_genes_r2_non_silent: float = None
+    _passenger_genes_r2_non_silent_counts: float = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
     mu_ms: pd.DataFrame = None
@@ -2428,6 +2519,7 @@ class Model:
         self._n_in_cov_effects_estimation = None
         self._passenger_genes_r2 = None
         self._passenger_genes_r2_non_silent = None
+        self._passenger_genes_r2_non_silent_counts = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
         self.mu_ms = None
@@ -2554,6 +2646,11 @@ class Model:
             loaded.append(
                 "R²(non-silent)="
                 f"{self._passenger_genes_r2_non_silent:.4f}"
+            )
+        if self._passenger_genes_r2_non_silent_counts is not None:
+            loaded.append(
+                "R²(non-silent counts)="
+                f"{self._passenger_genes_r2_non_silent_counts:.4f}"
             )
         if self.cov_effects_posteriors is not None:
             loaded.append("posteriors: available")
@@ -2760,6 +2857,18 @@ class Model:
         # should call estimate_cov_effects or
         # estimate_passenger_genes_r2)
         return None
+
+    @property
+    def passenger_genes_r2_non_silent_counts(self):
+        """Passenger-gene R² against the non-silent *count* target.
+
+        The headline for a count (Poisson) fit: expected
+        ``Σ_j μ_g^(nonsyn,j)`` against observed
+        ``Σ_j N_g^(nonsyn,j)``, with no ``1 - exp(-μ)`` censoring
+        step. Never computed automatically -- call
+        ``estimate_passenger_genes_r2(target="non_silent_counts")``.
+        """
+        return self._passenger_genes_r2_non_silent_counts
 
     @property
     def passenger_genes_r2_non_silent(self):
@@ -5879,6 +5988,7 @@ class Model:
         tol=0.05,
         excluded_samples=None,
         include_drivers=True,
+        likelihood="bernoulli",
     ):
         """Fit one shared ``c`` against both consequence channels.
 
@@ -5919,6 +6029,17 @@ class Model:
             the same passenger set as the non-silent channel (``P``),
             isolating the value of the finer-grained observation from
             the value of the driver genes it lets in.
+        likelihood : {"bernoulli", "poisson"}, default "bernoulli"
+            Observation model. ``"bernoulli"`` fits each channel's
+            0/1 presence matrix; ``"poisson"`` fits its mutation
+            *counts* (``genes_counts_silent`` /
+            ``genes_counts_non_silent`` -- call
+            :meth:`MutationDataset.compute_gene_counts_channels`
+            first). Counts are the generative quantity; presence
+            censors them, and worst exactly where the mutation mass
+            is. Score a Poisson fit with
+            ``estimate_passenger_genes_r2(target="non_silent_counts")``
+            rather than the presence targets.
 
         Returns
         -------
@@ -5932,8 +6053,9 @@ class Model:
             If ``base_mus`` is signature-separated. The two-channel
             likelihood has no multi-signature mode yet.
         ValueError
-            If the channel baselines, either presence matrix, or the
-            covariate matrix are missing.
+            If the channel baselines, either observation matrix for
+            the chosen ``likelihood``, or the covariate matrix are
+            missing.
 
         Notes
         -----
@@ -5984,18 +6106,37 @@ class Model:
                 "cov_effects_per_sigma/signature_selection."
             )
 
-        if self.dataset._genes_present_silent is None:
-            raise ValueError(
-                "Silent gene presence matrix not computed in "
-                "dataset. Call dataset.compute_gene_presence_silent() "
-                "first."
+        if likelihood == "bernoulli":
+            if self.dataset._genes_present_silent is None:
+                raise ValueError(
+                    "Silent gene presence matrix not computed in "
+                    "dataset. Call "
+                    "dataset.compute_gene_presence_silent() first."
+                )
+            if self.dataset._genes_present_non_silent is None:
+                raise ValueError(
+                    "Non-silent gene presence matrix not computed "
+                    "in dataset. Call "
+                    "dataset.compute_gene_presence_non_silent() "
+                    "first."
+                )
+            observed_silent = self.dataset.genes_present_silent
+            observed_non_silent = (
+                self.dataset.genes_present_non_silent
             )
-
-        if self.dataset._genes_present_non_silent is None:
+        elif likelihood == "poisson":
+            if not self.dataset.has_channel_counts():
+                raise ValueError(
+                    "Channel count matrices not computed in "
+                    "dataset. Call "
+                    "dataset.compute_gene_counts_channels() first."
+                )
+            observed_silent = self.dataset.genes_counts_silent
+            observed_non_silent = self.dataset.genes_counts_non_silent
+        else:
             raise ValueError(
-                "Non-silent gene presence matrix not computed in "
-                "dataset. Call "
-                "dataset.compute_gene_presence_non_silent() first."
+                f"Unknown likelihood {likelihood!r}; expected "
+                "'bernoulli' or 'poisson'."
             )
 
         if self.cov_matrix is None:
@@ -6056,9 +6197,9 @@ class Model:
         self._n_in_cov_effects_estimation = len(passenger_genes)
 
         logger.info(
-            "Estimating shared covariate effects across two "
-            f"channels: {len(silent_genes)} genes in the silent "
-            f"channel (drivers "
+            f"Estimating shared covariate effects ({likelihood}) "
+            f"across two channels: {len(silent_genes)} genes in the "
+            f"silent channel (drivers "
             f"{'included' if include_drivers else 'excluded'}), "
             f"{len(passenger_genes)} in the non-silent channel, "
             f"{self.cov_matrix.shape[1]} covariate(s)"
@@ -6070,19 +6211,20 @@ class Model:
                 "silent",
                 silent_genes,
                 self._base_mus_syn,
-                self.dataset.genes_present_silent,
+                observed_silent,
             ),
             (
                 "non_silent",
                 passenger_genes,
                 self._base_mus_nonsyn,
-                self.dataset.genes_present_non_silent,
+                observed_non_silent,
             ),
         ):
             mus = base_mus.loc[genes]
             if excluded_samples is not None:
                 mus = mus[mus.columns.difference(excluded_samples)]
-            # Align presence onto the rate matrix's own sample axis:
+            # Align the observations onto the rate matrix's own
+            # sample axis:
             # both come from the same dataset, but they are built by
             # different routes (mu_taus' index vs a crosstab), and
             # past the `.T.values` below there is no labelled axis
@@ -6100,11 +6242,12 @@ class Model:
 
         result = estimate_channel_covariates_effect(
             mus_silent=channel_inputs["silent"][0],
-            presence_silent=channel_inputs["silent"][1],
+            observed_silent=channel_inputs["silent"][1],
             cov_matrix_silent=channel_inputs["silent"][2],
             mus_non_silent=channel_inputs["non_silent"][0],
-            presence_non_silent=channel_inputs["non_silent"][1],
+            observed_non_silent=channel_inputs["non_silent"][1],
             cov_matrix_non_silent=channel_inputs["non_silent"][2],
+            likelihood=likelihood,
             draws=draws,
             chains=chains,
             burn=burn,
@@ -6376,8 +6519,8 @@ class Model:
             :func:`sample_qc.combine_sample_flags`, when dropping
             rather than downweighting). Applied before
             `sample_weights`.
-        target : {"any", "non_silent"}, default "any"
-            Which observed presence to score against.
+        target : {"any", "non_silent", "non_silent_counts"}, default "any"
+            Which observation to score against.
 
             - ``"any"`` (default, today's behavior): "gene mutated at
               all", i.e. `dataset.genes_present`, predicted from the
@@ -6389,11 +6532,23 @@ class Model:
               ones -- predicting a non-silent target from a total rate
               would be biased high by construction.
 
-            The two are not interchangeable: ≈25% of presence events
-            in the "any" target involve a silent mutation, which is
-            exactly the part any silent-driven per-gene correction can
-            leak into. Report the non-silent number whenever the model
-            being scored has seen silent counts.
+            - ``"non_silent_counts"``: the same channel, but scored
+              on mutation *counts* rather than presence --
+              `dataset.genes_counts_non_silent` against
+              ``Σ_j μ_g^(nonsyn,j)``, with **no** ``1 - exp(-μ)``
+              step, since a count target has no censoring. This is
+              the headline for a Poisson (count) fit; using the
+              presence formula on it would cap every gene's
+              prediction at the number of samples and bias exactly
+              the high-rate genes the target exists to measure.
+
+            The presence targets are not interchangeable: ≈25% of
+            presence events in the "any" target involve a silent
+            mutation, which is exactly the part any silent-driven
+            per-gene correction can leak into. Report the non-silent
+            number whenever the model being scored has seen silent
+            counts, and match the target to the likelihood the model
+            was fit with.
 
         Returns
         -------
@@ -6500,10 +6655,14 @@ class Model:
 
         from .estimate_presence import filter_passenger_genes_ensembl
 
-        if target not in ("any", "non_silent"):
+        if target not in (
+            "any",
+            "non_silent",
+            "non_silent_counts",
+        ):
             raise ValueError(
-                f"Unknown target {target!r}; expected 'any' or "
-                "'non_silent'."
+                f"Unknown target {target!r}; expected 'any', "
+                "'non_silent' or 'non_silent_counts'."
             )
 
         # Check if mu_gs need to be computed
@@ -6526,8 +6685,8 @@ class Model:
             # Compute mu_gs
             self.compute_mu_gs()
 
-        # Ensure the presence matrix this target scores against has
-        # been computed
+        # Ensure the observation matrix this target scores against
+        # has been computed
         if target == "any":
             if self.dataset._genes_present is None:
                 raise ValueError(
@@ -6536,7 +6695,7 @@ class Model:
                 )
             observed_source = self.dataset.genes_present
             rates = self._mu_gs
-        else:
+        elif target == "non_silent":
             if self.dataset._genes_present_non_silent is None:
                 raise ValueError(
                     "Non-silent gene presence matrix not computed in "
@@ -6547,6 +6706,15 @@ class Model:
             observed_source = self.dataset.genes_present_non_silent
             # Score the non-silent target against the non-silent
             # channel's own rate, not the merged one.
+            rates = self.compute_channel_mu_gs("nonsyn")
+        else:  # non_silent_counts
+            if self.dataset._genes_counts_non_silent is None:
+                raise ValueError(
+                    "Non-silent gene count matrix not computed in "
+                    "dataset. Call "
+                    "dataset.compute_gene_counts_channels() first."
+                )
+            observed_source = self.dataset.genes_counts_non_silent
             rates = self.compute_channel_mu_gs("nonsyn")
 
         # Identify passenger genes
@@ -6599,34 +6767,48 @@ class Model:
         else:
             weights = pd.Series(1.0, index=mu_gs_passenger.columns)
 
-        # Sum observed mutations across all samples for each gene
+        # Sum observed across all samples for each gene -- presence
+        # events for the presence targets, mutation counts for the
+        # counts target.
         present_sum = genes_present_passenger.mul(
             weights, axis=1
         ).sum(
             axis=1
         )  # Sum over genes
 
-        # Convert mutation rates to presence probabilities and sum
-        # across all samples for each gene
-        expected = (
-            (1 - np.exp(-mu_gs_passenger))
-            .mul(weights, axis=1)
-            .sum(axis=1)
-        )
+        if target == "non_silent_counts":
+            # No censoring in a count target, so no 1 - exp(-μ): the
+            # expected number of mutations is the rate itself. Using
+            # the presence formula here would cap every gene's
+            # prediction at the sample count and bias exactly the
+            # high-rate genes the count target exists to measure.
+            expected = mu_gs_passenger.mul(weights, axis=1).sum(
+                axis=1
+            )
+        else:
+            # Convert mutation rates to presence probabilities and sum
+            # across all samples for each gene
+            expected = (
+                (1 - np.exp(-mu_gs_passenger))
+                .mul(weights, axis=1)
+                .sum(axis=1)
+            )
 
         # Compute R² between expected and observed
         r2 = r2_score(present_sum, expected)
 
-        # Store result. The two targets are kept in separate
-        # attributes on purpose: `passenger_genes_r2` is the number
-        # every existing caller (and every saved model) already means
-        # by "the R²", and silently redefining it depending on the
-        # last call's `target` is exactly the kind of ambiguity this
-        # evaluation is supposed to remove.
+        # Store result. The targets are kept in separate attributes on
+        # purpose: `passenger_genes_r2` is the number every existing
+        # caller (and every saved model) already means by "the R²",
+        # and silently redefining it depending on the last call's
+        # `target` is exactly the kind of ambiguity this evaluation is
+        # supposed to remove.
         if target == "any":
             self._passenger_genes_r2 = r2
-        else:
+        elif target == "non_silent":
             self._passenger_genes_r2_non_silent = r2
+        else:
+            self._passenger_genes_r2_non_silent_counts = r2
 
         return r2
 

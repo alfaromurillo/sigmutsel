@@ -63,6 +63,79 @@ def compute_variants_present(
     return present
 
 
+def _crosstab_genes_by_tumor(db, scope):
+    """Genes × tumors mutation *counts*, filtered by `scope`.
+
+    The shared core of :func:`compute_genes_present` (which then
+    binarises) and :func:`compute_genes_counts` (which does not), so
+    the two can never disagree about which mutations are in scope or
+    which tumors are columns.
+    """
+    if scope == "silent":
+        db_filtered = db[db["Variant_Classification"] == "Silent"]
+    elif scope == "non-silent":
+        db_filtered = db[db["Variant_Classification"] != "Silent"]
+    else:  # None or 'all'
+        db_filtered = db
+
+    counts = pd.crosstab(
+        db_filtered["ensembl_gene_id"],
+        db_filtered["Tumor_Sample_Barcode"],
+    )
+
+    # crosstab silently drops any tumor absent from db_filtered (e.g.
+    # a sample with mutations but none matching `scope`), which would
+    # otherwise leave this matrix's columns short of the full sample
+    # universe other matrices (mu_gs, variants_present) use --
+    # reindex to db's full tumor list so every scope has the same
+    # columns, with 0 for tumors with no matching mutation.
+    all_tumors = sorted(db["Tumor_Sample_Barcode"].dropna().unique())
+    return counts.reindex(columns=all_tumors, fill_value=0)
+
+
+def compute_genes_counts(db, scope=None):
+    """Build a matrix of mutation counts per gene per tumor.
+
+    The uncensored version of :func:`compute_genes_present`: the same
+    table before it is collapsed to 0/1. Presence is a censored count
+    (``I = 1[N >= 1]``), and the censoring is not free -- the Fisher
+    information a Bernoulli observation retains about ``log μ``,
+    relative to a Poisson one, is ``μ e^-μ / (1 - e^-μ)``, which is
+    58% at μ=1 and 3% at μ=5. Hypermutated samples run per-gene μ in
+    exactly that range while carrying most of a cohort's mutation
+    mass, so the counts matter most where presence says least.
+
+    Parameters
+    ----------
+    db : pandas.DataFrame
+        MAF-like table with at least 'ensembl_gene_id',
+        'Tumor_Sample_Barcode', and 'Variant_Classification' columns.
+    scope : {None, 'all', 'silent', 'non-silent'}, optional
+        Filter variants by classification before counting, exactly as
+        in :func:`compute_genes_present`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Genes × tumors matrix (int) of mutation counts. Rows are
+        Ensembl gene IDs; columns are every tumor barcode in `db`,
+        including those with no in-scope mutation (all-zero columns).
+
+    See Also
+    --------
+    compute_genes_present : The same table binarised to 0/1.
+    """
+    logger.info("Producing count matrix for all tumors per gene...")
+    if scope in ("silent", "non-silent"):
+        logger.info(f"Restricting to {scope} variants")
+
+    counts = _crosstab_genes_by_tumor(db, scope)
+
+    logger.info("... done.")
+    print()
+    return counts
+
+
 def compute_genes_present(db, scope=None):
     """Build a 0/1 matrix of gene presence per tumor.
 
@@ -90,29 +163,7 @@ def compute_genes_present(db, scope=None):
     if scope in ("silent", "non-silent"):
         logger.info(f"Restricting to {scope} variants")
 
-    # Filter by variant classification scope
-    if scope == "silent":
-        db_filtered = db[db["Variant_Classification"] == "Silent"]
-    elif scope == "non-silent":
-        db_filtered = db[db["Variant_Classification"] != "Silent"]
-    else:  # None or 'all'
-        db_filtered = db
-
-    present = pd.crosstab(
-        db_filtered["ensembl_gene_id"],
-        db_filtered["Tumor_Sample_Barcode"],
-    )
-
-    present = (present > 0).astype(int)
-
-    # crosstab silently drops any tumor absent from db_filtered (e.g.
-    # a sample with mutations but none matching `scope`), which would
-    # otherwise leave this matrix's columns short of the full sample
-    # universe other matrices (mu_gs, variants_present) use --
-    # reindex to db's full tumor list so every scope has the same
-    # columns, with 0 for tumors with no matching mutation.
-    all_tumors = sorted(db["Tumor_Sample_Barcode"].dropna().unique())
-    present = present.reindex(columns=all_tumors, fill_value=0)
+    present = (_crosstab_genes_by_tumor(db, scope) > 0).astype(int)
 
     logger.info("... done.")
     print()

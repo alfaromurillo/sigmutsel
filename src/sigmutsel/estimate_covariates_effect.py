@@ -303,11 +303,12 @@ def estimate_covariates_effect(
 
 def estimate_channel_covariates_effect(
     mus_silent: np.ndarray,
-    presence_silent: np.ndarray,
+    observed_silent: np.ndarray,
     cov_matrix_silent: np.ndarray,
     mus_non_silent: np.ndarray,
-    presence_non_silent: np.ndarray,
+    observed_non_silent: np.ndarray,
     cov_matrix_non_silent: np.ndarray,
+    likelihood: str = "bernoulli",
     draws: int = 4000,
     lower_bounds_c: float | np.ndarray | None = -2,
     upper_bounds_c: float | np.ndarray = 2,
@@ -320,14 +321,22 @@ def estimate_channel_covariates_effect(
 
     The two-channel counterpart of
     :func:`estimate_covariates_effect`'s signature-independent mode.
-    Instead of one Bernoulli likelihood over a single presence
-    matrix, this builds **two** Bernoulli terms -- one per consequence
-    channel -- that share a single coefficient vector ``c``:
+    Instead of one likelihood over a single observation matrix, this
+    builds **two** terms -- one per consequence channel -- that share
+    a single coefficient vector ``c``:
 
-    * silent channel: gene set ``G``, observed
-      ``1[gene g has a silent mutation in sample j]``;
+    * silent channel: gene set ``G``, observed silent mutations in
+      each (gene, sample);
     * non-silent channel: gene set ``P`` (passenger genes), observed
-      ``1[gene g has a non-silent mutation in sample j]``.
+      non-silent mutations in each (gene, sample).
+
+    ``likelihood`` decides whether those observations are censored to
+    0/1 (``"bernoulli"``, ``p = 1 - e^-μ``) or used as the counts
+    they are (``"poisson"``). The counts version is the generative
+    process: ``N ~ Poisson(μ)`` with ``I = 1[N >= 1]``, so presence
+    is a censored count, and Poisson thinning makes the two channels
+    *exactly* independent given ``μ`` -- no approximation and no
+    double-counting to correct.
 
     The two gene sets are deliberately **allowed to differ**: the
     whole point of the split is that a driver gene's silent channel
@@ -348,15 +357,22 @@ def estimate_channel_covariates_effect(
     ----------
     mus_silent : ndarray, shape (n_tumors, n_genes_silent)
         Baseline silent-channel rates ``μ̄_g^(syn,j)``.
-    presence_silent : ndarray, shape (n_tumors, n_genes_silent)
-        Binary silent-mutation presence.
+    observed_silent : ndarray, shape (n_tumors, n_genes_silent)
+        Silent-mutation observations: 0/1 presence when
+        ``likelihood="bernoulli"``, counts when ``"poisson"``.
     cov_matrix_silent : ndarray, shape (n_genes_silent, n_covariates)
         Covariates for the silent channel's genes. A column of ones
         is prepended internally for the intercept.
-    mus_non_silent, presence_non_silent, cov_matrix_non_silent
+    mus_non_silent, observed_non_silent, cov_matrix_non_silent
         The same three, for the non-silent channel's (passenger)
         genes. ``n_covariates`` must match the silent channel's,
         since the coefficients are shared.
+    likelihood : {"bernoulli", "poisson"}, default "bernoulli"
+        Observation model. ``"bernoulli"`` censors each channel to
+        presence and fits ``p = 1 - exp(-μ)``; ``"poisson"`` fits the
+        counts directly. Poisson additionally gets "trust the samples
+        with more mutations more" for free through ``k log μ - μ``,
+        with no separate weighting mechanism.
     draws, lower_bounds_c, upper_bounds_c, burn, chains, save_path, kwargs
         As in :func:`estimate_covariates_effect`.
 
@@ -371,12 +387,18 @@ def estimate_channel_covariates_effect(
     Raises
     ------
     ValueError
-        If a channel's covariate matrix does not have that channel's
-        gene count as rows, or if the two channels disagree on the
-        number of covariates.
+        If ``likelihood`` is unknown, if a channel's covariate matrix
+        does not have that channel's gene count as rows, or if the two
+        channels disagree on the number of covariates.
     """
     if kwargs is None:
         kwargs = {}
+
+    if likelihood not in ("bernoulli", "poisson"):
+        raise ValueError(
+            f"Unknown likelihood {likelihood!r}; expected "
+            "'bernoulli' or 'poisson'."
+        )
 
     n_tumors_silent, n_genes_silent = mus_silent.shape
     n_tumors_non_silent, n_genes_non_silent = mus_non_silent.shape
@@ -401,7 +423,7 @@ def estimate_channel_covariates_effect(
         )
 
     logger.info(
-        "Two-channel mode: silent channel "
+        f"Two-channel {likelihood} mode: silent channel "
         f"{n_tumors_silent} tumors × {n_genes_silent} genes, "
         f"non-silent channel {n_tumors_non_silent} tumors × "
         f"{n_genes_non_silent} genes"
@@ -428,13 +450,13 @@ def estimate_channel_covariates_effect(
             shape=n_coeffs,
         )
 
-        for channel, cov_ext, mus, presence in (
-            ("silent", cov_ext_silent, mus_silent, presence_silent),
+        for channel, cov_ext, mus, observed in (
+            ("silent", cov_ext_silent, mus_silent, observed_silent),
             (
                 "non_silent",
                 cov_ext_non_silent,
                 mus_non_silent,
-                presence_non_silent,
+                observed_non_silent,
             ),
         ):
             cov32 = pm.Data(f"cov_ext_{channel}", cov_ext)
@@ -442,18 +464,31 @@ def estimate_channel_covariates_effect(
                 f"mus_{channel}",
                 np.clip(mus.astype("float32"), 1e-12, np.inf),
             )
-            pres8 = pm.Data(
-                f"pres_{channel}", presence.astype("uint8")
-            )
 
             eta = tt.dot(cov32, c).dimshuffle("x", 0)
             mus_full = mus32 * tt.exp(eta)
-            Ps = tt.clip(1.0 - tt.exp(-mus_full), 1e-10, 1.0 - 1e-10)
-            pm.Bernoulli(
-                name=f"genes_observed_{channel}",
-                p=Ps,
-                observed=pres8,
-            )
+
+            if likelihood == "bernoulli":
+                obs = pm.Data(
+                    f"obs_{channel}", observed.astype("uint8")
+                )
+                Ps = tt.clip(
+                    1.0 - tt.exp(-mus_full), 1e-10, 1.0 - 1e-10
+                )
+                pm.Bernoulli(
+                    name=f"genes_observed_{channel}",
+                    p=Ps,
+                    observed=obs,
+                )
+            else:
+                obs = pm.Data(
+                    f"obs_{channel}", observed.astype("int32")
+                )
+                pm.Poisson(
+                    name=f"genes_observed_{channel}",
+                    mu=mus_full,
+                    observed=obs,
+                )
 
         if draws == 1:
             logger.info(

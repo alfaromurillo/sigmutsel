@@ -363,6 +363,21 @@ the silent channel can inform its own rate.
   ~1 to ~250 on this data). θ landing on a prior bound is a signal to
   investigate, not a number to report. Subdividing θ (e.g. by gene
   length) is deliberately not offered as a first pass.
+- `separate_c=True` fits a coefficient vector per channel instead
+  of one shared vector, with `r_g` and θ still shared — only the
+  covariate-driven part of the rate is allowed to differ by
+  consequence, since a driver's `r_g` still has to be identified
+  from its silent channel. The result lands in
+  `channel_cov_effects` (shape `(2, n_coeffs)`, row 0 synonymous)
+  and **not** in `cov_effects`, because one `mu_gs` is no longer
+  defined by one `c`; the usual downstream recomputation is skipped
+  for the same reason.
+- The shared model is nested inside the separate one at
+  `c^(syn) = c^(nonsyn)`, so `channel_rg_log_likelihood_at_fit()`
+  makes them directly comparable: `2 * (ll_sep - ll_shared)` is a
+  likelihood-ratio statistic on `n_coeffs` degrees of freedom. The
+  constant Poisson term the likelihood drops is identical in both
+  and cancels in the difference.
 - Applying `r_g` is always explicit at the call site:
   `estimate_passenger_genes_r2(gene_scaling=...)`. A scaled R² is
   returned but **never stored**, so it cannot be read back as the

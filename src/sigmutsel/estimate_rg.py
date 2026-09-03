@@ -158,12 +158,13 @@ def r_g_silent_only_for_evaluation(
 
 
 def channel_rg_log_likelihood(
-    eta,
+    eta_silent,
     theta,
     counts_silent,
     counts_non_silent,
     baseline_silent,
     baseline_non_silent,
+    eta_non_silent=None,
 ):
     """Marginal log-likelihood of the two channels with ``r_g`` integrated out.
 
@@ -171,32 +172,56 @@ def channel_rg_log_likelihood(
     for plain numpy arrays too, which is how the tests check it
     against numerical integration.
 
-    All six arguments are aligned, per-gene, over the **silent**
-    channel's gene set ``G``. A gene outside the non-synonymous set
-    ``P`` carries ``counts_non_silent = 0`` and
-    ``baseline_non_silent = 0``, which drops its non-synonymous term
-    exactly.
+    All per-gene arguments are aligned over the **silent** channel's
+    gene set ``G``. A gene outside the non-synonymous set ``P``
+    carries ``counts_non_silent = 0`` and ``baseline_non_silent =
+    0``, which drops its non-synonymous term exactly.
+
+    ``eta_non_silent`` defaults to ``eta_silent``, which is the
+    shared-``c`` model. Passing a different linear predictor gives
+    the separate-``c`` model, in which the two channels get their
+    own covariate coefficients while still sharing ``r_g`` and
+    ``θ``. The shared model is nested inside the separate one at
+    ``c^(syn) = c^(nonsyn)``, so the two log-likelihoods are
+    directly comparable and their difference is a likelihood-ratio
+    statistic on ``n_coeffs`` degrees of freedom.
+
+    Note ``r_g`` stays shared even when ``c`` is not: only the
+    covariate-driven part of the rate is allowed to differ by
+    consequence, and the per-gene rate correction still has to be
+    identified from the silent channel for driver genes.
 
     The ``Σ_j [N log μ̄ - log N!]`` part of the Poisson terms does not
     depend on ``c`` or ``θ`` and is omitted -- an additive constant
     that shifts the objective without moving its argmax.
     """
-    scale = tt.exp(eta) if hasattr(eta, "type") else np.exp(eta)
-    expected_silent = scale * baseline_silent
-    expected_non_silent = scale * baseline_non_silent
+    if eta_non_silent is None:
+        eta_non_silent = eta_silent
+
+    is_tensor = hasattr(eta_silent, "type")
+    exp = tt.exp if is_tensor else np.exp
+    gammaln = tt.gammaln if is_tensor else _np_gammaln
+    log = tt.log if is_tensor else np.log
+
+    expected_silent = exp(eta_silent) * baseline_silent
+    expected_non_silent = exp(eta_non_silent) * baseline_non_silent
 
     counts = counts_silent + counts_non_silent
     expected = expected_silent + expected_non_silent
 
-    gammaln = tt.gammaln if hasattr(eta, "type") else _np_gammaln
-    log = tt.log if hasattr(eta, "type") else np.log
-
-    return (counts * eta).sum() + (
-        gammaln(theta + counts)
-        - gammaln(theta)
-        + theta * log(theta)
-        - (theta + counts) * log(theta + expected)
+    linear = (counts_silent * eta_silent).sum() + (
+        counts_non_silent * eta_non_silent
     ).sum()
+
+    return (
+        linear
+        + (
+            gammaln(theta + counts)
+            - gammaln(theta)
+            + theta * log(theta)
+            - (theta + counts) * log(theta + expected)
+        ).sum()
+    )
 
 
 def _np_gammaln(x):
@@ -211,6 +236,7 @@ def estimate_channel_rg_effect(
     counts_non_silent: np.ndarray,
     baseline_non_silent: np.ndarray,
     cov_matrix: np.ndarray,
+    separate_c: bool = False,
     draws: int = 4000,
     lower_bounds_c: float | np.ndarray | None = -2,
     upper_bounds_c: float | np.ndarray = 2,
@@ -238,6 +264,15 @@ def estimate_channel_rg_effect(
     cov_matrix : ndarray, shape (n_genes, n_covariates)
         Gene covariates; a column of ones is prepended for the
         intercept.
+    separate_c : bool, default False
+        If False, both channels share one coefficient vector. If
+        True, each channel gets its own, and ``c`` comes back with
+        shape ``(2, n_coeffs)`` -- row 0 synonymous, row 1
+        non-synonymous. ``r_g`` and ``θ`` stay shared either way.
+        The shared model is nested inside the separate one at
+        ``c^(syn) = c^(nonsyn)``, so ``2 * (ll_separate -
+        ll_shared)`` is a likelihood-ratio statistic on
+        ``n_coeffs`` degrees of freedom.
     draws, lower_bounds_c, upper_bounds_c, burn, chains, save_path, kwargs
         As in :func:`estimate_covariates_effect.estimate_covariates_effect`.
     log_theta_bounds : (float, float), default (-5, 10)
@@ -286,7 +321,8 @@ def estimate_channel_rg_effect(
 
     n_in_non_silent = int((baseline_non_silent > 0).sum())
     logger.info(
-        f"r_g mode: {n_genes} genes in the silent channel, "
+        f"r_g mode ({'separate' if separate_c else 'shared'} c): "
+        f"{n_genes} genes in the silent channel, "
         f"{n_in_non_silent} also in the non-silent channel, "
         f"{cov_matrix.shape[1]} covariate(s)"
     )
@@ -305,7 +341,7 @@ def estimate_channel_rg_effect(
             name="c",
             lower=lower_bounds_c,
             upper=upper_bounds_c,
-            shape=n_coeffs,
+            shape=(2, n_coeffs) if separate_c else n_coeffs,
         )
         log_theta = pm.Uniform(
             name="log_theta",
@@ -315,12 +351,18 @@ def estimate_channel_rg_effect(
         theta = tt.exp(log_theta)
 
         cov32 = pm.Data("cov_ext", cov_ext)
-        eta = tt.dot(cov32, c)
+        if separate_c:
+            eta_silent = tt.dot(cov32, c[0])
+            eta_non_silent = tt.dot(cov32, c[1])
+        else:
+            eta_silent = tt.dot(cov32, c)
+            eta_non_silent = None
 
         pm.Potential(
             "channel_rg_marginal",
             channel_rg_log_likelihood(
-                eta=eta,
+                eta_silent=eta_silent,
+                eta_non_silent=eta_non_silent,
                 theta=theta,
                 counts_silent=pm.Data(
                     "counts_silent", counts_silent.astype("float64")
@@ -346,8 +388,9 @@ def estimate_channel_rg_effect(
 
         if draws == 1:
             logger.info(
-                f"Finding MAP estimate for {n_coeffs} coefficient(s) "
-                "plus log_theta"
+                "Finding MAP estimate for "
+                f"{n_coeffs * (2 if separate_c else 1)} "
+                "coefficient(s) plus log_theta"
             )
             results = pm.find_MAP(
                 seed=constants.random_seed, **kwargs

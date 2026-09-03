@@ -68,7 +68,7 @@ def test_marginalization_matches_numerical_integration(theta):
 
         # implementation, as a single gene with no non-silent channel
         got = channel_rg_log_likelihood(
-            eta=np.array([eta]),
+            eta_silent=np.array([eta]),
             theta=theta,
             counts_silent=np.array([counts.sum()], dtype=float),
             counts_non_silent=np.array([0.0]),
@@ -92,7 +92,7 @@ def test_marginalization_shares_r_g_across_channels():
     theta = 4.0
     eta = np.array([0.1])
     shared = channel_rg_log_likelihood(
-        eta=eta,
+        eta_silent=eta,
         theta=theta,
         counts_silent=np.array([3.0]),
         counts_non_silent=np.array([5.0]),
@@ -100,14 +100,14 @@ def test_marginalization_shares_r_g_across_channels():
         baseline_non_silent=np.array([4.0]),
     )
     separate = channel_rg_log_likelihood(
-        eta=eta,
+        eta_silent=eta,
         theta=theta,
         counts_silent=np.array([3.0]),
         counts_non_silent=np.array([0.0]),
         baseline_silent=np.array([1.2]),
         baseline_non_silent=np.array([0.0]),
     ) + channel_rg_log_likelihood(
-        eta=eta,
+        eta_silent=eta,
         theta=theta,
         counts_silent=np.array([5.0]),
         counts_non_silent=np.array([0.0]),
@@ -130,7 +130,7 @@ def test_large_theta_approaches_plain_poisson():
     previous = None
     for theta in (1e3, 1e5, 1e7):
         got = channel_rg_log_likelihood(
-            eta=eta,
+            eta_silent=eta,
             theta=theta,
             counts_silent=counts,
             counts_non_silent=np.zeros_like(counts),
@@ -311,3 +311,92 @@ def test_gene_scaling_of_ones_is_a_no_op(tmp_path):
     ) == model.estimate_passenger_genes_r2(
         target="non_silent_counts", gene_scaling=ones
     )
+
+
+# ---------------------------------------------------------------
+# Stage 5: separate c per channel
+# ---------------------------------------------------------------
+
+
+def test_separate_c_with_equal_vectors_equals_shared():
+    """The nesting that makes the LR comparison valid: separate-c
+    with c^(syn) == c^(nonsyn) must give exactly the shared-c
+    likelihood, not merely a close one."""
+    rng = np.random.default_rng(3)
+    n = 6
+    eta = rng.normal(0, 0.3, size=n)
+    kwargs = {
+        "theta": 4.0,
+        "counts_silent": rng.poisson(2.0, size=n).astype(float),
+        "counts_non_silent": rng.poisson(5.0, size=n).astype(float),
+        "baseline_silent": rng.uniform(0.5, 3.0, size=n),
+        "baseline_non_silent": rng.uniform(1.0, 6.0, size=n),
+    }
+    shared = channel_rg_log_likelihood(eta_silent=eta, **kwargs)
+    separate = channel_rg_log_likelihood(
+        eta_silent=eta, eta_non_silent=eta.copy(), **kwargs
+    )
+    assert separate == pytest.approx(shared, rel=0, abs=1e-12)
+
+
+def test_separate_c_actually_differs_when_etas_differ():
+    rng = np.random.default_rng(4)
+    n = 6
+    kwargs = {
+        "theta": 4.0,
+        "counts_silent": rng.poisson(2.0, size=n).astype(float),
+        "counts_non_silent": rng.poisson(5.0, size=n).astype(float),
+        "baseline_silent": rng.uniform(0.5, 3.0, size=n),
+        "baseline_non_silent": rng.uniform(1.0, 6.0, size=n),
+    }
+    eta = rng.normal(0, 0.3, size=n)
+    shared = channel_rg_log_likelihood(eta_silent=eta, **kwargs)
+    separate = channel_rg_log_likelihood(
+        eta_silent=eta, eta_non_silent=eta + 0.25, **kwargs
+    )
+    assert separate != shared
+
+
+def test_separate_c_fit_shape_and_storage(tmp_path):
+    """separate_c lands in channel_cov_effects, never in
+    cov_effects -- nothing downstream may read a (2, n) array as
+    the shared vector."""
+    model = _rg_model(tmp_path)
+    result = model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=True
+    )
+    assert result.shape == (2, 2)
+    assert model.channel_cov_effects.shape == (2, 2)
+    assert model.cov_effects is None
+    assert np.isfinite(model.rg_theta)
+
+
+def test_separate_c_beats_or_matches_shared_in_likelihood(tmp_path):
+    """The separate fit maximises over a superset of the shared
+    fit's parameter space, so its log-likelihood cannot be lower
+    (up to optimiser tolerance)."""
+    shared = _rg_model(tmp_path)
+    shared.estimate_channel_rg_cov_effects(sample="MAP")
+    ll_shared = shared.channel_rg_log_likelihood_at_fit()
+
+    separate = _rg_model(tmp_path)
+    separate.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=True
+    )
+    ll_separate = separate.channel_rg_log_likelihood_at_fit()
+
+    assert np.isfinite(ll_shared) and np.isfinite(ll_separate)
+    assert ll_separate >= ll_shared - 1e-6
+
+
+def test_channel_cov_effects_raises_without_separate_fit(tmp_path):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    with pytest.raises(ValueError, match="No separate-c fit"):
+        _ = model.channel_cov_effects
+
+
+def test_log_likelihood_at_fit_requires_a_fit(tmp_path):
+    model = _rg_model(tmp_path)
+    with pytest.raises(ValueError, match="No r_g fit available"):
+        model.channel_rg_log_likelihood_at_fit()

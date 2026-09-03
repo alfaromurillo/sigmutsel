@@ -2464,6 +2464,8 @@ class Model:
     _passenger_genes_r2_non_silent_counts: float = None
     _rg_theta: float = None
     _rg_statistics: dict = None
+    _rg_separate_c: bool = False
+    _channel_cov_effects: np.ndarray = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
     mu_ms: pd.DataFrame = None
@@ -2524,6 +2526,8 @@ class Model:
         self._passenger_genes_r2_non_silent_counts = None
         self._rg_theta = None
         self._rg_statistics = None
+        self._rg_separate_c = False
+        self._channel_cov_effects = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
         self.mu_ms = None
@@ -6415,6 +6419,7 @@ class Model:
         tol=0.05,
         excluded_samples=None,
         include_drivers=True,
+        separate_c=False,
     ):
         """Fit the full unified model: shared ``c``, ``θ`` and ``r_g``.
 
@@ -6441,6 +6446,17 @@ class Model:
             ``excluded_samples`` must be used here and in any later
             ``r_g`` or R² call, since the per-gene statistics are sums
             over whichever samples were kept.
+        separate_c : bool, default False
+            If True, fit a separate coefficient vector per channel
+            instead of one shared vector (``r_g`` and θ stay shared).
+            The result lands in :attr:`channel_cov_effects` with shape
+            ``(2, n_coeffs)`` -- row 0 synonymous, row 1
+            non-synonymous -- and **not** in ``cov_effects``, because
+            a single ``mu_gs`` is no longer defined by one ``c``. For
+            the same reason the usual downstream recomputation
+            (``mu_gs``/``mu_ms``/R²) is skipped in this mode; use
+            :meth:`channel_rg_log_likelihood_at_fit` to compare the
+            two models.
 
         Returns
         -------
@@ -6526,11 +6542,13 @@ class Model:
             counts_non_silent=stats["counts_non_silent"].values,
             baseline_non_silent=stats["baseline_non_silent"].values,
             cov_matrix=self.cov_matrix.loc[stats["genes"]].values,
+            separate_c=separate_c,
             draws=draws,
             chains=chains,
             burn=burn,
             **cov_effects_kwargs,
         )
+        self._rg_separate_c = separate_c
 
         if is_mcmc:
             import arviz as az
@@ -6588,15 +6606,91 @@ class Model:
                 mode_desc=mode_desc,
             )
 
-        self.compute_mu_gs()
-        if self.dataset.has_variants():
-            self.compute_mu_ms()
-        self.estimate_passenger_genes_r2()
+        if separate_c:
+            # A single mu_gs is not defined by one `c` here, so the
+            # usual recomputation would be meaningless. Move the
+            # coefficients out of `cov_effects` entirely so nothing
+            # downstream can read a (2, n) array as the shared vector.
+            self._channel_cov_effects = np.asarray(self.cov_effects)
+            self.cov_effects = None
+        else:
+            self._channel_cov_effects = None
+            self.compute_mu_gs()
+            if self.dataset.has_variants():
+                self.compute_mu_ms()
+            self.estimate_passenger_genes_r2()
 
         if is_mcmc:
             return self.cov_effects_posteriors
+        elif separate_c:
+            return self._channel_cov_effects
         else:
             return self.cov_effects
+
+    @property
+    def channel_cov_effects(self):
+        """Per-channel coefficients from a ``separate_c`` fit.
+
+        Shape ``(2, n_coeffs)``: row 0 synonymous, row 1
+        non-synonymous. Deliberately separate from
+        :attr:`cov_effects`, which always means the shared vector.
+        """
+        if self._channel_cov_effects is None:
+            raise ValueError(
+                "No separate-c fit available. Call "
+                "estimate_channel_rg_cov_effects(separate_c=True) "
+                "first."
+            )
+        return self._channel_cov_effects
+
+    def channel_rg_log_likelihood_at_fit(self):
+        """Marginal log-likelihood at the fitted ``c`` and ``θ``.
+
+        Evaluates the same objective the fit maximised, so a shared
+        and a separate fit on identical data can be compared
+        directly: the shared model is nested inside the separate one
+        at ``c^(syn) = c^(nonsyn)``, so
+        ``2 * (ll_separate - ll_shared)`` is a likelihood-ratio
+        statistic on ``n_coeffs`` degrees of freedom.
+
+        The constant Poisson term dropped by the likelihood is the
+        same for both models, so it cancels in the difference.
+        """
+        from .estimate_rg import channel_rg_log_likelihood
+
+        if self._rg_statistics is None or self._rg_theta is None:
+            raise ValueError(
+                "No r_g fit available. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+
+        stats = self._rg_statistics
+        cov = self.cov_matrix.loc[stats["genes"]].values
+        cov_ext = np.concatenate(
+            [np.ones((cov.shape[0], 1)), cov], axis=1
+        )
+
+        if self._rg_separate_c:
+            coeffs = self.channel_cov_effects
+            eta_silent = cov_ext @ coeffs[0]
+            eta_non_silent = cov_ext @ coeffs[1]
+        else:
+            eta_silent = cov_ext @ np.asarray(self.cov_effects)
+            eta_non_silent = None
+
+        return float(
+            channel_rg_log_likelihood(
+                eta_silent=eta_silent,
+                eta_non_silent=eta_non_silent,
+                theta=self.rg_theta,
+                counts_silent=stats["counts_silent"].values,
+                counts_non_silent=stats["counts_non_silent"].values,
+                baseline_silent=stats["baseline_silent"].values,
+                baseline_non_silent=stats[
+                    "baseline_non_silent"
+                ].values,
+            )
+        )
 
     @property
     def rg_theta(self):

@@ -16,6 +16,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `compute_mutation_burden.py` | Synonymous burden, ℓ̂ estimation |
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
+| `estimate_rg.py` | Shared per-gene rate correction `r_g`, marginalized |
 | `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
@@ -315,6 +316,42 @@ is untouched and still the default everywhere.
   μ, so unlike the Bernoulli split there is no overlap to correct.
 - The counts come from `mutation_db` grouped differently, not from
   anything new extracted from the MAFs.
+
+## Per-gene rate correction `r_g` (`estimate_rg.py`)
+
+The full unified model: `r_g ~ Gamma(θ, 1/θ)` scaling both
+consequence channels of a gene, on top of the two-channel Poisson
+likelihood. Shared across channels by necessity, not convenience —
+a driver's non-synonymous counts are selection-contaminated, so only
+the silent channel can inform its own rate.
+
+- **`r_g` is integrated out analytically.** Given `r_g`, a gene's
+  Poisson terms depend on the data only through `S_g = Σ_j N_g^j` and
+  `A_g = Σ_j μ̄_g^j`, so the Gamma integral closes:
+  `lnΓ(θ+S) - lnΓ(θ) + θlogθ - (θ+S)log(θ+M)` (plus a constant).
+  Checked against numerical quadrature at three θ values in
+  `tests/test_estimate_rg.py`, not re-derived on paper.
+- Three consequences: the fit is over `(c, θ)` only (no ~17k latent
+  parameters, and no MAP pathology from a Gamma density that diverges
+  at 0 when θ<1); the likelihood collapses to four per-gene vectors
+  instead of genes × samples matrices; and `r_g`'s posterior is
+  exactly `Gamma(θ+S_g, θ+M_g)`, so its mean is closed-form.
+- That closed form is what makes the **production/evaluation split
+  structural**: `r_g_production()` takes both channels' statistics,
+  `r_g_silent_only_for_evaluation()` takes only the silent channel's
+  and *has no argument through which non-silent data could reach it*.
+  Not a flag on one function — the plan this implements is explicit
+  that a boolean would be too easy to call wrong, and the leakage it
+  guards against is what killed an earlier attempt.
+- θ is a single per-cohort hyperparameter, fit as `log θ` under a
+  Uniform prior because θ spans orders of magnitude (dNdScv reports
+  ~1 to ~250 on this data). θ landing on a prior bound is a signal to
+  investigate, not a number to report. Subdividing θ (e.g. by gene
+  length) is deliberately not offered as a first pass.
+- Applying `r_g` is always explicit at the call site:
+  `estimate_passenger_genes_r2(gene_scaling=...)`. A scaled R² is
+  returned but **never stored**, so it cannot be read back as the
+  model's own number.
 
 ## General conventions
 

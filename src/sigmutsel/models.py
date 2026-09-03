@@ -2462,6 +2462,8 @@ class Model:
     _passenger_genes_r2: float = None
     _passenger_genes_r2_non_silent: float = None
     _passenger_genes_r2_non_silent_counts: float = None
+    _rg_theta: float = None
+    _rg_statistics: dict = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
     mu_ms: pd.DataFrame = None
@@ -2520,6 +2522,8 @@ class Model:
         self._passenger_genes_r2 = None
         self._passenger_genes_r2_non_silent = None
         self._passenger_genes_r2_non_silent_counts = None
+        self._rg_theta = None
+        self._rg_statistics = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
         self.mu_ms = None
@@ -6322,6 +6326,341 @@ class Model:
         else:
             return self.cov_effects
 
+    def _channel_gene_statistics(
+        self, include_drivers=True, excluded_samples=None
+    ):
+        """Per-gene sufficient statistics for the ``r_g`` likelihood.
+
+        With ``r_g`` marginalized out (see :mod:`sigmutsel.estimate_rg`),
+        each channel's Poisson terms depend on the data only through
+        per-gene totals, so the genes × samples matrices collapse to
+        four aligned vectors.
+
+        Returns
+        -------
+        dict
+            ``genes`` (the silent channel's gene set ``G``, the index
+            everything else is aligned to), ``counts_silent``,
+            ``counts_non_silent``, ``baseline_silent``,
+            ``baseline_non_silent`` (all ``pd.Series`` over ``genes``,
+            with zeros for genes outside the non-synonymous set), and
+            ``in_non_silent`` (the passenger gene index).
+        """
+        from .estimate_presence import filter_passenger_genes_ensembl
+
+        complete_genes = self.cov_matrix.index[
+            ~self.cov_matrix.isna().any(axis=1)
+        ]
+        passenger_genes = pd.Index(
+            filter_passenger_genes_ensembl(complete_genes)
+        )
+        silent_genes = (
+            complete_genes if include_drivers else passenger_genes
+        )
+
+        def _sums(frame, genes):
+            frame = frame.reindex(
+                index=genes,
+                columns=self._base_mus_syn.columns,
+                fill_value=0,
+            )
+            if excluded_samples is not None:
+                frame = frame[
+                    frame.columns.difference(excluded_samples)
+                ]
+            return frame.sum(axis=1)
+
+        def _baseline(frame, genes):
+            frame = frame.loc[genes]
+            if excluded_samples is not None:
+                frame = frame[
+                    frame.columns.difference(excluded_samples)
+                ]
+            return frame.sum(axis=1)
+
+        zeros = pd.Series(0.0, index=silent_genes)
+        counts_non_silent = zeros.add(
+            _sums(
+                self.dataset.genes_counts_non_silent, passenger_genes
+            ),
+            fill_value=0.0,
+        ).loc[silent_genes]
+        baseline_non_silent = zeros.add(
+            _baseline(self._base_mus_nonsyn, passenger_genes),
+            fill_value=0.0,
+        ).loc[silent_genes]
+
+        return {
+            "genes": silent_genes,
+            "counts_silent": _sums(
+                self.dataset.genes_counts_silent, silent_genes
+            ),
+            "counts_non_silent": counts_non_silent,
+            "baseline_silent": _baseline(
+                self._base_mus_syn, silent_genes
+            ),
+            "baseline_non_silent": baseline_non_silent,
+            "in_non_silent": passenger_genes,
+        }
+
+    def estimate_channel_rg_cov_effects(
+        self,
+        sample="MAP",
+        chains=4,
+        burn=1000,
+        tol=0.05,
+        excluded_samples=None,
+        include_drivers=True,
+    ):
+        """Fit the full unified model: shared ``c``, ``θ`` and ``r_g``.
+
+        Stage 4 of the channel-split model. Adds a per-gene rate
+        correction ``r_g ~ Gamma(θ, 1/θ)``, shared across both
+        consequence channels, on top of the two-channel Poisson
+        likelihood. ``r_g`` is integrated out analytically, so the fit
+        is over ``c`` and ``θ`` only -- see
+        :mod:`sigmutsel.estimate_rg` for the closed form and why it
+        matters.
+
+        Afterwards, ``self.rg_theta`` holds the fitted θ and the two
+        ``r_g`` variants are available through
+        :meth:`compute_r_g_production` and
+        :meth:`compute_r_g_for_evaluation`. Neither is applied to
+        ``mu_gs`` automatically: which one a number was computed with
+        is exactly the thing that must never be ambiguous, so applying
+        ``r_g`` is always an explicit act at the call site.
+
+        Parameters
+        ----------
+        sample, chains, burn, tol, excluded_samples, include_drivers
+            As in :meth:`estimate_channel_cov_effects`. The same
+            ``excluded_samples`` must be used here and in any later
+            ``r_g`` or R² call, since the per-gene statistics are sums
+            over whichever samples were kept.
+
+        Returns
+        -------
+        np.ndarray | arviz.InferenceData
+            The shared coefficient vector (MAP) or its posterior.
+
+        Raises
+        ------
+        ValueError
+            If the channel baselines, the channel count matrices, or
+            the covariate matrix are missing.
+        NotImplementedError
+            If ``base_mus`` is signature-separated.
+        """
+        from .estimate_rg import estimate_channel_rg_effect
+
+        cov_effects_kwargs = dict(self.cov_effects_kwargs)
+        signature = inspect.signature(estimate_channel_rg_effect)
+        lower_bounds_value = cov_effects_kwargs.get(
+            "lower_bounds_c",
+            signature.parameters["lower_bounds_c"].default,
+        )
+        upper_bounds_value = cov_effects_kwargs.get(
+            "upper_bounds_c",
+            signature.parameters["upper_bounds_c"].default,
+        )
+
+        if not self.has_channel_base_mus():
+            raise ValueError(
+                "Channel baseline rates not computed. Call "
+                "compute_channel_base_mus() first."
+            )
+        if isinstance(self._base_mus_syn, dict):
+            raise NotImplementedError(
+                "estimate_channel_rg_cov_effects has no "
+                "signature-separated mode."
+            )
+        if not self.dataset.has_channel_counts():
+            raise ValueError(
+                "Channel count matrices not computed in dataset. "
+                "Call dataset.compute_gene_counts_channels() first."
+            )
+        if self.cov_matrix is None:
+            raise ValueError(
+                "Covariate matrix is None. Cannot estimate covariate "
+                "effects without covariates."
+            )
+
+        if isinstance(sample, int) or (
+            isinstance(sample, str) and sample.lower() == "full"
+        ):
+            draws = 4000
+            is_mcmc = True
+        elif isinstance(sample, str) and sample.lower() == "map":
+            draws = 1
+            is_mcmc = False
+        else:
+            raise ValueError(
+                f"sample must be 'MAP', 'full', or an integer, "
+                f"got {sample}"
+            )
+
+        stats = self._channel_gene_statistics(
+            include_drivers=include_drivers,
+            excluded_samples=excluded_samples,
+        )
+        self._rg_statistics = stats
+        self._n_in_cov_effects_estimation = len(
+            stats["in_non_silent"]
+        )
+
+        logger.info(
+            f"Fitting shared c and theta over {len(stats['genes'])} "
+            f"genes (drivers "
+            f"{'included' if include_drivers else 'excluded'}), "
+            f"{len(stats['in_non_silent'])} of them in the "
+            "non-silent channel"
+        )
+
+        result = estimate_channel_rg_effect(
+            counts_silent=stats["counts_silent"].values,
+            baseline_silent=stats["baseline_silent"].values,
+            counts_non_silent=stats["counts_non_silent"].values,
+            baseline_non_silent=stats["baseline_non_silent"].values,
+            cov_matrix=self.cov_matrix.loc[stats["genes"]].values,
+            draws=draws,
+            chains=chains,
+            burn=burn,
+            **cov_effects_kwargs,
+        )
+
+        if is_mcmc:
+            import arviz as az
+
+            self.cov_effects_posteriors = result
+            self.cov_effects = (
+                az.extract(result, var_names=["c"])
+                .mean(dim="sample")
+                .values
+            )
+            self._rg_theta = float(
+                np.exp(
+                    az.extract(result, var_names=["log_theta"])
+                    .mean(dim="sample")
+                    .values
+                )
+            )
+            summary = az.summary(result, var_names=["c", "log_theta"])
+            logger.info("Posterior summary:\n%s", summary.to_string())
+            candidates = (
+                (
+                    summary["hdi_3%"].to_numpy()[
+                        : len(self.cov_effects)
+                    ],
+                    summary["hdi_97%"].to_numpy()[
+                        : len(self.cov_effects)
+                    ],
+                )
+                if {"hdi_3%", "hdi_97%"} <= set(summary.columns)
+                else None
+            )
+            mode_desc = "Posterior HDI"
+        else:
+            self.cov_effects = result["c"]
+            self._rg_theta = float(np.exp(result["log_theta"]))
+            candidates = (self.cov_effects, self.cov_effects)
+            mode_desc = "MAP estimates"
+
+        logger.info(f"Fitted theta = {self._rg_theta:.4g}")
+
+        lower_bounds_arr, upper_bounds_arr = (
+            self._resolve_covariate_bounds(
+                self.cov_effects.shape,
+                lower_bounds_value,
+                upper_bounds_value,
+            )
+        )
+        if candidates is not None:
+            self._warn_if_near_bounds(
+                lower_candidate=candidates[0],
+                upper_candidate=candidates[1],
+                lower_bounds=lower_bounds_arr,
+                upper_bounds=upper_bounds_arr,
+                tol=tol,
+                mode_desc=mode_desc,
+            )
+
+        self.compute_mu_gs()
+        if self.dataset.has_variants():
+            self.compute_mu_ms()
+        self.estimate_passenger_genes_r2()
+
+        if is_mcmc:
+            return self.cov_effects_posteriors
+        else:
+            return self.cov_effects
+
+    @property
+    def rg_theta(self):
+        """Fitted Gamma shape θ for ``r_g`` (lazy)."""
+        if self._rg_theta is None:
+            raise ValueError(
+                "theta not fitted. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+        return self._rg_theta
+
+    def _rg_expectations(self):
+        """Covariate-scaled per-gene expectations for both channels."""
+        if self._rg_statistics is None or self._rg_theta is None:
+            raise ValueError(
+                "No r_g fit available. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+        stats = self._rg_statistics
+        eta = pd.Series(
+            self.cov_matrix.loc[stats["genes"]].values
+            @ np.asarray(self.cov_effects)[1:]
+            + np.asarray(self.cov_effects)[0],
+            index=stats["genes"],
+        )
+        scale = np.exp(eta)
+        return (
+            stats["baseline_silent"] * scale,
+            stats["baseline_non_silent"] * scale,
+        )
+
+    def compute_r_g_production(self):
+        """Per-gene ``r_g`` from **both** channels -- the paper number.
+
+        Wraps :func:`estimate_rg.r_g_production`. Use this for
+        published rates; never for a reported R², which must use
+        :meth:`compute_r_g_for_evaluation` instead.
+        """
+        from .estimate_rg import r_g_production
+
+        expected_silent, expected_non_silent = self._rg_expectations()
+        return r_g_production(
+            counts_silent=self._rg_statistics["counts_silent"],
+            counts_non_silent=self._rg_statistics[
+                "counts_non_silent"
+            ],
+            expected_silent=expected_silent,
+            expected_non_silent=expected_non_silent,
+            theta=self.rg_theta,
+        )
+
+    def compute_r_g_for_evaluation(self):
+        """Per-gene ``r_g`` from the **silent channel only**.
+
+        Wraps :func:`estimate_rg.r_g_silent_only_for_evaluation`,
+        which has no argument through which non-silent data could
+        reach it. Scale ``μ^(nonsyn)`` by this before scoring against
+        non-silent counts, and the score is honest by construction.
+        """
+        from .estimate_rg import r_g_silent_only_for_evaluation
+
+        expected_silent, _ = self._rg_expectations()
+        return r_g_silent_only_for_evaluation(
+            counts_silent=self._rg_statistics["counts_silent"],
+            expected_silent=expected_silent,
+            theta=self.rg_theta,
+        )
+
     def _resolve_covariate_bounds(
         self, coeffs_shape, lower_value, upper_value
     ):
@@ -6482,6 +6821,7 @@ class Model:
         sample_weights=None,
         excluded_samples=None,
         target="any",
+        gene_scaling=None,
     ):
         """Estimate R² for passenger gene mutation frequency predictions.
 
@@ -6549,6 +6889,19 @@ class Model:
             number whenever the model being scored has seen silent
             counts, and match the target to the likelihood the model
             was fit with.
+        gene_scaling : pd.Series or None, default None
+            Optional per-gene multiplier applied to the rates before
+            scoring -- in practice, a ``r_g``. Genes absent from it
+            get 1.0.
+
+            There is deliberately no "use r_g" flag: the caller passes
+            the ``r_g`` it means, and the two constructors are named
+            so the choice is legible at the call site --
+            ``gene_scaling=model.compute_r_g_for_evaluation()`` for a
+            reportable R², ``compute_r_g_production()`` for the
+            published rates. A scaled result is **not stored** in any
+            attribute, only returned, so it can never be mistaken for
+            the model's own unscaled R².
 
         Returns
         -------
@@ -6717,6 +7070,12 @@ class Model:
             observed_source = self.dataset.genes_counts_non_silent
             rates = self.compute_channel_mu_gs("nonsyn")
 
+        if gene_scaling is not None:
+            rates = rates.mul(
+                gene_scaling.reindex(rates.index, fill_value=1.0),
+                axis=0,
+            )
+
         # Identify passenger genes
         passenger_gene_ids = filter_passenger_genes_ensembl(
             rates.index
@@ -6803,12 +7162,17 @@ class Model:
         # and silently redefining it depending on the last call's
         # `target` is exactly the kind of ambiguity this evaluation is
         # supposed to remove.
-        if target == "any":
-            self._passenger_genes_r2 = r2
-        elif target == "non_silent":
-            self._passenger_genes_r2_non_silent = r2
-        else:
-            self._passenger_genes_r2_non_silent_counts = r2
+        # A gene_scaling'd number is a different quantity (it
+        # depends on which r_g the caller chose), so it is returned
+        # and never stored -- nothing downstream can then read it as
+        # the model's own R².
+        if gene_scaling is None:
+            if target == "any":
+                self._passenger_genes_r2 = r2
+            elif target == "non_silent":
+                self._passenger_genes_r2_non_silent = r2
+            else:
+                self._passenger_genes_r2_non_silent_counts = r2
 
         return r2
 

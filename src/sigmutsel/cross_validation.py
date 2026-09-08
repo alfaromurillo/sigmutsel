@@ -143,6 +143,7 @@ def channel_gene_cv_passenger_r2(
     random_state=None,
     excluded_samples=None,
     channel_rg_kwargs=None,
+    return_per_gene=False,
 ):
     """Gene-level k-fold CV for the consequence-split ``r_g`` model.
 
@@ -187,12 +188,26 @@ def channel_gene_cv_passenger_r2(
         ``sample``, ``include_drivers``, ``separate_c``).
         ``train_genes`` is always set by this function and cannot be
         overridden this way.
+    return_per_gene : bool, default False
+        If True, also collect each fold's per-gene observed/expected
+        pair for its held-out genes, concatenated across folds into
+        one gene-indexed frame under the ``per_gene`` key. Every
+        passenger gene appears exactly once, scored from the fold in
+        which it was held out.
 
     Returns
     -------
     dict
         Same shape as :func:`gene_cv_passenger_r2`'s return value:
-        ``fold_r2``, ``mean``, ``std``, ``n_genes``.
+        ``fold_r2``, ``mean``, ``std``, ``n_genes``; plus ``per_gene``
+        when ``return_per_gene`` is True.
+
+        Prefer ``per_gene`` over ``fold_r2`` when comparing two
+        models. ``fold_r2`` gives only ``n_splits`` numbers, and its
+        folds share training data, so a t-test over them is
+        low-powered and anti-conservative; the per-gene residuals give
+        one observation per gene instead. Genes are not independent
+        either -- resample genomic blocks, not individual genes.
     """
     if model.cov_matrix is None:
         raise ValueError(
@@ -213,6 +228,7 @@ def channel_gene_cv_passenger_r2(
         n_splits=n_splits, shuffle=True, random_state=random_state
     )
     fold_r2 = []
+    per_gene_frames = []
     for fold, (train_idx, test_idx) in enumerate(
         kf.split(passenger_genes), start=1
     ):
@@ -227,18 +243,27 @@ def channel_gene_cv_passenger_r2(
             excluded_samples=excluded_samples,
             **channel_rg_kwargs,
         )
-        r2 = model.estimate_passenger_genes_r2(
+        scored = model.estimate_passenger_genes_r2(
             excluded_samples=excluded_samples,
             target="non_silent_counts",
             gene_scaling=model.compute_r_g_for_evaluation(),
             genes=test_genes,
+            return_per_gene=return_per_gene,
         )
+        if return_per_gene:
+            r2, per_gene = scored
+            per_gene_frames.append(per_gene.assign(fold=fold))
+        else:
+            r2 = scored
         fold_r2.append(r2)
 
     fold_r2 = np.array(fold_r2)
-    return {
+    result = {
         "fold_r2": fold_r2.tolist(),
         "mean": float(fold_r2.mean()),
         "std": float(fold_r2.std()),
         "n_genes": len(passenger_genes),
     }
+    if return_per_gene:
+        result["per_gene"] = pd.concat(per_gene_frames)
+    return result

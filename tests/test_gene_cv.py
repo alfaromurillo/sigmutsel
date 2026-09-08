@@ -285,11 +285,23 @@ class _StubChannelModel:
         target="any",
         gene_scaling=None,
         genes=None,
+        return_per_gene=False,
     ):
         genes = set(genes)
         self.target_calls.append(target)
         self.test_gene_calls.append(genes)
-        return float(len(genes))  # deterministic fake "r2" per fold
+        r2 = float(len(genes))  # deterministic fake "r2" per fold
+        if return_per_gene:
+            ordered = sorted(genes)
+            per_gene = pd.DataFrame(
+                {
+                    "observed": range(len(ordered)),
+                    "expected": range(len(ordered)),
+                },
+                index=ordered,
+            )
+            return r2, per_gene
+        return r2
 
 
 def test_channel_gene_cv_passenger_r2_folds_partition_gene_universe():
@@ -314,6 +326,47 @@ def test_channel_gene_cv_passenger_r2_folds_partition_gene_universe():
         assert not (all_test_genes & test)
         all_test_genes |= test
     assert all_test_genes == set(genes)
+
+
+def test_channel_gene_cv_per_gene_covers_every_gene_once():
+    """return_per_gene must return one row per passenger gene, scored
+    from the fold in which that gene was held out -- the property the
+    whole point of the option depends on. Aggregating to fold_r2
+    leaves only n_splits numbers to compare two models with; these
+    rows are the ~10^4 observations a block bootstrap resamples."""
+    genes = [f"ENSG_{i:03d}" for i in range(10)]
+    cov_matrix = pd.DataFrame({"cov1": range(10)}, index=genes)
+    model = _StubChannelModel(cov_matrix)
+
+    result = channel_gene_cv_passenger_r2(
+        model, n_splits=5, random_state=0, return_per_gene=True
+    )
+
+    per_gene = result["per_gene"]
+    assert set(per_gene.index) == set(genes)
+    assert len(per_gene) == len(genes)  # exactly once, no duplicates
+    assert set(per_gene.columns) == {"observed", "expected", "fold"}
+    assert set(per_gene["fold"]) == {1, 2, 3, 4, 5}
+
+
+def test_channel_gene_cv_per_gene_default_off_and_scores_unchanged():
+    """The default must stay a plain dict with no per_gene key, and
+    turning the option on must not perturb the fold scores."""
+    genes = [f"ENSG_{i:03d}" for i in range(10)]
+    cov_matrix = pd.DataFrame({"cov1": range(10)}, index=genes)
+
+    plain = channel_gene_cv_passenger_r2(
+        _StubChannelModel(cov_matrix), n_splits=5, random_state=0
+    )
+    with_per_gene = channel_gene_cv_passenger_r2(
+        _StubChannelModel(cov_matrix),
+        n_splits=5,
+        random_state=0,
+        return_per_gene=True,
+    )
+
+    assert "per_gene" not in plain
+    assert plain["fold_r2"] == with_per_gene["fold_r2"]
 
 
 def test_channel_gene_cv_passenger_r2_requires_cov_matrix():

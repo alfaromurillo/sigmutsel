@@ -7106,6 +7106,7 @@ class Model:
         target="any",
         gene_scaling=None,
         genes=None,
+        return_per_gene=False,
     ):
         """Estimate R² for passenger gene mutation frequency predictions.
 
@@ -7194,6 +7195,11 @@ class Model:
             gene set and score here on the held-out genes, for
             gene-level cross-validation (see :func:`cross_validation.
             gene_cv_passenger_r2`).
+        return_per_gene : bool, default False
+            If True, also return the per-gene observed/expected pair
+            the R² is computed from. Needed to compare two models with
+            anything better than a handful of fold-level R² values --
+            see the Returns section.
 
         Returns
         -------
@@ -7203,6 +7209,18 @@ class Model:
             - 1.0: Perfect predictions
             - 0.0: Model performs as well as predicting the mean
             - < 0: Model performs worse than predicting the mean
+        pandas.DataFrame
+            Only when ``return_per_gene`` is True: gene-indexed
+            ``observed``/``expected`` columns, the two vectors the R²
+            summarises. Use these rather than fold-level R² when
+            testing whether one model beats another: k-fold CV gives
+            only k numbers, and its folds share training data, so a
+            t-test over them is both low-powered and anti-conservative.
+            Per-gene residuals give ~10^4 observations instead --
+            though genes are *not* independent (this pipeline's
+            covariates carry real megabase-scale spatial
+            autocorrelation), so resample genomic blocks, not
+            individual genes.
 
         Raises
         ------
@@ -7474,6 +7492,25 @@ class Model:
                 self._passenger_genes_r2_non_silent = r2
             else:
                 self._passenger_genes_r2_non_silent_counts = r2
+
+        if return_per_gene:
+            # The per-gene observed/expected pair this R² is computed
+            # from. Returned rather than stored: a caller comparing
+            # two models needs both vectors side by side, and an
+            # attribute would be overwritten by the next call.
+            #
+            # Aggregating ~15k genes into a single R² throws away the
+            # only axis with enough n to test on. Fold-level R² gives
+            # 5 numbers; these give one residual per gene, which a
+            # block bootstrap over genomic windows can resample --
+            # necessary here because gene residuals are spatially
+            # correlated (this pipeline's own covariates carry real
+            # megabase-scale autocorrelation), so genes are not
+            # independent draws.
+            per_gene = pd.DataFrame(
+                {"observed": present_sum, "expected": expected}
+            )
+            return r2, per_gene
 
         return r2
 

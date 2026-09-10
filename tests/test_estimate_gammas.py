@@ -16,6 +16,7 @@ informative region instead.
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from sigmutsel import constants
 from sigmutsel.estimate_gammas import (
@@ -200,6 +201,113 @@ def test_estimate_gamma_variant_no_excluded_samples_unchanged(
 
     assert captured["yes_index"] == ["T1", "T3"]
     assert captured["no_index"] == ["T2", "T4"]
+
+
+# --- The mu posterior cut (2-D mus_yes/mus_no). With 1-D mus,
+# --- gamma's interval reflects only the Bernoulli sampling term and
+# --- treats mu as known exactly. These tests check that 2-D
+# --- (draws, tumors) input actually widens gamma's interval with
+# --- wider mu uncertainty, and that a near-point-mass 2-D input
+# --- reproduces the 1-D result -- not just that the code runs.
+
+
+def _lognormal_draws(point_mus, sigma, n_draws, rng):
+    """(n_draws, len(point_mus)) draws with the given point means."""
+    return np.exp(
+        rng.normal(
+            loc=np.log(point_mus),
+            scale=sigma,
+            size=(n_draws, len(point_mus)),
+        )
+    )
+
+
+def test_2d_near_point_mass_matches_1d_estimate():
+    """Near-zero mu uncertainty (2-D input, tiny spread) should
+    reproduce roughly the same gamma estimate as the 1-D (mu-known)
+    call on the same point values."""
+    rng = np.random.default_rng(0)
+    mus_yes_2d = _lognormal_draws(_MUS_YES, 1e-4, 200, rng)
+    mus_no_2d = _lognormal_draws(_MUS_NO, 1e-4, 200, rng)
+
+    constants.random_seed = 0
+    result_1d = estimate_gamma_from_mus(
+        _MUS_YES,
+        _MUS_NO,
+        draws=1000,
+        burn=500,
+        upper_bound_prior=1e6,
+        auto_raise_target_accept=False,
+    )
+    result_2d = estimate_gamma_from_mus(
+        mus_yes_2d,
+        mus_no_2d,
+        draws=1000,
+        burn=500,
+        upper_bound_prior=1e6,
+        auto_raise_target_accept=False,
+    )
+    constants.random_seed = None
+
+    mean_1d = float(result_1d.posterior["gamma"].values.mean())
+    mean_2d = float(result_2d.posterior["gamma"].values.mean())
+    assert max(mean_1d, mean_2d) / min(mean_1d, mean_2d) < 1.5
+
+
+def test_wider_mu_uncertainty_widens_gamma_posterior():
+    """More spread in the mu posterior draws should propagate into a
+    wider gamma posterior, not just a shifted mean -- the whole point
+    of the cut over today's mu-known-exactly behavior.
+
+    Uses a small tumor count (unlike ``_MUS_YES``/``_MUS_NO``'s ~120):
+    with many i.i.d.-ish tumors the per-tumor cut priors partly
+    average out in their effect on the single shared gamma, which
+    washed out the contrast at the module's usual scale."""
+    mus_yes = np.array([0.5, 0.55, 0.52])
+    mus_no = np.array([0.05, 0.06, 0.04, 0.05, 0.03])
+
+    rng = np.random.default_rng(1)
+    mus_yes_narrow = _lognormal_draws(mus_yes, 0.02, 300, rng)
+    mus_no_narrow = _lognormal_draws(mus_no, 0.02, 300, rng)
+    mus_yes_wide = _lognormal_draws(mus_yes, 1.0, 300, rng)
+    mus_no_wide = _lognormal_draws(mus_no, 1.0, 300, rng)
+
+    constants.random_seed = 1
+    result_narrow = estimate_gamma_from_mus(
+        mus_yes_narrow,
+        mus_no_narrow,
+        draws=2000,
+        burn=1000,
+        upper_bound_prior=1e6,
+        auto_raise_target_accept=False,
+    )
+    result_wide = estimate_gamma_from_mus(
+        mus_yes_wide,
+        mus_no_wide,
+        draws=2000,
+        burn=1000,
+        upper_bound_prior=1e6,
+        auto_raise_target_accept=False,
+    )
+    constants.random_seed = None
+
+    std_narrow = float(result_narrow.posterior["gamma"].values.std())
+    std_wide = float(result_wide.posterior["gamma"].values.std())
+    assert std_wide > 1.2 * std_narrow
+
+
+def test_mismatched_ndim_raises():
+    with pytest.raises(ValueError, match="1-D"):
+        estimate_gamma_from_mus(
+            np.ones((10, 5)), np.ones(20), draws=1
+        )
+
+
+def test_mismatched_draw_counts_raises():
+    with pytest.raises(ValueError, match="draws"):
+        estimate_gamma_from_mus(
+            np.ones((10, 5)), np.ones((20, 5)), draws=1
+        )
 
 
 def test_estimate_gamma_public_forwards_excluded_samples(monkeypatch):

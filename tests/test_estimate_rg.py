@@ -21,6 +21,8 @@ from scipy.stats import poisson
 from sigmutsel.estimate_rg import (
     channel_rg_log_likelihood,
     estimate_channel_rg_effect,
+    r_g_draws_for_evaluation,
+    r_g_draws_production,
     r_g_production,
     r_g_silent_only_for_evaluation,
 )
@@ -196,10 +198,226 @@ def test_theta_shrinks_more_when_small():
     assert weak > strong > 1.0
 
 
+# --- r_g_draws_production / r_g_draws_for_evaluation: feed gamma's
+# --- mu-posterior cut (see estimate_gammas.estimate_gamma_from_mus's
+# --- "mu posterior cut" note). r_g's posterior is exactly
+# --- Gamma(theta + S_g, theta + M_g), so these draw from it directly
+# --- rather than sampling -- check the draws' empirical moments
+# --- against that closed form, and check the same production/
+# --- evaluation separation as the point-estimate functions above.
+
+
+def test_r_g_draws_production_matches_closed_form_moments():
+    counts_silent = pd.Series([3.0, 10.0], index=["ENSG_A", "ENSG_B"])
+    counts_non_silent = pd.Series(
+        [5.0, 20.0], index=["ENSG_A", "ENSG_B"]
+    )
+    expected_silent = pd.Series(
+        [4.0, 9.0], index=["ENSG_A", "ENSG_B"]
+    )
+    expected_non_silent = pd.Series(
+        [6.0, 18.0], index=["ENSG_A", "ENSG_B"]
+    )
+    theta = 2.0
+
+    draws = r_g_draws_production(
+        counts_silent,
+        counts_non_silent,
+        expected_silent,
+        expected_non_silent,
+        theta,
+        n_draws=200_000,
+        rng=np.random.default_rng(0),
+    )
+
+    assert draws.shape == (200_000, 2)
+    assert list(draws.columns) == ["ENSG_A", "ENSG_B"]
+
+    counts = counts_silent + counts_non_silent
+    expected = expected_silent + expected_non_silent
+    expected_mean = (theta + counts) / (theta + expected)
+    # closed-form Gamma(theta+S, theta+M) variance
+    expected_var = (theta + counts) / (theta + expected) ** 2
+
+    assert draws.mean().sub(expected_mean).abs().max() < 0.01
+    assert draws.var().sub(expected_var).abs().max() < 0.01
+    # matches the point-estimate function's posterior mean exactly
+    pd.testing.assert_series_equal(
+        expected_mean,
+        r_g_production(
+            counts_silent,
+            counts_non_silent,
+            expected_silent,
+            expected_non_silent,
+            theta,
+        ),
+        check_names=False,
+    )
+
+
+def test_r_g_draws_for_evaluation_matches_closed_form_moments():
+    counts_silent = pd.Series([3.0, 10.0], index=["ENSG_A", "ENSG_B"])
+    expected_silent = pd.Series(
+        [4.0, 9.0], index=["ENSG_A", "ENSG_B"]
+    )
+    theta = 2.0
+
+    draws = r_g_draws_for_evaluation(
+        counts_silent,
+        expected_silent,
+        theta,
+        n_draws=200_000,
+        rng=np.random.default_rng(0),
+    )
+
+    expected_mean = (theta + counts_silent) / (
+        theta + expected_silent
+    )
+    assert draws.mean().sub(expected_mean).abs().max() < 0.01
+
+
+def test_r_g_draws_evaluation_cannot_receive_non_silent_data():
+    """Same structural separation as
+    ``test_evaluation_r_g_cannot_receive_non_silent_data`` above."""
+    import inspect
+
+    params = set(
+        inspect.signature(r_g_draws_for_evaluation).parameters
+    )
+    assert not any("non_silent" in p for p in params)
+
+
+def test_r_g_draws_production_and_evaluation_differ_like_point_estimates():
+    """The draws' means should reproduce the same production >
+    evaluation gap the point-estimate functions show for a gene with
+    a big non-silent excess -- the leakage the evaluation variant
+    exists to avoid, now visible in the sampled distribution too."""
+    counts_silent = pd.Series([0.0, 5.0, 2.0], index=_GENES)
+    counts_non_silent = pd.Series([1.0, 20.0, 0.0], index=_GENES)
+    expected_silent = pd.Series([1.0, 2.0, 2.0], index=_GENES)
+    expected_non_silent = pd.Series([4.0, 8.0, 8.0], index=_GENES)
+    theta = 5.0
+
+    rng = np.random.default_rng(0)
+    production_draws = r_g_draws_production(
+        counts_silent,
+        counts_non_silent,
+        expected_silent,
+        expected_non_silent,
+        theta,
+        n_draws=100_000,
+        rng=rng,
+    )
+    evaluation_draws = r_g_draws_for_evaluation(
+        counts_silent,
+        expected_silent,
+        theta,
+        n_draws=100_000,
+        rng=rng,
+    )
+
+    assert (
+        production_draws["ENSG_B"].mean()
+        > evaluation_draws["ENSG_B"].mean()
+    )
+
+
 def _rg_model(tmp_path, **kwargs):
     model = _model_with_channels(tmp_path, **kwargs)
     model.dataset.compute_gene_counts_channels()
     return model
+
+
+# --- Model.compute_mu_g_posterior_draws: the piece that actually
+# --- builds the 2-D draws for gamma's mu-posterior cut (see
+# --- estimate_gammas.estimate_gamma_from_mus's "mu posterior cut"
+# --- note), with an explicit choice of which r_g feeds it.
+# --- Validation-only cases don't need a real fit; the rest run one
+# --- real (tiny, ~seconds) MCMC fit via
+# --- estimate_channel_rg_cov_effects(sample="full") and check the
+# --- draws it produces.
+
+
+def test_mu_g_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
+    model = _rg_model(tmp_path)
+    with pytest.raises(ValueError, match="r_g_variant"):
+        model.compute_mu_g_posterior_draws(
+            "ENSG_A", r_g_variant="bogus"
+        )
+
+
+def test_mu_g_posterior_draws_requires_a_fit(tmp_path):
+    model = _rg_model(tmp_path)
+    with pytest.raises(ValueError, match="No covariate-effect"):
+        model.compute_mu_g_posterior_draws("ENSG_A")
+
+
+def test_mu_g_posterior_draws_shape_positivity_and_columns(tmp_path):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+
+    draws = model.compute_mu_g_posterior_draws(
+        "ENSG_B", r_g_variant="none"
+    )
+
+    assert draws.shape[1] == len(model._base_mus_nonsyn.columns)
+    assert list(draws.columns) == list(model._base_mus_nonsyn.columns)
+    assert (draws.to_numpy() > 0).all()
+
+
+def test_mu_g_posterior_draws_evaluation_r_g_close_to_point_estimate(
+    tmp_path,
+):
+    """r_g_variant="evaluation" should scale the r_g-free draws by
+    roughly compute_r_g_for_evaluation()'s point value for that gene
+    -- both come from the same closed-form posterior mean."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+
+    draws_none = model.compute_mu_g_posterior_draws(
+        "ENSG_B", r_g_variant="none"
+    )
+    draws_eval = model.compute_mu_g_posterior_draws(
+        "ENSG_B",
+        r_g_variant="evaluation",
+        rng=np.random.default_rng(0),
+    )
+    point_r_g = model.compute_r_g_for_evaluation()["ENSG_B"]
+
+    ratio = (
+        draws_eval.to_numpy().mean() / draws_none.to_numpy().mean()
+    )
+    assert abs(ratio - point_r_g) < 0.1
+
+
+def test_mu_g_posterior_draws_n_draws_exceeds_available_raises(
+    tmp_path,
+):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+
+    n_available = (
+        model.cov_effects_posteriors.posterior.sizes["draw"]
+        * model.cov_effects_posteriors.posterior.sizes["chain"]
+    )
+    with pytest.raises(ValueError, match="posterior draws"):
+        model.compute_mu_g_posterior_draws(
+            "ENSG_B", n_draws=n_available + 1
+        )
+
+
+def test_mu_g_posterior_draws_unknown_gene_raises(tmp_path):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+    # The gene-name fallback path needs a "gene" column, which the
+    # synthetic mutation_db above doesn't carry (real ones do -- see
+    # _estimate_gamma_gene's identical lookup).
+    model.dataset._mutation_db = model.dataset.mutation_db.assign(
+        gene=model.dataset.mutation_db["ensembl_gene_id"]
+    )
+
+    with pytest.raises(ValueError, match="not found"):
+        model.compute_mu_g_posterior_draws("NOT_A_GENE")
 
 
 def test_estimate_channel_rg_cov_effects_map(tmp_path):
@@ -536,3 +754,33 @@ def test_rg_fit_survives_save_and_load(tmp_path):
     pd.testing.assert_series_equal(
         loaded.compute_r_g_for_evaluation(), before["r_g"]
     )
+
+
+def test_cov_effects_posteriors_survive_save_and_load(tmp_path):
+    """A sample="full" fit's posterior must round-trip too, not just
+    the MAP-derived scalars above -- without it, a model reloaded in
+    a later session (e.g. on gauss, across separate runs) looks
+    un-fit to anything needing the posterior
+    (compute_mu_g_posterior_draws), forcing a full MCMC refit every
+    time instead of reusing the one already paid for."""
+    from sigmutsel.models import Model
+
+    model = _rg_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    model.estimate_channel_rg_cov_effects(sample="full")
+    assert model.has_cov_effects_posteriors()
+
+    before = model.compute_mu_g_posterior_draws(
+        "ENSG_B", r_g_variant="none"
+    )
+
+    out = tmp_path / "model"
+    model.save_model(out)
+    loaded = Model.load_model(out)
+
+    assert loaded.has_cov_effects_posteriors()
+    after = loaded.compute_mu_g_posterior_draws(
+        "ENSG_B", r_g_variant="none"
+    )
+    pd.testing.assert_frame_equal(before, after)

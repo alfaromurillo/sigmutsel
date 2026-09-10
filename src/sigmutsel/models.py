@@ -4597,6 +4597,19 @@ class Model:
                 directory / files["cov_effects"]
             )
 
+        if "cov_effects_posteriors" in files:
+            # save_model writes this whenever a full MCMC fit (not
+            # MAP) was run -- without restoring it here, a reloaded
+            # model silently looks un-fit to anything that needs the
+            # posterior (e.g. compute_mu_g_posterior_draws), forcing
+            # a full refit every session instead of reusing the
+            # saved one.
+            import arviz as az
+
+            model.cov_effects_posteriors = az.from_netcdf(
+                directory / files["cov_effects_posteriors"]
+            )
+
         if "mu_gs" in files:
             model._mu_gs = _load_dataframe(files["mu_gs"])
 
@@ -6995,6 +7008,221 @@ class Model:
             expected_silent=expected_silent,
             theta=self.rg_theta,
         )
+
+    def compute_mu_g_posterior_draws(
+        self, gene, r_g_variant="none", n_draws=None, rng=None
+    ):
+        """Per-tumor mu posterior draws for one gene's non-silent rate.
+
+        Feeds gamma's mu-posterior cut (see
+        :func:`.estimate_gammas.estimate_gamma_from_mus`'s "mu
+        posterior cut" note): mask the returned frame's columns into
+        present/absent tumor sets and pass each 2-D slice as
+        ``mus_yes``/``mus_no``.
+
+        ``mu_g^(nonsyn,j)`` combines two independent sources of
+        posterior uncertainty, multiplicatively:
+
+        1. The covariate-scale term ``exp(c . x_g)`` (plus, after a
+           ``separate_c="intercept"`` fit, that fit's own
+           non-synonymous ``delta_intercept``) -- drawn from
+           :attr:`cov_effects_posteriors`, i.e. requires
+           ``estimate_channel_rg_cov_effects(sample="full")`` (or an
+           integer draw count) to have been run.
+        2. ``r_g``, the per-gene rate correction -- drawn directly
+           from its own closed-form conjugate posterior (see
+           :mod:`.estimate_rg`), independently of the draw above.
+           No MCMC needed for this part; it is cheap by construction.
+
+        Treating these two as independent is an approximation (both
+        in fact come from the same joint fit), but is the same
+        practical simplification the module's r_g machinery already
+        makes elsewhere, and keeps this cheap.
+
+        Parameters
+        ----------
+        gene : str
+            Gene name or ensembl_gene_id.
+        r_g_variant : {"none", "production", "evaluation"}, default "none"
+            Which ``r_g`` feeds the mu draws, if any. There is
+            deliberately no default other than "none": ``"production"``
+            (both channels) partly absorbs selection itself, so using
+            it here would bias a downstream gamma estimate **downward**.
+            ``"evaluation"`` (silent-channel-only ``r_g``) or
+            ``"none"`` are the defensible choices -- same discipline
+            as :meth:`compute_r_g_production` vs.
+            :meth:`compute_r_g_for_evaluation`.
+        n_draws : int or None, default None
+            Number of mu draws to return. Defaults to every posterior
+            draw ``estimate_channel_rg_cov_effects`` produced; must
+            not exceed that count (no resampling with replacement,
+            so as not to overstate posterior resolution).
+        rng : numpy.random.Generator or None, default None
+            Source of randomness for the ``r_g`` draws (ignored when
+            ``r_g_variant == "none"``).
+
+        Returns
+        -------
+        pd.DataFrame
+            Shape ``(n_draws, n_tumors)``, columns = tumor sample
+            barcodes (same columns as ``base_mus_nonsyn``).
+
+        Raises
+        ------
+        ValueError
+            If ``r_g_variant`` is invalid, no covariate-effect
+            posterior or baseline rates are available, the gene
+            can't be resolved, or (``r_g_variant != "none"``) the
+            gene was not part of the ``r_g`` fit's gene set.
+        NotImplementedError
+            After a ``separate_c=True`` fit (no single covariate
+            scale exists to draw from).
+        """
+        if r_g_variant not in ("none", "production", "evaluation"):
+            raise ValueError(
+                "r_g_variant must be 'none', 'production', or "
+                f"'evaluation' -- got {r_g_variant!r}. There is "
+                "deliberately no other default: the production "
+                "variant partly absorbs selection and would bias a "
+                "downstream gamma estimate downward."
+            )
+        if self.cov_effects_posteriors is None:
+            raise ValueError(
+                "No covariate-effect posterior available. Call "
+                "estimate_channel_rg_cov_effects(sample='full') (or "
+                "an integer draw count) first."
+            )
+        if self._base_mus_nonsyn is None:
+            raise ValueError(
+                "Baseline non-silent mutation rates not computed. "
+                "Call compute_channel_base_mus() first."
+            )
+        if self.cov_matrix is None:
+            raise ValueError("Covariate matrix is None.")
+
+        if gene in self._base_mus_nonsyn.index:
+            gene_id = gene
+        else:
+            mapping = (
+                self.dataset.mutation_db[["gene", "ensembl_gene_id"]]
+                .drop_duplicates()
+                .set_index("gene")["ensembl_gene_id"]
+            )
+            if gene not in mapping.index:
+                raise ValueError(
+                    f"Gene {gene!r} not found in mutation database."
+                )
+            gene_id = mapping[gene]
+        if gene_id not in self._base_mus_nonsyn.index:
+            raise ValueError(
+                f"Gene ID {gene_id!r} not found in base_mus_nonsyn."
+            )
+        if gene_id not in self.cov_matrix.index:
+            raise ValueError(
+                f"Gene ID {gene_id!r} not found in the covariate "
+                "matrix."
+            )
+
+        import arviz as az
+
+        c_draws = az.extract(
+            self.cov_effects_posteriors, var_names=["c"]
+        ).values
+        if c_draws.ndim != 2:
+            raise NotImplementedError(
+                "compute_mu_g_posterior_draws does not support a "
+                "separate_c=True fit -- there is no single "
+                "covariate scale to draw mu from."
+            )
+
+        available_draws = c_draws.shape[1]
+        if n_draws is None:
+            n_draws = available_draws
+        if n_draws > available_draws:
+            raise ValueError(
+                f"Requested {n_draws} draws but only "
+                f"{available_draws} posterior draws are available "
+                "from estimate_channel_rg_cov_effects."
+            )
+        draw_idx = (
+            np.arange(n_draws)
+            if n_draws == available_draws
+            else (rng or np.random.default_rng()).choice(
+                available_draws, size=n_draws, replace=False
+            )
+        )
+        c_sel = c_draws[:, draw_idx]
+
+        cov_row = self.cov_matrix.loc[gene_id].to_numpy(dtype=float)
+        eta = c_sel[0] + cov_row @ c_sel[1:]
+        if self._rg_delta_intercept is not None:
+            # See compute_channel_mu_gs's docstring: a
+            # separate_c="intercept" fit puts the non-synonymous
+            # channel's own intercept here rather than in `c`, and
+            # it is large (13-18% on real cohorts) -- omitting it
+            # would silently bias every draw.
+            delta_draws = az.extract(
+                self.cov_effects_posteriors,
+                var_names=["delta_intercept"],
+            ).values
+            eta = eta + delta_draws[draw_idx]
+        scale = np.exp(eta)
+
+        baseline = self._base_mus_nonsyn.loc[gene_id]
+        mu_draws = pd.DataFrame(
+            scale[:, None] * baseline.to_numpy()[None, :],
+            columns=baseline.index,
+        )
+
+        if r_g_variant != "none":
+            from .estimate_rg import (
+                r_g_draws_for_evaluation,
+                r_g_draws_production,
+            )
+
+            if self._rg_statistics is None or self._rg_theta is None:
+                raise ValueError(
+                    "No r_g fit available. Call "
+                    "estimate_channel_rg_cov_effects() first."
+                )
+            if gene_id not in self._rg_statistics["genes"]:
+                raise ValueError(
+                    f"Gene ID {gene_id!r} was not part of the r_g "
+                    "fit's gene set."
+                )
+            stats = self._rg_statistics
+            expected_silent, expected_non_silent = (
+                self._rg_expectations()
+            )
+            if r_g_variant == "production":
+                r_g_draws = r_g_draws_production(
+                    counts_silent=stats["counts_silent"].loc[
+                        [gene_id]
+                    ],
+                    counts_non_silent=stats["counts_non_silent"].loc[
+                        [gene_id]
+                    ],
+                    expected_silent=expected_silent.loc[[gene_id]],
+                    expected_non_silent=expected_non_silent.loc[
+                        [gene_id]
+                    ],
+                    theta=self.rg_theta,
+                    n_draws=n_draws,
+                    rng=rng,
+                )[gene_id]
+            else:
+                r_g_draws = r_g_draws_for_evaluation(
+                    counts_silent=stats["counts_silent"].loc[
+                        [gene_id]
+                    ],
+                    expected_silent=expected_silent.loc[[gene_id]],
+                    theta=self.rg_theta,
+                    n_draws=n_draws,
+                    rng=rng,
+                )[gene_id]
+            mu_draws = mu_draws.mul(r_g_draws.to_numpy(), axis=0)
+
+        return mu_draws
 
     def _resolve_covariate_bounds(
         self, coeffs_shape, lower_value, upper_value

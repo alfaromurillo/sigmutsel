@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 # from it (see _natural_gamma_ceiling).
 _CLIP_FLOOR = 1e-12
 
+# Floor on the per-tumor sigma of the log-mu cut prior (see
+# estimate_gamma_from_mus). Without it, a tumor whose posterior mu
+# draws happen to agree to numerical precision would collapse that
+# tumor's prior to a point mass -- silently reverting to the pre-cut
+# "mu known exactly" behavior for that one tumor, rather than
+# reflecting genuinely tight (but nonzero) mu uncertainty.
+_MIN_LOG_MU_SIGMA = 1e-3
+
 
 def _natural_gamma_ceiling(mus_all, clip_floor=_CLIP_FLOOR):
     """Gamma value past which every sample's likelihood term is
@@ -95,10 +103,16 @@ def estimate_gamma_from_mus(
     Parameters
     ----------
     mus_yes : array-like
-        Array of mu values for tumors where with the variant(s).
+        Mu values for tumors with the variant(s). Either 1-D
+        ``(tumors,)`` point estimates (today's default behavior,
+        mu treated as known exactly) or 2-D ``(draws, tumors)``
+        posterior draws of mu, one column per tumor. If 2-D,
+        ``mus_no`` must be 2-D too, with the same number of draws --
+        see the "mu posterior cut" note below.
 
     mus_no : array-like
-        Array of mu values for tumors where without the variant(s).
+        Mu values for tumors without the variant(s). Same shape
+        rule as ``mus_yes``.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -233,8 +247,76 @@ def estimate_gamma_from_mus(
     calling application, before running the pipeline) to make
     sampling reproducible across runs and machines.
 
+    **The mu posterior cut.** Passing 1-D ``mus_yes``/``mus_no``
+    treats every tumor's mu as known exactly, so the returned
+    interval for gamma reflects only the Bernoulli sampling term
+    (how many tumors carry the variant). Since
+    ``P = 1 - exp(-gamma * mu)``, a fractional uncertainty in mu
+    passes into gamma almost 1:1 -- worst exactly where the
+    Bernoulli term looks tightest. Passing 2-D ``(draws, tumors)``
+    arrays instead (e.g. from
+    :meth:`.models.Model.compute_mu_g_posterior_draws`) fits
+
+        log_mu[tumor] ~ Normal(mean(log(draws)), std(log(draws)))
+        gamma ~ Uniform(0, upper_bound_prior)
+        P = 1 - exp(-gamma * mu)
+
+    with one ``log_mu`` latent per tumor, informed only by its own
+    stage-1 posterior draws (a Normal moment-matched to them) and by
+    its single Bernoulli observation here. This is a *cut*, not a
+    joint fit: the stage-1 posterior enters as a fixed prior, so no
+    information flows back from this Bernoulli likelihood into mu.
+    Joint fitting would let driver signal feed back into what is
+    meant to be a neutral rate -- the same leak class the production
+    vs. evaluation ``r_g`` split (see :mod:`.estimate_rg`) exists to
+    avoid.
+
     """
-    mus_all = np.concatenate([mus_yes, mus_no])
+    mus_yes_arr = np.asarray(mus_yes, dtype=float)
+    mus_no_arr = np.asarray(mus_no, dtype=float)
+    if mus_yes_arr.ndim not in (1, 2) or mus_no_arr.ndim not in (
+        1,
+        2,
+    ):
+        raise ValueError(
+            "mus_yes and mus_no must be 1-D (point estimates) or "
+            f"2-D (draws, tumors); got ndim {mus_yes_arr.ndim} and "
+            f"{mus_no_arr.ndim}."
+        )
+
+    use_mu_prior = mus_yes_arr.ndim == 2 or mus_no_arr.ndim == 2
+    log_mu_mean = log_mu_sigma = None
+    if use_mu_prior:
+        if mus_yes_arr.ndim != 2 or mus_no_arr.ndim != 2:
+            raise ValueError(
+                "mus_yes and mus_no must both be 2-D (draws, "
+                "tumors) to use the mu-posterior cut -- got ndim "
+                f"{mus_yes_arr.ndim} and {mus_no_arr.ndim}. Pass "
+                "both as 1-D point estimates instead if only one "
+                "side has posterior draws."
+            )
+        if mus_yes_arr.shape[0] != mus_no_arr.shape[0]:
+            raise ValueError(
+                "mus_yes and mus_no must share the same number of "
+                f"posterior draws (axis 0); got {mus_yes_arr.shape[0]}"
+                f" and {mus_no_arr.shape[0]}."
+            )
+        n_yes, n_no = mus_yes_arr.shape[1], mus_no_arr.shape[1]
+        log_mu_draws = np.log(
+            np.concatenate([mus_yes_arr, mus_no_arr], axis=1)
+        )
+        log_mu_mean = log_mu_draws.mean(axis=0)
+        log_mu_sigma = (
+            log_mu_draws.std(axis=0, ddof=1)
+            if log_mu_draws.shape[0] > 1
+            else np.zeros(log_mu_draws.shape[1])
+        )
+        log_mu_sigma = np.maximum(log_mu_sigma, _MIN_LOG_MU_SIGMA)
+        mus_all = np.exp(log_mu_mean)
+    else:
+        n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
+        mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
+
     natural_ceiling = _natural_gamma_ceiling(mus_all)
 
     if kwargs is None:
@@ -264,15 +346,31 @@ def estimate_gamma_from_mus(
                     name="gamma", lower=0, upper=current_bound
                 )
 
+                if use_mu_prior:
+                    # The cut: log_mu's prior is moment-matched to
+                    # the stage-1 posterior draws and is otherwise
+                    # only informed by this tumor's own Bernoulli
+                    # observation below -- no joint fit, no feedback
+                    # from gamma/selection back into mu.
+                    log_mu = pm.Normal(
+                        name="log_mu",
+                        mu=log_mu_mean,
+                        sigma=log_mu_sigma,
+                        shape=len(log_mu_mean),
+                    )
+                    mu = pm.math.exp(log_mu)
+                else:
+                    mu = mus_all
+
                 Ps = tt.clip(
-                    1 - tt.exp(-gamma * mus_all), 1e-12, 1 - 1e-12
+                    1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
                 )
 
                 pm.Bernoulli(
                     name="variants_observed",
                     p=Ps,
                     observed=np.concatenate(
-                        [np.ones(len(mus_yes)), np.zeros(len(mus_no))]
+                        [np.ones(n_yes), np.zeros(n_no)]
                     ),
                 )
 

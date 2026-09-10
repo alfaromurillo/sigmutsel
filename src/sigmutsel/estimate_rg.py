@@ -157,6 +157,99 @@ def r_g_silent_only_for_evaluation(
     return (theta + counts_silent) / (theta + expected_silent)
 
 
+def r_g_draws_production(
+    counts_silent: pd.Series,
+    counts_non_silent: pd.Series,
+    expected_silent: pd.Series,
+    expected_non_silent: pd.Series,
+    theta: float,
+    n_draws: int,
+    rng=None,
+) -> pd.DataFrame:
+    """Draws from ``r_g``'s exact posterior, **both** channels.
+
+    ``r_g``'s posterior given ``θ``, ``S_g`` and ``M_g`` is exactly
+    ``Gamma(θ + S_g, θ + M_g)`` (shape, rate) -- see the module
+    docstring -- so these are drawn directly, no MCMC needed. Same
+    production-vs-evaluation split as :func:`r_g_production` vs.
+    :func:`r_g_silent_only_for_evaluation`: this variant partly
+    absorbs selection itself (it is informed by the same non-silent
+    counts gamma is estimated from), so feeding it into
+    :func:`.estimate_gammas.estimate_gamma_from_mus`'s mu posterior
+    would bias gamma downward. Use
+    :func:`r_g_draws_for_evaluation` instead for that purpose.
+
+    Parameters
+    ----------
+    counts_silent, counts_non_silent, expected_silent,
+    expected_non_silent : pandas.Series
+        As in :func:`r_g_production`.
+    theta : float
+        The fitted Gamma shape, shared across genes.
+    n_draws : int
+        Number of draws per gene.
+    rng : numpy.random.Generator or None, default None
+        Source of randomness. A fresh default_rng() if None.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Shape ``(n_draws, n_genes)``, columns indexed like the
+        inputs.
+    """
+    counts = counts_silent.add(counts_non_silent, fill_value=0.0)
+    expected = expected_silent.add(
+        expected_non_silent, fill_value=0.0
+    )
+    return _r_g_gamma_draws(counts, expected, theta, n_draws, rng)
+
+
+def r_g_draws_for_evaluation(
+    counts_silent: pd.Series,
+    expected_silent: pd.Series,
+    theta: float,
+    n_draws: int,
+    rng=None,
+) -> pd.DataFrame:
+    """Draws from ``r_g``'s exact posterior, silent channel **only**.
+
+    The evaluation-discipline variant of :func:`r_g_draws_production`
+    -- see :func:`r_g_silent_only_for_evaluation` for why. This is
+    the defensible choice (along with ``r_g_variant="none"``) for
+    feeding gamma's mu posterior cut; the production variant is not,
+    since it would bias gamma downward.
+
+    Parameters
+    ----------
+    counts_silent, expected_silent : pandas.Series
+        As in :func:`r_g_silent_only_for_evaluation`.
+    theta : float
+        The fitted Gamma shape, shared across genes.
+    n_draws : int
+        Number of draws per gene.
+    rng : numpy.random.Generator or None, default None
+        Source of randomness. A fresh default_rng() if None.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Shape ``(n_draws, n_genes)``, columns indexed like
+        ``counts_silent``.
+    """
+    return _r_g_gamma_draws(
+        counts_silent, expected_silent, theta, n_draws, rng
+    )
+
+
+def _r_g_gamma_draws(counts, expected, theta, n_draws, rng):
+    if rng is None:
+        rng = np.random.default_rng()
+    shape = (theta + counts).to_numpy()
+    rate = (theta + expected).to_numpy()
+    draws = rng.gamma(shape, 1.0 / rate, size=(n_draws, len(shape)))
+    return pd.DataFrame(draws, columns=counts.index)
+
+
 def channel_rg_log_likelihood(
     eta_silent,
     theta,

@@ -225,3 +225,102 @@ def test_estimate_gamma_public_forwards_excluded_samples(monkeypatch):
 
     assert captured["yes_index"] == ["T3"]
     assert captured["no_index"] == ["T2"]
+
+
+# --- _estimate_gamma_gene's channel-rate fix. Found while validating
+# --- the mu-posterior cut (mutation_rates/TODO.md's TOP PRIORITY
+# --- entry) on real COAD data: a channel-split model's non-silent
+# --- presence was being scored against the merged mu_gs (wrong
+# --- baseline, missing delta_intercept) instead of
+# --- compute_channel_mu_gs("nonsyn") -- the same distinction
+# --- estimate_passenger_genes_r2 already makes for its "non_silent"
+# --- targets. Overstated mu biased every existing channel-model gene
+# --- gamma downward (~12% on APC/COAD).
+
+
+def _model_for_gamma_gene_channel():
+    """A channel-split model where the merged mu_gs (0.5) and the
+    non-synonymous channel's own rate (0.1) deliberately differ, so a
+    test can tell which one _estimate_gamma_gene actually used."""
+    model = Model.__new__(Model)
+    model._mu_gs = pd.DataFrame(
+        [[0.5, 0.5, 0.5, 0.5]],
+        index=["GENE1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    model._base_mus_nonsyn = pd.DataFrame(
+        [[0.1, 0.1, 0.1, 0.1]],
+        index=["GENE1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    model._base_mus_syn = pd.DataFrame(
+        [[0.05, 0.05, 0.05, 0.05]],
+        index=["GENE1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    model.cov_matrix = pd.DataFrame({"cov1": [0.0]}, index=["GENE1"])
+    model.cov_effects = np.array([0.0, 0.0])
+    model._rg_delta_intercept = None
+    dataset = type("FakeDataset", (), {})()
+    dataset.mutation_db = pd.DataFrame(
+        columns=["gene", "ensembl_gene_id"]
+    )
+    dataset.genes_present_non_silent = pd.DataFrame(
+        [[1, 0, 1, 0]],
+        index=["GENE1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
+    model.dataset = dataset
+    model.gammas = {}
+    return model
+
+
+def test_estimate_gamma_gene_uses_channel_rate_when_available(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes"] = list(mus_yes)
+        captured["no"] = list(mus_no)
+        return "fake_result"
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        fake_estimate_gamma_from_mus,
+    )
+
+    model = _model_for_gamma_gene_channel()
+    model._estimate_gamma_gene("GENE1", store=False)
+
+    # present: T1, T3; absent: T2, T4 -- values must come from the
+    # nonsyn channel baseline (0.1), not the merged mu_gs (0.5).
+    assert captured["yes"] == [0.1, 0.1]
+    assert captured["no"] == [0.1, 0.1]
+
+
+def test_estimate_gamma_gene_falls_back_to_merged_mu_gs_without_channels(
+    monkeypatch,
+):
+    """A non-channel model (no base_mus_syn/nonsyn) keeps using the
+    merged mu_gs -- unchanged behavior, only channel models get the
+    fix."""
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes"] = list(mus_yes)
+        captured["no"] = list(mus_no)
+        return "fake_result"
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        fake_estimate_gamma_from_mus,
+    )
+
+    model = _model_for_gamma_gene_channel()
+    model._base_mus_syn = None
+    model._base_mus_nonsyn = None
+    model._estimate_gamma_gene("GENE1", store=False)
+
+    assert captured["yes"] == [0.5, 0.5]
+    assert captured["no"] == [0.5, 0.5]

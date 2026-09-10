@@ -3567,7 +3567,19 @@ class Model:
         store : bool, optional
             Whether to store result.
         non_silent : bool, optional
-            Whether to use non-silent mutations only.
+            Whether to use non-silent mutations only. For a
+            channel-split model (``has_channel_base_mus()``), this
+            also switches which rate gamma is scored against: the
+            non-synonymous channel's own rate
+            (:meth:`compute_channel_mu_gs`, which includes that
+            channel's ``delta_intercept`` after a
+            ``separate_c="intercept"`` fit) rather than the merged
+            ``mu_gs`` -- the same distinction
+            :meth:`estimate_passenger_genes_r2` already makes for its
+            ``"non_silent"``/``"non_silent_counts"`` targets. Scoring
+            non-silent presence against the merged rate would
+            overstate mu (it includes the silent channel's baseline
+            and omits the channel intercept), biasing gamma downward.
         excluded_samples : collection of str or None, optional
             Tumor sample barcodes to drop entirely (from both the
             present and absent sets) before estimating gamma, e.g.
@@ -3591,8 +3603,13 @@ class Model:
             else self.dataset.genes_present
         )
 
+        if non_silent and self.has_channel_base_mus():
+            mu_source = self.compute_channel_mu_gs("nonsyn")
+        else:
+            mu_source = self.mu_gs
+
         # Try to get ensembl_gene_id if gene is a name
-        if gene in self.mu_gs.index:
+        if gene in mu_source.index:
             gene_id = gene
         else:
             mapping = (
@@ -3606,7 +3623,7 @@ class Model:
                 )
             gene_id = mapping[gene]
 
-        if gene_id not in self.mu_gs.index:
+        if gene_id not in mu_source.index:
             raise ValueError(
                 f"Gene ID {gene_id!r} not found in mu_gs."
             )
@@ -3624,8 +3641,8 @@ class Model:
             else {"upper_bound_prior": upper_bound_prior}
         )
         result = estimate_gamma_from_mus(
-            self.mu_gs.loc[gene_id][present_mask],
-            self.mu_gs.loc[gene_id][absent_mask],
+            mu_source.loc[gene_id][present_mask],
+            mu_source.loc[gene_id][absent_mask],
             **extra,
         )
 

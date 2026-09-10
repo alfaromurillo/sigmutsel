@@ -4374,7 +4374,19 @@ class Model:
             posterior = self.cov_effects_posteriors
             if hasattr(posterior, "to_netcdf"):
                 filename = directory / "cov_effects_posteriors.nc"
-                posterior.to_netcdf(filename)
+                # Writing straight to `filename` can collide with a
+                # still-open read handle when this posterior was
+                # itself just loaded from that same file (e.g.
+                # load_model() followed by a save that reuses a
+                # cached full-MCMC fit without refitting it) --
+                # netCDF4/HDF5 reports that as a confusing
+                # PermissionError, not a locking error. Write to a
+                # temp file and atomically replace instead.
+                tmp_filename = filename.with_name(
+                    filename.name + ".tmp"
+                )
+                posterior.to_netcdf(tmp_filename)
+                tmp_filename.replace(filename)
                 files["cov_effects_posteriors"] = (
                     "cov_effects_posteriors.nc"
                 )

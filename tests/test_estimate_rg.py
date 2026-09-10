@@ -784,3 +784,30 @@ def test_cov_effects_posteriors_survive_save_and_load(tmp_path):
         "ENSG_B", r_g_variant="none"
     )
     pd.testing.assert_frame_equal(before, after)
+
+
+def test_cov_effects_posteriors_can_be_resaved_after_load(tmp_path):
+    """A model with a sample="full" fit, saved and reloaded, must be
+    saveable again without refitting -- e.g. after adding a gamma
+    result computed from the already-loaded posterior. Resaving
+    writes cov_effects_posteriors.nc back to the exact path it was
+    just read from; a naive to_netcdf(same_path) can collide with
+    that still-open read handle and fail (hit in production on
+    gauss as a netCDF4 PermissionError, not a locking error)."""
+    from sigmutsel.models import Model
+
+    model = _rg_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    model.estimate_channel_rg_cov_effects(sample="full")
+
+    out = tmp_path / "model"
+    model.save_model(out)
+    loaded = Model.load_model(out)
+    assert loaded.has_cov_effects_posteriors()
+
+    # Re-save without refitting -- this is the collision case.
+    loaded.save_model(out, overwrite=True)
+
+    reloaded = Model.load_model(out)
+    assert reloaded.has_cov_effects_posteriors()

@@ -39,3 +39,7 @@ jobs:
     - name: Lint with ruff
       run: |
         ruff check src/ tests/
+
+    - name: Check docs for private repo/path references
+      run: |
+        python scripts/check_no_private_refs.py

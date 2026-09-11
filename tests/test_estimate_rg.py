@@ -216,6 +216,30 @@ def test_estimate_channel_rg_cov_effects_map(tmp_path):
     assert not np.allclose(production.values, evaluation.values)
 
 
+def test_compute_mu_g_taus_matches_channel_nonsyn_total(tmp_path):
+    """_compute_mu_g_taus (the basis for compute_mu_ms, i.e. every
+    variant-level rate) must sum over types to exactly the
+    non-synonymous channel's own total rate -- not the merged
+    syn+nonsyn one, and must include delta_intercept. Regression for
+    a bug found while validating the mu-posterior cut: variants are
+    inherently non-silent, so using the merged table here overstated
+    mu the same way the unfixed gene path (_estimate_gamma_gene) did
+    before its own fix."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    assert model._rg_delta_intercept is not None
+
+    mu_g_taus = model._compute_mu_g_taus()
+    total_from_taus = sum(mu_g_taus.values()).sort_index(axis=1)
+    nonsyn_total = model.compute_channel_mu_gs("nonsyn").sort_index(
+        axis=1
+    )
+
+    pd.testing.assert_frame_equal(
+        total_from_taus, nonsyn_total, check_exact=False
+    )
+
+
 def test_rg_requires_counts(tmp_path):
     model = _model_with_channels(tmp_path)
     with pytest.raises(ValueError, match="Channel count matrices"):

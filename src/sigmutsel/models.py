@@ -3962,13 +3962,29 @@ class Model:
             when ``use_cov_effects`` and covariate effects are
             available (same scaling ``compute_mu_gs`` applies, just
             not yet summed over τ).
+
+        Notes
+        -----
+        ``compute_mu_ms``, this method's only caller, is inherently
+        about non-silent (missense/nonsense) variants. For a
+        channel-split model (``has_channel_base_mus()``), this
+        routes through the non-synonymous channel's own opportunity
+        table (:func:`estimate_mus.compute_mu_g_channel_per_tumor`)
+        and applies that fit's ``delta_intercept`` -- the same
+        channel-rate distinction :meth:`compute_channel_mu_gs` makes
+        and :meth:`_estimate_gamma_gene` was fixed to make. Using the
+        merged (syn+nonsyn) table here overstates mu and biases
+        every variant gamma from a channel model downward, the same
+        way the unfixed gene path did.
         """
         from .constants import canonical_types_order
         from .estimate_mus import (
+            compute_mu_g_channel_per_tumor,
             compute_mu_g_per_tumor,
             compute_mus_per_gene_per_sample,
         )
 
+        is_channel = self.has_channel_base_mus()
         signature_separated = isinstance(self._mu_taus, dict)
 
         # self._base_mus may have been aggregated (e.g. 30 raw
@@ -4029,14 +4045,27 @@ class Model:
         # covariate-scaled, and freed before moving to the next.
         result = {}
         for tau in canonical_types_order:
-            base_g_tau = compute_mu_g_per_tumor(
-                mu_taus=mu_taus_for_g_taus,
-                contexts_by_gene=self.dataset.contexts_by_gene,
-                prob_g_tau_tau_independent=(
-                    self.prob_g_tau_tau_independent
-                ),
-                separate_per_tau=[tau],
-            )
+            if is_channel:
+                base_g_tau = compute_mu_g_channel_per_tumor(
+                    mu_taus=mu_taus_for_g_taus,
+                    channel_contexts_by_gene=(
+                        self.dataset.contexts_by_gene_nonsyn
+                    ),
+                    contexts_by_gene=self.dataset.contexts_by_gene,
+                    prob_g_tau_tau_independent=(
+                        self.prob_g_tau_tau_independent
+                    ),
+                    separate_per_tau=[tau],
+                )
+            else:
+                base_g_tau = compute_mu_g_per_tumor(
+                    mu_taus=mu_taus_for_g_taus,
+                    contexts_by_gene=self.dataset.contexts_by_gene,
+                    prob_g_tau_tau_independent=(
+                        self.prob_g_tau_tau_independent
+                    ),
+                    separate_per_tau=[tau],
+                )
 
             if signature_separated:
                 baseline_tau = {
@@ -4058,6 +4087,12 @@ class Model:
                 cov_effect=self.cov_effects,
                 cov_matrix=self.cov_matrix,
             )
+
+            # A separate_c="intercept" fit puts the non-synonymous
+            # channel's own intercept in _rg_delta_intercept rather
+            # than in cov_effects -- see compute_channel_mu_gs.
+            if is_channel and self._rg_delta_intercept is not None:
+                scaled = scaled * np.exp(self._rg_delta_intercept)
 
             # Genes without covariate coverage keep their baseline
             # rate, mirroring compute_mu_gs's

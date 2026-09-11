@@ -6,7 +6,7 @@ This guide explains how to set up sigmutsel with its reference data files.
 
 ```bash
 # 1. Install the package
-cd /home/jorge/documents/projects/sigmutsel
+cd sigmutsel
 pip install -e ".[dev]"
 
 # 2. Download reference data

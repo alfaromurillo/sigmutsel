@@ -3327,6 +3327,8 @@ class Model:
         store=True,
         non_silent=True,
         excluded_samples=None,
+        use_mu_posterior=False,
+        r_g_variant="none",
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -3356,6 +3358,27 @@ class Model:
             "absent" masks before estimation. See
             `_estimate_gamma_variant`/`_estimate_gamma_gene` for
             details.
+        use_mu_posterior : bool, default False
+            Propagate the stage-1 mu posterior into gamma's credible
+            interval as a "cut" (see
+            :func:`estimate_gammas.estimate_gamma_from_mus`'s "mu
+            posterior cut" note and
+            :meth:`compute_mu_g_posterior_draws`/
+            :meth:`compute_mu_m_posterior_draws`) instead of treating
+            each tumor's mu as a fixed point estimate. Requires a
+            channel-split model (:meth:`has_channel_base_mus`) with
+            a covariate-effect posterior already fit
+            (``estimate_channel_rg_cov_effects(sample="full")``);
+            for a gene item, also requires ``non_silent=True`` --
+            there is no mu-posterior equivalent for the merged/
+            silent-channel rate.
+        r_g_variant : {"none", "production", "evaluation"}, default "none"
+            Which ``r_g`` feeds the mu draws when
+            ``use_mu_posterior=True``; ignored otherwise. There is
+            deliberately no default other than ``"none"``:
+            ``"production"`` (both channels) partly absorbs selection
+            itself and would bias gamma downward -- see
+            :meth:`compute_mu_g_posterior_draws`.
 
         Returns
         -------
@@ -3372,6 +3395,10 @@ class Model:
         >>> model.estimate_gamma("ENSG00000157764")
         >>> # Explicit level specification
         >>> model.estimate_gamma("BRAF", level='gene', non_silent=True)
+        >>> # Mu-posterior cut, evaluation r_g (channel-split model)
+        >>> model.estimate_gamma(
+        ...     "BRAF", use_mu_posterior=True, r_g_variant="evaluation"
+        ... )
         """
 
         # Auto-detect level if not specified
@@ -3384,6 +3411,8 @@ class Model:
                 upper_bound_prior=upper_bound_prior,
                 store=store,
                 excluded_samples=excluded_samples,
+                use_mu_posterior=use_mu_posterior,
+                r_g_variant=r_g_variant,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -3392,6 +3421,8 @@ class Model:
                 store=store,
                 non_silent=non_silent,
                 excluded_samples=excluded_samples,
+                use_mu_posterior=use_mu_posterior,
+                r_g_variant=r_g_variant,
             )
         else:
             raise ValueError(
@@ -3487,6 +3518,8 @@ class Model:
         upper_bound_prior=None,
         store=True,
         excluded_samples=None,
+        use_mu_posterior=False,
+        r_g_variant="none",
     ):
         """Estimate selection coefficient for a variant.
 
@@ -3506,6 +3539,13 @@ class Model:
             samples flagged by :func:`sample_qc.combine_sample_flags`.
             Inverse-variance downweighting is not implemented here --
             see `Model.estimate_cov_effects`'s docstring for why.
+        use_mu_posterior : bool, default False
+            Use :meth:`compute_mu_m_posterior_draws` instead of the
+            fixed-point ``mu_ms`` estimate -- see
+            :meth:`estimate_gamma`'s docstring.
+        r_g_variant : {"none", "production", "evaluation"}, default "none"
+            Which ``r_g`` feeds the mu draws when
+            ``use_mu_posterior=True``; ignored otherwise.
 
         Returns
         -------
@@ -3535,11 +3575,25 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
-        result = estimate_gamma_from_mus(
-            self.mu_ms.loc[variant][present_mask],
-            self.mu_ms.loc[variant][absent_mask],
-            **extra,
-        )
+        if use_mu_posterior:
+            draws = self.compute_mu_m_posterior_draws(
+                variant, r_g_variant=r_g_variant
+            )
+            result = estimate_gamma_from_mus(
+                draws.loc[
+                    :, present_mask.index[present_mask]
+                ].to_numpy(),
+                draws.loc[
+                    :, absent_mask.index[absent_mask]
+                ].to_numpy(),
+                **extra,
+            )
+        else:
+            result = estimate_gamma_from_mus(
+                self.mu_ms.loc[variant][present_mask],
+                self.mu_ms.loc[variant][absent_mask],
+                **extra,
+            )
 
         if store:
             self.gammas[variant] = result
@@ -3553,6 +3607,8 @@ class Model:
         store=True,
         non_silent=True,
         excluded_samples=None,
+        use_mu_posterior=False,
+        r_g_variant="none",
     ):
         """Estimate selection coefficient for a gene.
 
@@ -3586,6 +3642,13 @@ class Model:
             samples flagged by :func:`sample_qc.combine_sample_flags`.
             Inverse-variance downweighting is not implemented here --
             see `Model.estimate_cov_effects`'s docstring for why.
+        use_mu_posterior : bool, default False
+            Use :meth:`compute_mu_g_posterior_draws` instead of the
+            fixed-point rate estimate -- see :meth:`estimate_gamma`'s
+            docstring. Requires ``non_silent=True``.
+        r_g_variant : {"none", "production", "evaluation"}, default "none"
+            Which ``r_g`` feeds the mu draws when
+            ``use_mu_posterior=True``; ignored otherwise.
 
         Returns
         -------
@@ -3593,6 +3656,13 @@ class Model:
             Estimation results.
         """
         from .estimate_gammas import estimate_gamma_from_mus
+
+        if use_mu_posterior and not non_silent:
+            raise ValueError(
+                "use_mu_posterior=True requires non_silent=True -- "
+                "there is no mu-posterior equivalent for the merged/"
+                "silent-channel rate."
+            )
 
         if self._mu_gs is None:
             self.compute_mu_gs()
@@ -3640,11 +3710,25 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
-        result = estimate_gamma_from_mus(
-            mu_source.loc[gene_id][present_mask],
-            mu_source.loc[gene_id][absent_mask],
-            **extra,
-        )
+        if use_mu_posterior:
+            draws = self.compute_mu_g_posterior_draws(
+                gene_id, r_g_variant=r_g_variant
+            )
+            result = estimate_gamma_from_mus(
+                draws.loc[
+                    :, present_mask.index[present_mask]
+                ].to_numpy(),
+                draws.loc[
+                    :, absent_mask.index[absent_mask]
+                ].to_numpy(),
+                **extra,
+            )
+        else:
+            result = estimate_gamma_from_mus(
+                mu_source.loc[gene_id][present_mask],
+                mu_source.loc[gene_id][absent_mask],
+                **extra,
+            )
 
         if store:
             # Always store with ensembl_gene_id for consistency

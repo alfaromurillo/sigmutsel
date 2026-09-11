@@ -432,3 +432,85 @@ def test_estimate_gamma_gene_falls_back_to_merged_mu_gs_without_channels(
 
     assert captured["yes"] == [0.5, 0.5]
     assert captured["no"] == [0.5, 0.5]
+
+
+# --- Model.estimate_gamma: use_mu_posterior/r_g_variant forwarding
+# --- to _estimate_gamma_gene/_estimate_gamma_variant. The draws
+# --- themselves (masking, r_g scaling) are covered against a real
+# --- fit in test_estimate_rg.py -- this only checks the public
+# --- entry point actually threads the two new kwargs through to the
+# --- right private method, for both levels.
+
+
+def _model_stub_for_forwarding():
+    model = Model.__new__(Model)
+    model.mu_ms = None
+    model._mu_gs = pd.DataFrame(
+        [[0.5]], index=["GENE1"], columns=["T1"]
+    )
+    return model
+
+
+def test_estimate_gamma_forwards_use_mu_posterior_to_gene(
+    monkeypatch,
+):
+    model = _model_stub_for_forwarding()
+    captured = {}
+
+    def fake_estimate_gamma_gene(item, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        model, "_estimate_gamma_gene", fake_estimate_gamma_gene
+    )
+    model.estimate_gamma(
+        "GENE1",
+        level="gene",
+        use_mu_posterior=True,
+        r_g_variant="evaluation",
+    )
+
+    assert captured["use_mu_posterior"] is True
+    assert captured["r_g_variant"] == "evaluation"
+
+
+def test_estimate_gamma_forwards_use_mu_posterior_to_variant(
+    monkeypatch,
+):
+    model = _model_stub_for_forwarding()
+    captured = {}
+
+    def fake_estimate_gamma_variant(item, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        model, "_estimate_gamma_variant", fake_estimate_gamma_variant
+    )
+    model.estimate_gamma(
+        "VAR1",
+        level="variant",
+        use_mu_posterior=True,
+        r_g_variant="evaluation",
+    )
+
+    assert captured["use_mu_posterior"] is True
+    assert captured["r_g_variant"] == "evaluation"
+
+
+def test_estimate_gamma_defaults_use_mu_posterior_off(monkeypatch):
+    model = _model_stub_for_forwarding()
+    captured = {}
+
+    def fake_estimate_gamma_gene(item, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        model, "_estimate_gamma_gene", fake_estimate_gamma_gene
+    )
+    model.estimate_gamma("GENE1", level="gene")
+
+    assert captured["use_mu_posterior"] is False
+    assert captured["r_g_variant"] == "none"

@@ -532,6 +532,115 @@ def test_mu_m_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
         )
 
 
+# --- _estimate_gamma_gene / _estimate_gamma_variant:
+# --- use_mu_posterior=True wiring. The lower-level draws themselves
+# --- (shape, positivity, r_g scaling) are already covered above --
+# --- these check the new integration point: masking the 2-D draws
+# --- by the present/absent tumor split and forwarding r_g_variant,
+# --- exactly the pattern
+# --- tcga_analysis/code/run_channel_{gene,variant}_gammas_mu_
+# --- posterior_cut.py used by hand before this was wired in.
+# --- r_g_variant="none" throughout -- deterministic, no draw-order
+# --- randomness to fight; the r_g variants themselves are already
+# --- checked above.
+
+
+def test_estimate_gamma_gene_use_mu_posterior_masks_2d_draws(
+    tmp_path,
+):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+    model.dataset.genes_present_non_silent = pd.DataFrame(
+        [[1, 0, 1]], index=["ENSG_B"], columns=["T1", "T2", "T3"]
+    )
+
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes"] = np.asarray(mus_yes)
+        captured["no"] = np.asarray(mus_no)
+        return "fake_result"
+
+    import sigmutsel.estimate_gammas as estimate_gammas_mod
+
+    original = estimate_gammas_mod.estimate_gamma_from_mus
+    estimate_gammas_mod.estimate_gamma_from_mus = (
+        fake_estimate_gamma_from_mus
+    )
+    try:
+        model._estimate_gamma_gene(
+            "ENSG_B",
+            store=False,
+            use_mu_posterior=True,
+            r_g_variant="none",
+        )
+    finally:
+        estimate_gammas_mod.estimate_gamma_from_mus = original
+
+    expected = model.compute_mu_g_posterior_draws(
+        "ENSG_B", r_g_variant="none"
+    )
+    np.testing.assert_allclose(
+        captured["yes"], expected.loc[:, ["T1", "T3"]].to_numpy()
+    )
+    np.testing.assert_allclose(
+        captured["no"], expected.loc[:, ["T2"]].to_numpy()
+    )
+
+
+def test_estimate_gamma_gene_use_mu_posterior_requires_non_silent(
+    tmp_path,
+):
+    model = _rg_model(tmp_path)
+
+    with pytest.raises(ValueError, match="non_silent"):
+        model._estimate_gamma_gene(
+            "ENSG_B", non_silent=False, use_mu_posterior=True
+        )
+
+
+def test_estimate_gamma_variant_use_mu_posterior_masks_2d_draws(
+    tmp_path,
+):
+    model = _fitted_model_with_variants(tmp_path)
+    model.dataset.variants_present = pd.DataFrame(
+        [[1, 1, 0]], index=["VAR1"], columns=["T1", "T2", "T3"]
+    )
+
+    captured = {}
+
+    def fake_estimate_gamma_from_mus(mus_yes, mus_no, **kwargs):
+        captured["yes"] = np.asarray(mus_yes)
+        captured["no"] = np.asarray(mus_no)
+        return "fake_result"
+
+    import sigmutsel.estimate_gammas as estimate_gammas_mod
+
+    original = estimate_gammas_mod.estimate_gamma_from_mus
+    estimate_gammas_mod.estimate_gamma_from_mus = (
+        fake_estimate_gamma_from_mus
+    )
+    try:
+        model._estimate_gamma_variant(
+            "VAR1",
+            store=False,
+            use_mu_posterior=True,
+            r_g_variant="none",
+        )
+    finally:
+        estimate_gammas_mod.estimate_gamma_from_mus = original
+
+    expected = model.compute_mu_m_posterior_draws(
+        "VAR1", r_g_variant="none"
+    )
+    np.testing.assert_allclose(
+        captured["yes"], expected.loc[:, ["T1", "T2"]].to_numpy()
+    )
+    np.testing.assert_allclose(
+        captured["no"], expected.loc[:, ["T3"]].to_numpy()
+    )
+
+
 def test_estimate_channel_rg_cov_effects_map(tmp_path):
     model = _rg_model(tmp_path)
     result = model.estimate_channel_rg_cov_effects(sample="MAP")

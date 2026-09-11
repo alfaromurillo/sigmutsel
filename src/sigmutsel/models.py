@@ -7135,6 +7135,47 @@ class Model:
                 "matrix."
             )
 
+        scale, n_draws = self._covariate_scale_draws(
+            gene_id, n_draws=n_draws, rng=rng
+        )
+
+        baseline = self._base_mus_nonsyn.loc[gene_id]
+        mu_draws = pd.DataFrame(
+            scale[:, None] * baseline.to_numpy()[None, :],
+            columns=baseline.index,
+        )
+
+        r_g_draws = self._r_g_draws_for_gene(
+            gene_id, r_g_variant, n_draws, rng
+        )
+        if r_g_draws is not None:
+            mu_draws = mu_draws.mul(r_g_draws, axis=0)
+
+        return mu_draws
+
+    def _covariate_scale_draws(self, gene_id, n_draws=None, rng=None):
+        """Per-draw ``exp(c . x_g [+ delta_intercept])`` for one gene.
+
+        Shared by :meth:`compute_mu_g_posterior_draws` and
+        :meth:`compute_mu_m_posterior_draws`: the covariate scale is
+        per-gene, not per-type, so a variant's draws reuse exactly
+        the same scale as its gene's. Assumes the caller has already
+        checked ``cov_effects_posteriors``/``cov_matrix`` are set.
+
+        Returns
+        -------
+        (numpy.ndarray, int)
+            ``(scale, n_draws)`` -- ``scale`` has shape
+            ``(n_draws,)``; ``n_draws`` is the resolved draw count
+            (``n_draws`` echoed back, or every available draw if it
+            was None).
+        """
+        if gene_id not in self.cov_matrix.index:
+            raise ValueError(
+                f"Gene ID {gene_id!r} not found in the covariate "
+                "matrix."
+            )
+
         import arviz as az
 
         c_draws = az.extract(
@@ -7142,7 +7183,8 @@ class Model:
         ).values
         if c_draws.ndim != 2:
             raise NotImplementedError(
-                "compute_mu_g_posterior_draws does not support a "
+                "compute_mu_g_posterior_draws/"
+                "compute_mu_m_posterior_draws do not support a "
                 "separate_c=True fit -- there is no single "
                 "covariate scale to draw mu from."
             )
@@ -7178,61 +7220,224 @@ class Model:
                 var_names=["delta_intercept"],
             ).values
             eta = eta + delta_draws[draw_idx]
-        scale = np.exp(eta)
+        return np.exp(eta), n_draws
 
-        baseline = self._base_mus_nonsyn.loc[gene_id]
-        mu_draws = pd.DataFrame(
-            scale[:, None] * baseline.to_numpy()[None, :],
-            columns=baseline.index,
+    def _r_g_draws_for_gene(self, gene_id, r_g_variant, n_draws, rng):
+        """``r_g`` draws for one gene, or ``None`` for ``"none"``.
+
+        Shared by :meth:`compute_mu_g_posterior_draws` and
+        :meth:`compute_mu_m_posterior_draws` -- ``r_g`` is a
+        gene-level correction with no type-level granularity, so a
+        variant uses exactly the same draws as its gene.
+        """
+        if r_g_variant == "none":
+            return None
+
+        from .estimate_rg import (
+            r_g_draws_for_evaluation,
+            r_g_draws_production,
         )
 
-        if r_g_variant != "none":
-            from .estimate_rg import (
-                r_g_draws_for_evaluation,
-                r_g_draws_production,
+        if self._rg_statistics is None or self._rg_theta is None:
+            raise ValueError(
+                "No r_g fit available. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+        if gene_id not in self._rg_statistics["genes"]:
+            raise ValueError(
+                f"Gene ID {gene_id!r} was not part of the r_g "
+                "fit's gene set."
+            )
+        stats = self._rg_statistics
+        expected_silent, expected_non_silent = self._rg_expectations()
+        if r_g_variant == "production":
+            r_g_draws = r_g_draws_production(
+                counts_silent=stats["counts_silent"].loc[[gene_id]],
+                counts_non_silent=stats["counts_non_silent"].loc[
+                    [gene_id]
+                ],
+                expected_silent=expected_silent.loc[[gene_id]],
+                expected_non_silent=expected_non_silent.loc[
+                    [gene_id]
+                ],
+                theta=self.rg_theta,
+                n_draws=n_draws,
+                rng=rng,
+            )[gene_id]
+        else:
+            r_g_draws = r_g_draws_for_evaluation(
+                counts_silent=stats["counts_silent"].loc[[gene_id]],
+                expected_silent=expected_silent.loc[[gene_id]],
+                theta=self.rg_theta,
+                n_draws=n_draws,
+                rng=rng,
+            )[gene_id]
+        return r_g_draws.to_numpy()
+
+    def compute_mu_m_posterior_draws(
+        self, variant, r_g_variant="none", n_draws=None, rng=None
+    ):
+        """Per-tumor mu posterior draws for one variant's rate.
+
+        The variant-level analog of
+        :meth:`compute_mu_g_posterior_draws`. ``mu_ms`` is
+        ``mu_gs``'s per-type slice (see :meth:`_compute_mu_g_taus`)
+        run through a deterministic opportunity-fraction transform
+        (:func:`estimate_mus.compute_mu_m_per_tumor`) -- nothing in
+        that transform is itself MCMC-fit, so the same per-gene
+        covariate-scale draws (and ``r_g`` draws, shared across a
+        gene's variants) that drive
+        :meth:`compute_mu_g_posterior_draws` drive this too, just
+        multiplied by each mutation type's fixed opportunity share
+        (``1 / n_{g,c(tau)}``) instead of summed into the gene total.
+
+        Only meaningful for a channel-split model: a variant is
+        inherently non-silent, so there is no merged-baseline
+        equivalent to fall back to (unlike
+        :meth:`compute_mu_g_posterior_draws`, which also works for a
+        non-channel model).
+
+        Parameters
+        ----------
+        variant : str
+            Variant identifier (e.g. ``"BRAF p.V600E"``), matching
+            ``dataset.variant_db``'s index.
+        r_g_variant, n_draws, rng
+            As in :meth:`compute_mu_g_posterior_draws`.
+
+        Returns
+        -------
+        pd.DataFrame
+            Shape ``(n_draws, n_tumors)``.
+
+        Raises
+        ------
+        ValueError
+            If the variant can't be resolved, the model isn't
+            channel-split, or (as in
+            :meth:`compute_mu_g_posterior_draws`) no posterior/r_g
+            fit is available.
+        NotImplementedError
+            After a ``separate_c=True`` fit, or for a
+            signature-separated ``mu_taus`` (not currently
+            exercised by this project's channel_dep pipeline).
+        """
+        if r_g_variant not in ("none", "production", "evaluation"):
+            raise ValueError(
+                "r_g_variant must be 'none', 'production', or "
+                f"'evaluation' -- got {r_g_variant!r}. There is "
+                "deliberately no other default: the production "
+                "variant partly absorbs selection and would bias a "
+                "downstream gamma estimate downward."
+            )
+        if self.cov_effects_posteriors is None:
+            raise ValueError(
+                "No covariate-effect posterior available. Call "
+                "estimate_channel_rg_cov_effects(sample='full') (or "
+                "an integer draw count) first."
+            )
+        if not self.has_channel_base_mus():
+            raise ValueError(
+                "compute_mu_m_posterior_draws requires a "
+                "channel-split model (call "
+                "compute_channel_base_mus() first) -- a variant is "
+                "inherently non-silent, so there is no "
+                "merged-baseline equivalent to fall back to."
+            )
+        if self.cov_matrix is None:
+            raise ValueError("Covariate matrix is None.")
+        if isinstance(self._mu_taus, dict):
+            raise NotImplementedError(
+                "compute_mu_m_posterior_draws does not support a "
+                "signature-separated mu_taus."
+            )
+        if self.dataset._variant_db is None:
+            raise ValueError(
+                "Variant database not loaded. Call "
+                "dataset.generate_variant_db() or load_dataset() "
+                "first."
+            )
+        if variant not in self.dataset.variant_db.index:
+            raise ValueError(
+                f"Variant {variant!r} not found in the variant "
+                "database."
             )
 
-            if self._rg_statistics is None or self._rg_theta is None:
-                raise ValueError(
-                    "No r_g fit available. Call "
-                    "estimate_channel_rg_cov_effects() first."
-                )
-            if gene_id not in self._rg_statistics["genes"]:
-                raise ValueError(
-                    f"Gene ID {gene_id!r} was not part of the r_g "
-                    "fit's gene set."
-                )
-            stats = self._rg_statistics
-            expected_silent, expected_non_silent = (
-                self._rg_expectations()
+        from .constants import extract_context
+        from .estimate_mus import compute_mu_g_channel_per_tumor
+
+        row = self.dataset.variant_db.loc[variant]
+        gene_id = row["ensembl_gene_id"]
+        mut_types = row["mut_types"]
+        if isinstance(mut_types, str):
+            mut_types = [mut_types]
+
+        scale, n_draws = self._covariate_scale_draws(
+            gene_id, n_draws=n_draws, rng=rng
+        )
+
+        contexts_by_gene = self.dataset.contexts_by_gene
+        if self.prob_g_tau_tau_independent:
+            # Mirrors compute_mu_m_per_tumor's own genome-wide
+            # redistribution -- must match whatever contexts_by_gene
+            # compute_mu_g_channel_per_tumor is about to use below.
+            contexts_by_gene = (
+                pd.DataFrame(contexts_by_gene.sum(axis=1))
+                @ pd.DataFrame(
+                    contexts_by_gene.sum(axis=0)
+                    / contexts_by_gene.values.sum()
+                ).T
             )
-            if r_g_variant == "production":
-                r_g_draws = r_g_draws_production(
-                    counts_silent=stats["counts_silent"].loc[
-                        [gene_id]
-                    ],
-                    counts_non_silent=stats["counts_non_silent"].loc[
-                        [gene_id]
-                    ],
-                    expected_silent=expected_silent.loc[[gene_id]],
-                    expected_non_silent=expected_non_silent.loc[
-                        [gene_id]
-                    ],
-                    theta=self.rg_theta,
-                    n_draws=n_draws,
-                    rng=rng,
-                )[gene_id]
-            else:
-                r_g_draws = r_g_draws_for_evaluation(
-                    counts_silent=stats["counts_silent"].loc[
-                        [gene_id]
-                    ],
-                    expected_silent=expected_silent.loc[[gene_id]],
-                    theta=self.rg_theta,
-                    n_draws=n_draws,
-                    rng=rng,
-                )[gene_id]
-            mu_draws = mu_draws.mul(r_g_draws.to_numpy(), axis=0)
+
+        total = None
+        tumor_index = None
+        for tau in mut_types:
+            context = extract_context(tau)
+            if (
+                gene_id not in contexts_by_gene.index
+                or context not in contexts_by_gene.columns
+            ):
+                continue
+            n_context = contexts_by_gene.at[gene_id, context]
+            if not n_context:
+                continue
+
+            baseline_g_tau = compute_mu_g_channel_per_tumor(
+                mu_taus=self._mu_taus,
+                channel_contexts_by_gene=(
+                    self.dataset.contexts_by_gene_nonsyn
+                ),
+                contexts_by_gene=self.dataset.contexts_by_gene,
+                prob_g_tau_tau_independent=(
+                    self.prob_g_tau_tau_independent
+                ),
+                separate_per_tau=[tau],
+            )[tau].loc[gene_id]
+
+            contribution = scale[:, None] * (
+                baseline_g_tau.to_numpy()[None, :] / n_context
+            )
+            total = (
+                contribution
+                if total is None
+                else total + contribution
+            )
+            tumor_index = baseline_g_tau.index
+
+        if total is None:
+            raise ValueError(
+                f"Variant {variant!r}: none of its mutation type(s) "
+                "resolved to a valid (gene, context) opportunity -- "
+                "cannot compute a rate."
+            )
+
+        mu_draws = pd.DataFrame(total, columns=tumor_index)
+
+        r_g_draws = self._r_g_draws_for_gene(
+            gene_id, r_g_variant, n_draws, rng
+        )
+        if r_g_draws is not None:
+            mu_draws = mu_draws.mul(r_g_draws, axis=0)
 
         return mu_draws
 

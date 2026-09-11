@@ -420,6 +420,118 @@ def test_mu_g_posterior_draws_unknown_gene_raises(tmp_path):
         model.compute_mu_g_posterior_draws("NOT_A_GENE")
 
 
+# --- Model.compute_mu_m_posterior_draws: the variant-level analog of
+# --- compute_mu_g_posterior_draws. mu_ms is mu_gs's per-type slice
+# --- run through a deterministic opportunity transform, so this
+# --- reuses the same covariate-scale/r_g draws as the gene, just
+# --- weighted by each mutation type's fixed opportunity share.
+
+
+def _synthetic_variant_db():
+    """Two variants in ENSG_B, one single-type and one multi-type,
+    using real 96-type strings so extract_context resolves against
+    the synthetic fixture's contexts_by_gene."""
+    from sigmutsel.constants import canonical_types_order
+
+    return pd.DataFrame(
+        {
+            "ensembl_gene_id": ["ENSG_B", "ENSG_B"],
+            "mut_types": [
+                canonical_types_order[0],
+                [canonical_types_order[0], canonical_types_order[1]],
+            ],
+        },
+        index=["VAR1", "VAR2_multitype"],
+    )
+
+
+def _fitted_model_with_variants(tmp_path):
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="full")
+    model.dataset._variant_db = _synthetic_variant_db()
+    return model
+
+
+def test_mu_m_posterior_draws_shape_positivity_and_matches_point(
+    tmp_path,
+):
+    model = _fitted_model_with_variants(tmp_path)
+
+    draws = model.compute_mu_m_posterior_draws(
+        "VAR1", r_g_variant="none"
+    )
+    n_available = (
+        model.cov_effects_posteriors.posterior.sizes["draw"]
+        * model.cov_effects_posteriors.posterior.sizes["chain"]
+    )
+    assert draws.shape[0] == n_available
+    assert (draws.to_numpy() > 0).all()
+
+    # the cut's prior center (geometric mean of draws) should match
+    # the point estimate the same covariate-scale posterior mean
+    # implies -- same consistency check used for genes.
+    model.compute_mu_ms()
+    point = model.mu_ms.loc["VAR1"].reindex(draws.columns)
+    geo_mean = np.exp(np.log(draws.to_numpy()).mean(axis=0))
+    np.testing.assert_allclose(geo_mean, point.to_numpy(), rtol=0.2)
+
+
+def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(
+    tmp_path,
+):
+    model = _fitted_model_with_variants(tmp_path)
+    draws = model.compute_mu_m_posterior_draws(
+        "VAR2_multitype", r_g_variant="none"
+    )
+    assert np.isfinite(draws.to_numpy()).all()
+    assert (draws.to_numpy() > 0).all()
+
+
+def test_mu_m_posterior_draws_evaluation_r_g_scales_relative_to_none(
+    tmp_path,
+):
+    model = _fitted_model_with_variants(tmp_path)
+    draws_none = model.compute_mu_m_posterior_draws(
+        "VAR1", r_g_variant="none"
+    )
+    draws_eval = model.compute_mu_m_posterior_draws(
+        "VAR1",
+        r_g_variant="evaluation",
+        rng=np.random.default_rng(0),
+    )
+    r_g_point = model.compute_r_g_for_evaluation()["ENSG_B"]
+    ratio = (
+        draws_eval.to_numpy().mean() / draws_none.to_numpy().mean()
+    )
+    assert abs(ratio - r_g_point) < 0.2
+
+
+def test_mu_m_posterior_draws_requires_channel_split(tmp_path):
+    model = Model.__new__(Model)
+    model.cov_effects_posteriors = (
+        object()
+    )  # only needs to be non-None
+    model._base_mus_syn = None
+    model._base_mus_nonsyn = None
+
+    with pytest.raises(ValueError, match="channel-split"):
+        model.compute_mu_m_posterior_draws("VAR1")
+
+
+def test_mu_m_posterior_draws_unknown_variant_raises(tmp_path):
+    model = _fitted_model_with_variants(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        model.compute_mu_m_posterior_draws("NOT_A_VARIANT")
+
+
+def test_mu_m_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
+    model = _fitted_model_with_variants(tmp_path)
+    with pytest.raises(ValueError, match="r_g_variant"):
+        model.compute_mu_m_posterior_draws(
+            "VAR1", r_g_variant="bogus"
+        )
+
+
 def test_estimate_channel_rg_cov_effects_map(tmp_path):
     model = _rg_model(tmp_path)
     result = model.estimate_channel_rg_cov_effects(sample="MAP")

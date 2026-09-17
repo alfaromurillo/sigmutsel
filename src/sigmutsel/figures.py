@@ -137,9 +137,9 @@ def plot_posteriors_vs_counts(
 
     # axes ---------------------------------------------------------------
     xlabel = (
-        "Number of tumours with gene mutated (excluding silent)"
+        "Number of tumors with gene mutated (excluding silent)"
         if level == "gene"
-        else "Number of tumours with variant"
+        else "Number of tumors with variant"
     )
     ax.set_xlabel(xlabel, fontsize=8)
     ax.set_ylabel("Selection coefficient", fontsize=8)

@@ -295,7 +295,7 @@ def build_arrays_for_cov_effect_estimation(
 
     Parameters
     ----------
-    mu_j_m : ndarray (n_tumours, n_variants)
+    mu_j_m : ndarray (n_tumors, n_variants)
         Mutation-rate components, **columns ordered alphabetically by
         variant label** (same order as ``covariates_df.index`` when
         sorted).
@@ -312,7 +312,7 @@ def build_arrays_for_cov_effect_estimation(
 
     Returns
     -------
-    mu_restricted : ndarray (n_tumours, n_restricted) Slice of the
+    mu_restricted : ndarray (n_tumors, n_restricted) Slice of the
         original array containing only the selected
         silent-and-annotated variants.
 
@@ -320,8 +320,8 @@ def build_arrays_for_cov_effect_estimation(
         values of the "cov_" columns for the same variants, in the
         same order as the columns of `mu_restricted`.
 
-    presence : ndarray  (n_tumours, n_restricted)
-        Binary matrix: 1 if that variant is present in that tumour
+    presence : ndarray  (n_tumors, n_restricted)
+        Binary matrix: 1 if that variant is present in that tumor
         according to `db`, 0 otherwise.
 
     Notes
@@ -353,16 +353,16 @@ def build_arrays_for_cov_effect_estimation(
     variant_keep = [v for v, k in zip(variants_order, keep_mask) if k]
 
     # Slice arrays / frames
-    mu_restricted = mu_j_m[:, keep_mask]  # (n_tumours, n_restricted)
+    mu_restricted = mu_j_m[:, keep_mask]  # (n_tumors, n_restricted)
     cov_matrix = covariates_df.loc[variant_keep, cov_cols].to_numpy()
 
-    # Build tumour × variant presence matrix
-    tumour_order = sorted(db["Tumor_Sample_Barcode"].unique())
-    tumour_to_row = {t: i for i, t in enumerate(tumour_order)}
+    # Build tumor × variant presence matrix
+    tumor_order = sorted(db["Tumor_Sample_Barcode"].unique())
+    tumor_to_row = {t: i for i, t in enumerate(tumor_order)}
     variant_to_col = {v: j for j, v in enumerate(variant_keep)}
 
     presence = np.zeros(
-        (len(tumour_order), len(variant_keep)), dtype=np.int8
+        (len(tumor_order), len(variant_keep)), dtype=np.int8
     )
 
     sub_db = db[db["variant"].isin(variant_keep)]
@@ -371,6 +371,6 @@ def build_arrays_for_cov_effect_estimation(
         .drop_duplicates()
         .itertuples(index=False)
     ):
-        presence[tumour_to_row[t], variant_to_col[v]] = 1
+        presence[tumor_to_row[t], variant_to_col[v]] = 1
 
     return mu_restricted, cov_matrix, presence

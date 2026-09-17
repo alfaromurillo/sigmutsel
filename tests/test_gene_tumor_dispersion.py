@@ -1,4 +1,4 @@
-"""Tests for per-cell dispersion: the allocation likelihood, the
+"""Tests for gene-tumor dispersion: the allocation likelihood, the
 fitted trend in ``phi``, and how ``Model`` stores and uses it.
 
 The likelihood is checked against its own limits and against
@@ -14,9 +14,9 @@ import pandas as pd
 import pytest
 from scipy import special as spc
 
-from sigmutsel.cell_dispersion import (
+from sigmutsel.gene_tumor_dispersion import (
     dirichlet_multinomial_logpmf,
-    fit_cell_dispersion_trend,
+    fit_gene_tumor_dispersion_trend,
     fit_phi,
     phi_for_count,
 )
@@ -92,7 +92,7 @@ def test_trend_recovers_a_planted_slope():
     a, b = np.log(30.0), 0.6
     phi = np.exp(a + b * np.log(totals))
     counts = _dm_draws(rng, w, totals, phi)
-    trend = fit_cell_dispersion_trend(counts, w)
+    trend = fit_gene_tumor_dispersion_trend(counts, w)
     assert trend["method"] == "trend"
     assert trend["slope"] == pytest.approx(b, abs=0.25)
     assert phi_for_count(trend, 20) == pytest.approx(
@@ -104,7 +104,7 @@ def test_trend_falls_back_to_pooled_with_few_strata():
     rng = np.random.default_rng(3)
     w = rng.gamma(1.0, 1.0, (40, 10))
     counts = _dm_draws(rng, w, np.full(40, 3), np.full(40, 20.0))
-    trend = fit_cell_dispersion_trend(counts, w, folds=0)
+    trend = fit_gene_tumor_dispersion_trend(counts, w, folds=0)
     assert trend["method"] == "pooled"
     assert trend["slope"] == 0.0
     assert phi_for_count(trend, 100) == pytest.approx(
@@ -143,7 +143,7 @@ def test_negative_slope_is_floored():
     ).astype(int)
     phi = np.exp(np.log(300.0) - 0.8 * np.log(totals))
     counts = _dm_draws(rng, w, totals, phi)
-    trend = fit_cell_dispersion_trend(counts, w, folds=0)
+    trend = fit_gene_tumor_dispersion_trend(counts, w, folds=0)
     assert trend["slope_floored"]
     assert trend["slope"] == 0.0
 
@@ -158,7 +158,7 @@ def test_no_dispersion_switches_itself_off():
         2, np.rint(np.exp(rng.normal(1.6, 0.8, n_genes)))
     ).astype(int)
     counts = rng.multinomial(totals, w / w.sum(axis=1, keepdims=True))
-    trend = fit_cell_dispersion_trend(counts.astype(float), w)
+    trend = fit_gene_tumor_dispersion_trend(counts.astype(float), w)
     assert trend["method"] == "none"
     assert phi_for_count(trend, 10) == np.inf
 
@@ -171,7 +171,7 @@ def test_real_dispersion_passes_the_held_out_check():
         2, np.rint(np.exp(rng.normal(1.6, 0.8, n_genes)))
     ).astype(int)
     counts = _dm_draws(rng, w, totals, np.full(n_genes, 30.0))
-    trend = fit_cell_dispersion_trend(counts, w)
+    trend = fit_gene_tumor_dispersion_trend(counts, w)
     assert trend["method"] in ("trend", "pooled")
     assert trend["cv_gain"] > 0
 
@@ -184,72 +184,114 @@ def test_real_dispersion_passes_the_held_out_check():
 def _fitted_model(tmp_path):
     model = _model_with_channels(tmp_path)
     model.dataset.compute_gene_counts_channels()
-    model.estimate_cell_dispersion(min_genes=1)
+    model.estimate_gene_tumor_dispersion(min_genes=1)
     return model
 
 
-def test_estimate_cell_dispersion_stores_a_trend(tmp_path):
+def test_estimate_gene_tumor_dispersion_stores_a_trend(tmp_path):
     model = _fitted_model(tmp_path)
-    trend = model.cell_dispersion_trend
+    trend = model.gene_tumor_dispersion_trend
     assert set(trend) >= {"intercept", "slope", "method", "strata"}
     assert np.isfinite(trend["intercept"])
 
 
-def test_cell_dispersion_trend_survives_save_and_load(tmp_path):
+def test_gene_tumor_dispersion_trend_survives_save_and_load(tmp_path):
     model = _fitted_model(tmp_path / "work")
     model.dataset.save_dataset(tmp_path / "ds")
     model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
     out = tmp_path / "model"
     model.save_model(out)
     loaded = Model.load_model(out)
-    assert loaded.cell_dispersion_trend == model.cell_dispersion_trend
+    assert (
+        loaded.gene_tumor_dispersion_trend
+        == model.gene_tumor_dispersion_trend
+    )
+
+
+def test_model_saved_before_the_rename_still_loads(tmp_path):
+    import json
+
+    model = _fitted_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    out = tmp_path / "model"
+    model.save_model(out)
+    manifest_path = next(
+        p
+        for p in out.glob("*.json")
+        if "gene_tumor_dispersion_trend" in p.read_text()
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["cell_dispersion_trend"] = manifest.pop(
+        "gene_tumor_dispersion_trend"
+    )
+    manifest_path.write_text(json.dumps(manifest))
+    loaded = Model.load_model(out)
+    assert (
+        loaded.gene_tumor_dispersion_trend
+        == model.gene_tumor_dispersion_trend
+    )
+    with pytest.warns(DeprecationWarning):
+        assert (
+            loaded.cell_dispersion_trend
+            == model.gene_tumor_dispersion_trend
+        )
 
 
 def test_fitted_phi_uses_the_genes_own_count(tmp_path):
     model = _fitted_model(tmp_path)
-    model.cell_dispersion_trend = {
+    model.gene_tumor_dispersion_trend = {
         "intercept": np.log(50.0),
         "slope": 0.5,
         "method": "trend",
     }
     counts = model.dataset.genes_counts_non_silent
     kept = pd.Series(True, index=counts.columns)
-    phi = model._resolve_cell_dispersion("fitted", "ENSG_B", kept)
+    phi = model._resolve_gene_tumor_dispersion(
+        "fitted", "ENSG_B", kept
+    )
     n = float(counts.loc["ENSG_B"].sum())
     assert phi == pytest.approx(50.0 * max(n, 2.0) ** 0.5)
     assert (
-        model._resolve_cell_dispersion(None, "ENSG_B", kept) is None
+        model._resolve_gene_tumor_dispersion(None, "ENSG_B", kept)
+        is None
     )
-    assert model._resolve_cell_dispersion(7, "ENSG_B", kept) == 7.0
-    model.cell_dispersion_trend = {
-        **model.cell_dispersion_trend,
+    assert (
+        model._resolve_gene_tumor_dispersion(7, "ENSG_B", kept) == 7.0
+    )
+    model.gene_tumor_dispersion_trend = {
+        **model.gene_tumor_dispersion_trend,
         "method": "none",
     }
     assert (
-        model._resolve_cell_dispersion("fitted", "ENSG_B", kept)
+        model._resolve_gene_tumor_dispersion("fitted", "ENSG_B", kept)
         is None
     )
 
 
-def test_cell_dispersion_argument_errors(tmp_path):
+def test_gene_tumor_dispersion_argument_errors(tmp_path):
     model = _model_with_channels(tmp_path)
     kept = pd.Series(True, index=["T1", "T2", "T3"])
-    with pytest.raises(ValueError, match="estimate_cell_dispersion"):
-        model._resolve_cell_dispersion("fitted", "ENSG_B", kept)
+    with pytest.raises(
+        ValueError, match="estimate_gene_tumor_dispersion"
+    ):
+        model._resolve_gene_tumor_dispersion("fitted", "ENSG_B", kept)
     with pytest.raises(ValueError, match="'fitted'"):
-        model._resolve_cell_dispersion("sometimes", "ENSG_B", kept)
+        model._resolve_gene_tumor_dispersion(
+            "sometimes", "ENSG_B", kept
+        )
     with pytest.raises(ValueError, match="non_silent"):
         model.estimate_gamma(
             "ENSG_B",
             level="gene",
             non_silent=False,
-            cell_dispersion=10.0,
+            gene_tumor_dispersion=10.0,
         )
 
 
-def test_gene_cell_shapes_sum_to_phi(tmp_path):
+def test_gene_tumor_shapes_sum_to_phi(tmp_path):
     model = _fitted_model(tmp_path)
-    shapes = model._gene_cell_shapes(
+    shapes = model._gene_tumor_shapes(
         "ENSG_A", 40.0, pd.Index(["T1", "T2"])
     )
     assert shapes.sum() == pytest.approx(40.0)
@@ -263,8 +305,8 @@ def test_dispersion_baseline_falls_back_to_merged(tmp_path):
     model._base_mus_nonsyn = None
     model.dataset.compute_gene_counts_channels()
     assert model._dispersion_baseline() is model._base_mus
-    model.estimate_cell_dispersion(min_genes=1)
-    assert model.cell_dispersion_trend is not None
+    model.estimate_gene_tumor_dispersion(min_genes=1)
+    assert model.gene_tumor_dispersion_trend is not None
 
 
 def test_variant_gene_lookup(tmp_path):
@@ -276,3 +318,18 @@ def test_variant_gene_lookup(tmp_path):
     }
     with pytest.raises(ValueError, match="gene of variant"):
         model._variant_gene_id("NOPE p.Z9Z")
+
+
+def test_pre_rename_names_still_work():
+    """``cell_*`` names are deprecated aliases, not removed."""
+    import importlib
+    import sys
+
+    sys.modules.pop("sigmutsel.cell_dispersion", None)
+    with pytest.warns(DeprecationWarning):
+        old = importlib.import_module("sigmutsel.cell_dispersion")
+    assert old.phi_for_count is phi_for_count
+    assert (
+        old.fit_cell_dispersion_trend
+        is fit_gene_tumor_dispersion_trend
+    )

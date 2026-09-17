@@ -253,7 +253,7 @@ def compute_mu_g_per_tumor(
     pandas.DataFrame | dict[int | str, pandas.DataFrame]
         **When mu_taus is a DataFrame and separate_per_tau=False:**
             Single DataFrame with Genes × Tumors. Index =
-            ``ensembl_gene_id``, columns = tumor barcodes. Each cell
+            ``ensembl_gene_id``, columns = tumor barcodes. Each entry
             is the expected mutation rate for that gene in that tumor.
 
         **When mu_taus is a dict and separate_per_tau=False:**

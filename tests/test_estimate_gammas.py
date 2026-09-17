@@ -517,12 +517,12 @@ def test_estimate_gamma_defaults_use_mu_posterior_off(monkeypatch):
 
 
 # ---------------------------------------------------------------------
-# Per-cell dispersion in the presence likelihood (``cell_dispersion``)
+# Gene-tumor dispersion in the presence likelihood (``gene_tumor_dispersion``)
 # ---------------------------------------------------------------------
 
 
 def _dispersed_presence(seed, gamma, phi, n_tumors=1500):
-    """Presence data simulated under the per-cell Gamma rate model."""
+    """Presence data simulated under the gene-tumor Gamma rate model."""
     rng = np.random.default_rng(seed)
     mu = np.exp(rng.normal(0, 1.2, n_tumors))
     mu = 0.05 * mu / mu.mean()
@@ -560,14 +560,14 @@ def test_dispersed_ceiling_reduces_to_dispersion_free():
     )
 
 
-def test_cell_dispersion_rejects_nonpositive():
-    with pytest.raises(ValueError, match="cell_dispersion"):
+def test_gene_tumor_dispersion_rejects_nonpositive():
+    with pytest.raises(ValueError, match="gene_tumor_dispersion"):
         estimate_gamma_from_mus(
-            _MUS_YES, _MUS_NO, draws=1, cell_dispersion=0
+            _MUS_YES, _MUS_NO, draws=1, gene_tumor_dispersion=0
         )
 
 
-def test_cell_dispersion_map_matches_grid():
+def test_gene_tumor_dispersion_map_matches_grid():
     """MAP under dispersion equals a brute-force grid MLE of the same
     closed form -- the check that the PyTensor expression is the
     likelihood the docstring states."""
@@ -575,7 +575,7 @@ def test_cell_dispersion_map_matches_grid():
     mu, present = _dispersed_presence(3, 8.0, phi, n_tumors=280)
     constants.random_seed = 0
     disp = estimate_gamma_from_mus(
-        mu[present], mu[~present], draws=1, cell_dispersion=phi
+        mu[present], mu[~present], draws=1, gene_tumor_dispersion=phi
     )
     constants.random_seed = None
     order = np.concatenate(
@@ -586,7 +586,7 @@ def test_cell_dispersion_map_matches_grid():
     assert float(disp["gamma"]) == pytest.approx(g_grid, rel=0.01)
 
 
-def test_cell_dispersion_recovers_planted_gamma():
+def test_gene_tumor_dispersion_recovers_planted_gamma():
     """Across replicates simulated under the dispersion model, the
     dispersion-aware MLE recovers the planted gamma and the
     dispersion-free one is biased low. A single replicate is too noisy
@@ -602,11 +602,35 @@ def test_cell_dispersion_recovers_planted_gamma():
     assert np.median(plain) < np.median(disp)
 
 
-def test_cell_dispersion_large_phi_matches_default():
+def test_cell_dispersion_is_a_deprecated_alias():
+    constants.random_seed = 0
+    a = estimate_gamma_from_mus(
+        _MUS_YES, _MUS_NO, draws=1, gene_tumor_dispersion=50.0
+    )
+    with pytest.warns(DeprecationWarning):
+        b = estimate_gamma_from_mus(
+            _MUS_YES, _MUS_NO, draws=1, cell_dispersion=50.0
+        )
+    constants.random_seed = None
+    assert float(b["gamma"]) == pytest.approx(float(a["gamma"]))
+    with (
+        pytest.raises(ValueError, match="not also"),
+        pytest.warns(DeprecationWarning),
+    ):
+        estimate_gamma_from_mus(
+            _MUS_YES,
+            _MUS_NO,
+            draws=1,
+            gene_tumor_dispersion=50.0,
+            cell_dispersion=50.0,
+        )
+
+
+def test_gene_tumor_dispersion_large_phi_matches_default():
     constants.random_seed = 0
     a = estimate_gamma_from_mus(_MUS_YES, _MUS_NO, draws=1)
     b = estimate_gamma_from_mus(
-        _MUS_YES, _MUS_NO, draws=1, cell_dispersion=1e9
+        _MUS_YES, _MUS_NO, draws=1, gene_tumor_dispersion=1e9
     )
     constants.random_seed = None
     assert float(b["gamma"]) == pytest.approx(
@@ -614,7 +638,7 @@ def test_cell_dispersion_large_phi_matches_default():
     )
 
 
-def test_cell_dispersion_with_mu_posterior_cut_samples():
+def test_gene_tumor_dispersion_with_mu_posterior_cut_samples():
     """The production path: 2-D mu draws (the mu-posterior cut, so mu
     is a latent vector whose total M is a random variable) together
     with dispersion. It must build, sample, and land near the
@@ -630,7 +654,7 @@ def test_cell_dispersion_with_mu_posterior_cut_samples():
         draws=800,
         burn=400,
         chains=2,
-        cell_dispersion=phi,
+        gene_tumor_dispersion=phi,
         auto_raise_target_accept=False,
     )
     constants.random_seed = None
@@ -643,20 +667,20 @@ def test_cell_dispersion_with_mu_posterior_cut_samples():
     assert abs(np.log(g_post / g_grid)) < 0.25
 
 
-def test_cell_shape_reproduces_cell_dispersion():
-    """cell_dispersion is the special case k_j = phi mu_j / M."""
+def test_gene_tumor_shape_reproduces_gene_tumor_dispersion():
+    """gene_tumor_dispersion is the special case k_j = phi mu_j / M."""
     phi = 150.0
     mu, present = _dispersed_presence(11, 8.0, phi, n_tumors=280)
     k = phi * mu / mu.sum()
     constants.random_seed = 0
     a = estimate_gamma_from_mus(
-        mu[present], mu[~present], draws=1, cell_dispersion=phi
+        mu[present], mu[~present], draws=1, gene_tumor_dispersion=phi
     )
     b = estimate_gamma_from_mus(
         mu[present],
         mu[~present],
         draws=1,
-        cell_shape=(k[present], k[~present]),
+        gene_tumor_shape=(k[present], k[~present]),
     )
     constants.random_seed = None
     assert float(b["gamma"]) == pytest.approx(
@@ -664,26 +688,32 @@ def test_cell_shape_reproduces_cell_dispersion():
     )
 
 
-def test_cell_shape_argument_errors():
+def test_gene_tumor_shape_argument_errors():
     k = np.ones(len(_MUS_YES) + len(_MUS_NO))
     with pytest.raises(ValueError, match="not both"):
         estimate_gamma_from_mus(
             _MUS_YES,
             _MUS_NO,
             draws=1,
-            cell_dispersion=10.0,
-            cell_shape=(k[: len(_MUS_YES)], k[len(_MUS_YES) :]),
+            gene_tumor_dispersion=10.0,
+            gene_tumor_shape=(k[: len(_MUS_YES)], k[len(_MUS_YES) :]),
         )
     with pytest.raises(ValueError, match="one shape per tumor"):
         estimate_gamma_from_mus(
-            _MUS_YES, _MUS_NO, draws=1, cell_shape=(k[:3], k[:3])
+            _MUS_YES,
+            _MUS_NO,
+            draws=1,
+            gene_tumor_shape=(k[:3], k[:3]),
         )
     with pytest.raises(ValueError, match="positive"):
         estimate_gamma_from_mus(
             _MUS_YES,
             _MUS_NO,
             draws=1,
-            cell_shape=(0 * k[: len(_MUS_YES)], k[len(_MUS_YES) :]),
+            gene_tumor_shape=(
+                0 * k[: len(_MUS_YES)],
+                k[len(_MUS_YES) :],
+            ),
         )
 
 

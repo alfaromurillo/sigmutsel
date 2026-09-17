@@ -10,6 +10,7 @@ sample.
 """
 
 import logging
+import warnings
 
 import arviz as az
 import numpy as np
@@ -56,11 +57,11 @@ def _natural_gamma_ceiling(mus_all, clip_floor=_CLIP_FLOOR):
 
 
 def _natural_gamma_ceiling_dispersed(
-    mus_all, cell_dispersion, clip_floor=_CLIP_FLOOR
+    mus_all, gene_tumor_dispersion, clip_floor=_CLIP_FLOOR
 ):
-    """The natural ceiling under per-cell dispersion.
+    """The natural ceiling under gene-tumor dispersion.
 
-    With ``cell_dispersion`` = ``phi``, ``P(absent in j) =
+    With ``gene_tumor_dispersion`` = ``phi``, ``P(absent in j) =
     (1 + gamma M / phi) ** (-phi p_j)`` with ``M = sum_j mu_j`` and
     ``p_j = mu_j / M`` (see :func:`estimate_gamma_from_mus`). It
     reaches the clip floor for every sample only once
@@ -73,8 +74,8 @@ def _natural_gamma_ceiling_dispersed(
     m = mus_all.sum()
     p_min = mus_all.min() / m
     with np.errstate(over="ignore", invalid="ignore"):
-        ceiling = (cell_dispersion / m) * np.expm1(
-            -np.log(clip_floor) / (cell_dispersion * p_min)
+        ceiling = (gene_tumor_dispersion / m) * np.expm1(
+            -np.log(clip_floor) / (gene_tumor_dispersion * p_min)
         )
     return float(ceiling) if np.isfinite(ceiling) else np.inf
 
@@ -114,6 +115,34 @@ class ConvergenceError(RuntimeError):
     """
 
 
+def _renamed_dispersion_args(
+    dispersion, shape, old_dispersion, old_shape
+):
+    """Map the pre-rename ``cell_*`` arguments onto their new names."""
+    for old, new, value, current in (
+        (
+            "cell_dispersion",
+            "gene_tumor_dispersion",
+            old_dispersion,
+            dispersion,
+        ),
+        ("cell_shape", "gene_tumor_shape", old_shape, shape),
+    ):
+        if value is None:
+            continue
+        warnings.warn(
+            f"{old} is deprecated; use {new}.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if current is not None:
+            raise ValueError(f"Pass {new} only, not also {old}.")
+    return (
+        dispersion if old_dispersion is None else old_dispersion,
+        shape if old_shape is None else old_shape,
+    )
+
+
 def estimate_gamma_from_mus(
     mus_yes,
     mus_no,
@@ -135,6 +164,8 @@ def estimate_gamma_from_mus(
     rhat_threshold=1.01,
     ess_threshold=200,
     cap_at_natural_ceiling=True,
+    gene_tumor_dispersion=None,
+    gene_tumor_shape=None,
     cell_dispersion=None,
     cell_shape=None,
 ):
@@ -164,8 +195,8 @@ def estimate_gamma_from_mus(
         Mu values for tumors without the variant(s). Same shape
         rule as ``mus_yes``.
 
-    cell_dispersion : float or None, default None
-        Optional per-cell overdispersion ``phi``. ``None`` (default)
+    gene_tumor_dispersion : float or None, default None
+        Optional gene-tumor overdispersion ``phi``. ``None`` (default)
         keeps the model above exactly. Given a value, each tumor's
         rate is ``lambda_j ~ Gamma(shape=phi * p_j, rate=phi / M)``
         with ``M = sum_j mu_j`` and ``p_j = mu_j / M`` -- mean
@@ -185,17 +216,17 @@ def estimate_gamma_from_mus(
         of variation of ``1 / sqrt(phi)``, which overlaps any
         separate per-gene rate correction already applied to ``mu``.
 
-    cell_shape : tuple of array-like or None, default None
-        The same per-cell Gamma dispersion, with each tumor's shape
+    gene_tumor_shape : tuple of array-like or None, default None
+        The same gene-tumor Gamma dispersion, with each tumor's shape
         ``k_j`` given directly as ``(shapes_yes, shapes_no)`` in the
         order of ``mus_yes``/``mus_no``: ``P(present in j) =
-        1 - (1 + gamma mu_j / k_j) ** (-k_j)``. ``cell_dispersion``
+        1 - (1 + gamma mu_j / k_j) ** (-k_j)``. ``gene_tumor_dispersion``
         is the special case ``k_j = phi mu_j / M``. Use this form when
         the dispersion belongs to a larger unit than the item being
         scored -- e.g. a variant inheriting its gene's per-tumor
         multiplier, whose shape is ``phi_gene * p_gene,j`` rather than
         anything computed from the variant's own rates. Mutually
-        exclusive with ``cell_dispersion``.
+        exclusive with ``gene_tumor_dispersion``.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -400,13 +431,21 @@ def estimate_gamma_from_mus(
         n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
         mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
 
+    gene_tumor_dispersion, gene_tumor_shape = (
+        _renamed_dispersion_args(
+            gene_tumor_dispersion,
+            gene_tumor_shape,
+            cell_dispersion,
+            cell_shape,
+        )
+    )
     shapes_all = None
-    if cell_shape is not None:
-        if cell_dispersion is not None:
+    if gene_tumor_shape is not None:
+        if gene_tumor_dispersion is not None:
             raise ValueError(
-                "Pass cell_dispersion or cell_shape, not both."
+                "Pass gene_tumor_dispersion or gene_tumor_shape, not both."
             )
-        shapes_yes, shapes_no = cell_shape
+        shapes_yes, shapes_no = gene_tumor_shape
         shapes_all = np.concatenate(
             [
                 np.asarray(shapes_yes, dtype=float).ravel(),
@@ -415,7 +454,7 @@ def estimate_gamma_from_mus(
         )
         if shapes_all.shape[0] != n_yes + n_no:
             raise ValueError(
-                "cell_shape must give one shape per tumor, in the order "
+                "gene_tumor_shape must give one shape per tumor, in the order "
                 f"of mus_yes then mus_no; got {shapes_all.shape[0]} for "
                 f"{n_yes + n_no} tumors."
             )
@@ -423,20 +462,23 @@ def estimate_gamma_from_mus(
             shapes_all <= 0
         ):
             raise ValueError(
-                "cell_shape values must be positive and finite."
+                "gene_tumor_shape values must be positive and finite."
             )
         natural_ceiling = _natural_gamma_ceiling_shaped(
             mus_all, shapes_all
         )
-    elif cell_dispersion is not None:
-        cell_dispersion = float(cell_dispersion)
-        if not np.isfinite(cell_dispersion) or cell_dispersion <= 0:
+    elif gene_tumor_dispersion is not None:
+        gene_tumor_dispersion = float(gene_tumor_dispersion)
+        if (
+            not np.isfinite(gene_tumor_dispersion)
+            or gene_tumor_dispersion <= 0
+        ):
             raise ValueError(
-                "cell_dispersion must be a positive finite number or "
-                f"None; got {cell_dispersion!r}."
+                "gene_tumor_dispersion must be a positive finite number or "
+                f"None; got {gene_tumor_dispersion!r}."
             )
         natural_ceiling = _natural_gamma_ceiling_dispersed(
-            mus_all, cell_dispersion
+            mus_all, gene_tumor_dispersion
         )
     else:
         natural_ceiling = _natural_gamma_ceiling(mus_all)
@@ -491,16 +533,18 @@ def estimate_gamma_from_mus(
                     Ps = tt.clip(
                         1 - tt.exp(log_absent), 1e-12, 1 - 1e-12
                     )
-                elif cell_dispersion is None:
+                elif gene_tumor_dispersion is None:
                     Ps = tt.clip(
                         1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
                     )
                 else:
                     m_total = tt.sum(mu)
                     log_absent = (
-                        -cell_dispersion
+                        -gene_tumor_dispersion
                         * (mu / m_total)
-                        * tt.log1p(gamma * m_total / cell_dispersion)
+                        * tt.log1p(
+                            gamma * m_total / gene_tumor_dispersion
+                        )
                     )
                     Ps = tt.clip(
                         1 - tt.exp(log_absent), 1e-12, 1 - 1e-12

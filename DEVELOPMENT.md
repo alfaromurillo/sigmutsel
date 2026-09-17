@@ -17,6 +17,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
 | `estimate_rg.py` | Shared per-gene rate correction `r_g`, marginalized |
+| `cell_dispersion.py` | Per-cell dispersion `phi` of a gene's mutations across tumors, fitted as a trend in the gene's mutation count |
 | `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
@@ -114,6 +115,30 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   random_seed = 777` (that only rebinds a local name and has no
   effect, since the estimation functions read `constants.random_seed`
   as a module attribute at call time).
+
+### Per-cell dispersion (`cell_dispersion.py`)
+
+- `Model.estimate_cell_dispersion()` fits `phi` from how passenger
+  genes' non-silent mutations are allocated across tumors
+  (Dirichlet-Multinomial, conditional on each gene's total, so the
+  rate model is not refitted). `estimate_gamma(...,
+  cell_dispersion="fitted")` then uses the per-cell Gamma presence
+  likelihood with that gene's own `phi`. Genes only; variants reject
+  the argument.
+- **`phi` is a trend, not a scalar.** It rises with a gene's
+  mutation count, so a pooled `phi` overstates dispersion for
+  high-count genes -- about twofold for gamma in real cohorts.
+  `fit_cell_dispersion_trend` fits `phi` per count stratum and
+  `log phi = a + b log N_g` across them, falling back to the pooled
+  value with fewer than three usable strata. Highest-count genes are
+  usually above the last stratum, so their `phi` is extrapolated.
+- One model for every dataset: where there is little dispersion the
+  fit returns a large `phi` and gamma is left essentially where the
+  dispersion-free likelihood puts it. Leaving real dispersion out
+  biases gamma low.
+- The construction also gives a gene's total rate a coefficient of
+  variation of `1/sqrt(phi)`, which overlaps `r_g`. At the `phi`
+  values seen in practice that is a few percent at most.
 
 ## TCGA sample selection (`tcga_sample_selection.py`)
 

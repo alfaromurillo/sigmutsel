@@ -612,3 +612,32 @@ def test_cell_dispersion_large_phi_matches_default():
     assert float(b["gamma"]) == pytest.approx(
         float(a["gamma"]), rel=1e-3
     )
+
+
+def test_cell_dispersion_with_mu_posterior_cut_samples():
+    """The production path: 2-D mu draws (the mu-posterior cut, so mu
+    is a latent vector whose total M is a random variable) together
+    with dispersion. It must build, sample, and land near the
+    point-mu dispersion MLE when the draws are tight."""
+    phi = 150.0
+    mu, present = _dispersed_presence(7, 8.0, phi, n_tumors=280)
+    rng = np.random.default_rng(0)
+    draws = mu[None, :] * np.exp(rng.normal(0, 0.01, (200, len(mu))))
+    constants.random_seed = 0
+    res = estimate_gamma_from_mus(
+        draws[:, present],
+        draws[:, ~present],
+        draws=800,
+        burn=400,
+        chains=2,
+        cell_dispersion=phi,
+        auto_raise_target_accept=False,
+    )
+    constants.random_seed = None
+    order = np.concatenate(
+        [np.flatnonzero(present), np.flatnonzero(~present)]
+    )
+    is_yes = np.arange(len(mu)) < present.sum()
+    g_grid = _closed_form_mle(mu[order], is_yes, phi)
+    g_post = float(np.median(res.posterior["gamma"].values))
+    assert abs(np.log(g_post / g_grid)) < 0.25

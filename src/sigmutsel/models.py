@@ -2477,6 +2477,7 @@ class Model:
     _rg_statistics: dict = None
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
+    cell_dispersion_trend: dict = None
     _channel_cov_effects: np.ndarray = None
     cov_effects_posteriors: object = None
     _mu_gs: pd.DataFrame = None
@@ -2540,6 +2541,7 @@ class Model:
         self._rg_statistics = None
         self._rg_separate_c = False
         self._rg_delta_intercept = None
+        self.cell_dispersion_trend = None
         self._channel_cov_effects = None
         self.cov_effects_posteriors = None
         self._mu_gs = None
@@ -3329,6 +3331,7 @@ class Model:
         excluded_samples=None,
         use_mu_posterior=False,
         r_g_variant="none",
+        cell_dispersion=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -3379,6 +3382,15 @@ class Model:
             ``"production"`` (both channels) partly absorbs selection
             itself and would bias gamma downward -- see
             :meth:`compute_mu_g_posterior_draws`.
+        cell_dispersion : None, float or "fitted", default None
+            Per-cell dispersion in the presence likelihood (see
+            :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``
+            keeps the dispersion-free likelihood; a float is used as
+            ``phi`` directly; ``"fitted"`` takes ``phi`` for the
+            gene's own non-silent mutation count from
+            :attr:`cell_dispersion_trend` (see
+            :meth:`estimate_cell_dispersion`). Genes only, and only
+            with ``non_silent=True``.
 
         Returns
         -------
@@ -3405,6 +3417,12 @@ class Model:
         if level is None:
             level = self._detect_item_level(item)
 
+        if level == "variant" and cell_dispersion is not None:
+            raise ValueError(
+                "cell_dispersion applies to gene-level gammas only: "
+                "phi is estimated from how a gene's mutations are "
+                "allocated across tumors."
+            )
         if level == "variant":
             result = self._estimate_gamma_variant(
                 item,
@@ -3423,6 +3441,7 @@ class Model:
                 excluded_samples=excluded_samples,
                 use_mu_posterior=use_mu_posterior,
                 r_g_variant=r_g_variant,
+                cell_dispersion=cell_dispersion,
             )
         else:
             raise ValueError(
@@ -3609,6 +3628,7 @@ class Model:
         excluded_samples=None,
         use_mu_posterior=False,
         r_g_variant="none",
+        cell_dispersion=None,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -3649,6 +3669,8 @@ class Model:
         r_g_variant : {"none", "production", "evaluation"}, default "none"
             Which ``r_g`` feeds the mu draws when
             ``use_mu_posterior=True``; ignored otherwise.
+        cell_dispersion : None, float or "fitted", default None
+            See :meth:`estimate_gamma`.
 
         Returns
         -------
@@ -3662,6 +3684,12 @@ class Model:
                 "use_mu_posterior=True requires non_silent=True -- "
                 "there is no mu-posterior equivalent for the merged/"
                 "silent-channel rate."
+            )
+
+        if cell_dispersion is not None and not non_silent:
+            raise ValueError(
+                "cell_dispersion requires non_silent=True -- phi is "
+                "estimated on the non-silent channel."
             )
 
         if self._mu_gs is None:
@@ -3710,6 +3738,11 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
+        phi = self._resolve_cell_dispersion(
+            cell_dispersion, gene_id, present_mask | absent_mask
+        )
+        if phi is not None:
+            extra["cell_dispersion"] = phi
         if use_mu_posterior:
             draws = self.compute_mu_g_posterior_draws(
                 gene_id, r_g_variant=r_g_variant
@@ -3730,11 +3763,118 @@ class Model:
                 **extra,
             )
 
+        if phi is not None and hasattr(result, "posterior"):
+            result.posterior.attrs["cell_dispersion"] = float(phi)
+
         if store:
             # Always store with ensembl_gene_id for consistency
             self.gammas[gene_id] = result
 
         return result
+
+    def _resolve_cell_dispersion(
+        self, cell_dispersion, gene_id, kept
+    ):
+        """Turn a ``cell_dispersion`` argument into a ``phi`` or None."""
+        if cell_dispersion is None:
+            return None
+        if isinstance(cell_dispersion, str):
+            if cell_dispersion != "fitted":
+                raise ValueError(
+                    "cell_dispersion must be None, a number or "
+                    f"'fitted'; got {cell_dispersion!r}."
+                )
+            if self.cell_dispersion_trend is None:
+                raise ValueError(
+                    "cell_dispersion='fitted' needs a fitted trend -- "
+                    "call estimate_cell_dispersion() first."
+                )
+            from .cell_dispersion import phi_for_count
+
+            counts = self.dataset.genes_counts_non_silent
+            cols = kept.index[kept].intersection(counts.columns)
+            n = (
+                float(counts.loc[gene_id, cols].sum())
+                if gene_id in counts.index
+                else 0.0
+            )
+            return phi_for_count(self.cell_dispersion_trend, n)
+        return float(cell_dispersion)
+
+    def estimate_cell_dispersion(
+        self, excluded_samples=None, strata=None, min_genes=15
+    ):
+        """Fit the per-cell dispersion trend on passenger genes.
+
+        Uses how passenger genes' non-silent mutations are allocated
+        across tumors, against the non-synonymous channel's per-tumor
+        rates, so it needs a channel-split model
+        (:meth:`compute_channel_base_mus`). Driver genes are excluded:
+        their allocation reflects selection, not rate. The rate
+        model's own fit is not touched -- the allocation likelihood
+        conditions on each gene's total, so ``phi`` is estimable from
+        the per-tumor rates alone. See :mod:`.cell_dispersion`.
+
+        Parameters
+        ----------
+        excluded_samples : collection of str or None
+            Tumors to leave out, as in :meth:`estimate_gamma`.
+        strata, min_genes
+            Passed to
+            :func:`.cell_dispersion.fit_cell_dispersion_trend`.
+
+        Returns
+        -------
+        dict
+            The trend, also stored as :attr:`cell_dispersion_trend`.
+        """
+        from .cell_dispersion import (
+            DEFAULT_STRATA,
+            fit_cell_dispersion_trend,
+        )
+        from .estimate_presence import filter_passenger_genes_ensembl
+
+        if self._base_mus_nonsyn is None or isinstance(
+            self._base_mus_nonsyn, dict
+        ):
+            raise ValueError(
+                "estimate_cell_dispersion needs signature-independent "
+                "channel baselines; call compute_channel_base_mus() "
+                "first."
+            )
+        base = self._base_mus_nonsyn
+        samples = base.columns
+        if excluded_samples is not None:
+            samples = samples[~samples.isin(list(excluded_samples))]
+        genes = pd.Index(filter_passenger_genes_ensembl(base.index))
+        counts = (
+            self.dataset.genes_counts_non_silent.reindex(
+                index=genes, columns=samples, fill_value=0
+            )
+            .fillna(0)
+            .to_numpy(dtype=float)
+        )
+        baseline = (
+            base.reindex(index=genes, columns=samples)
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
+        trend = fit_cell_dispersion_trend(
+            counts,
+            baseline,
+            strata=DEFAULT_STRATA if strata is None else strata,
+            min_genes=min_genes,
+        )
+        self.cell_dispersion_trend = trend
+        logger.info(
+            "Cell dispersion (%s): log phi = %.3f + %.3f log N_g; "
+            "pooled phi %.4g",
+            trend["method"],
+            trend["intercept"],
+            trend["slope"],
+            trend["pooled_phi"],
+        )
+        return trend
 
     def plot_gamma_results(
         self,
@@ -4608,6 +4748,7 @@ class Model:
             "rg_theta": self._rg_theta,
             "rg_delta_intercept": self._rg_delta_intercept,
             "rg_separate_c": self._rg_separate_c,
+            "cell_dispersion_trend": self.cell_dispersion_trend,
             "prob_g_tau_tau_independent": (
                 self._prob_g_tau_tau_independent
             ),
@@ -4754,6 +4895,9 @@ class Model:
         model._rg_theta = manifest.get("rg_theta")
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
         model._rg_separate_c = manifest.get("rg_separate_c", False)
+        model.cell_dispersion_trend = manifest.get(
+            "cell_dispersion_trend"
+        )
         if "base_mus_syn" in files:
             model._base_mus_syn = _load_dataframe(
                 files["base_mus_syn"]

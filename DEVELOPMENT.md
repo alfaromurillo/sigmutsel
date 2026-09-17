@@ -132,6 +132,14 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   `log phi = a + b log N_g` across them, falling back to the pooled
   value with fewer than three usable strata. Highest-count genes are
   usually above the last stratum, so their `phi` is extrapolated.
+- **Two guards, both learned on small datasets.** A negative slope
+  is floored at zero: it comes from a sparse high-count stratum, and
+  extrapolated it gave the largest genes `phi` ~ 4 and gamma values
+  of 1e9. And the trend must raise the allocation likelihood of
+  held-out genes over the Multinomial, or `method` becomes "none"
+  and gamma uses the dispersion-free likelihood. The MLE of `phi` is
+  a boundary problem -- a small finite value is common by chance
+  when a few genes decide it.
 - One model for every dataset: where there is little dispersion the
   fit returns a large `phi` and gamma is left essentially where the
   dispersion-free likelihood puts it. Leaving real dispersion out

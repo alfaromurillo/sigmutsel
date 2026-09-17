@@ -3798,7 +3798,10 @@ class Model:
                 if gene_id in counts.index
                 else 0.0
             )
-            return phi_for_count(self.cell_dispersion_trend, n)
+            phi = phi_for_count(self.cell_dispersion_trend, n)
+            # "none": the held-out check found no support for
+            # dispersion, so the dispersion-free likelihood is used.
+            return phi if np.isfinite(phi) else None
         return float(cell_dispersion)
 
     def estimate_cell_dispersion(

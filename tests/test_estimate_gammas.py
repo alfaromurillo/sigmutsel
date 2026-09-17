@@ -514,3 +514,101 @@ def test_estimate_gamma_defaults_use_mu_posterior_off(monkeypatch):
 
     assert captured["use_mu_posterior"] is False
     assert captured["r_g_variant"] == "none"
+
+
+# ---------------------------------------------------------------------
+# Per-cell dispersion in the presence likelihood (``cell_dispersion``)
+# ---------------------------------------------------------------------
+
+
+def _dispersed_presence(seed, gamma, phi, n_tumors=1500):
+    """Presence data simulated under the per-cell Gamma rate model."""
+    rng = np.random.default_rng(seed)
+    mu = np.exp(rng.normal(0, 1.2, n_tumors))
+    mu = 0.05 * mu / mu.mean()
+    m = mu.sum()
+    lam = rng.gamma(phi * mu / m, m / phi)
+    present = rng.random(n_tumors) > np.exp(-gamma * lam)
+    return mu, present
+
+
+def _closed_form_mle(mu, present, phi):
+    """Brute-force grid MLE of the same likelihood, for comparison."""
+    m = mu.sum()
+    grid = np.exp(np.linspace(np.log(0.5), np.log(100), 4000))
+    lls = []
+    for g in grid:
+        log_absent = -phi * (mu / m) * np.log1p(g * m / phi)
+        lls.append(
+            log_absent[~present].sum()
+            + np.log(-np.expm1(log_absent[present])).sum()
+        )
+    return grid[int(np.argmax(lls))]
+
+
+def test_dispersed_ceiling_reduces_to_dispersion_free():
+    mus = np.concatenate([_MUS_YES, _MUS_NO])
+    from sigmutsel.estimate_gammas import (
+        _natural_gamma_ceiling_dispersed,
+    )
+
+    assert _natural_gamma_ceiling_dispersed(
+        mus, 1e9
+    ) == pytest.approx(_natural_gamma_ceiling(mus), rel=1e-4)
+    assert _natural_gamma_ceiling_dispersed(mus, 5.0) > (
+        _natural_gamma_ceiling(mus)
+    )
+
+
+def test_cell_dispersion_rejects_nonpositive():
+    with pytest.raises(ValueError, match="cell_dispersion"):
+        estimate_gamma_from_mus(
+            _MUS_YES, _MUS_NO, draws=1, cell_dispersion=0
+        )
+
+
+def test_cell_dispersion_map_matches_grid():
+    """MAP under dispersion equals a brute-force grid MLE of the same
+    closed form -- the check that the PyTensor expression is the
+    likelihood the docstring states."""
+    phi = 150.0
+    mu, present = _dispersed_presence(3, 8.0, phi, n_tumors=280)
+    constants.random_seed = 0
+    disp = estimate_gamma_from_mus(
+        mu[present], mu[~present], draws=1, cell_dispersion=phi
+    )
+    constants.random_seed = None
+    order = np.concatenate(
+        [np.flatnonzero(present), np.flatnonzero(~present)]
+    )
+    is_yes = np.arange(len(mu)) < present.sum()
+    g_grid = _closed_form_mle(mu[order], is_yes, phi)
+    assert float(disp["gamma"]) == pytest.approx(g_grid, rel=0.01)
+
+
+def test_cell_dispersion_recovers_planted_gamma():
+    """Across replicates simulated under the dispersion model, the
+    dispersion-aware MLE recovers the planted gamma and the
+    dispersion-free one is biased low. A single replicate is too noisy
+    to test: with shape ``phi * p_j`` well below one, each tumor
+    carries little information."""
+    gamma, phi = 8.0, 150.0
+    disp, plain = [], []
+    for seed in range(25):
+        mu, present = _dispersed_presence(100 + seed, gamma, phi, 280)
+        disp.append(_closed_form_mle(mu, present, phi))
+        plain.append(_closed_form_mle(mu, present, 1e12))
+    assert abs(np.log(np.median(disp) / gamma)) < 0.12
+    assert np.median(plain) < np.median(disp)
+
+
+def test_cell_dispersion_large_phi_matches_default():
+    constants.random_seed = 0
+    a = estimate_gamma_from_mus(_MUS_YES, _MUS_NO, draws=1)
+    b = estimate_gamma_from_mus(
+        _MUS_YES, _MUS_NO, draws=1, cell_dispersion=1e9
+    )
+    constants.random_seed = None
+    assert float(b["gamma"]) == pytest.approx(
+        float(a["gamma"]), rel=1e-3
+    )

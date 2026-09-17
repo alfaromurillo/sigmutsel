@@ -55,6 +55,30 @@ def _natural_gamma_ceiling(mus_all, clip_floor=_CLIP_FLOOR):
     return -np.log(clip_floor) / np.min(mus_all)
 
 
+def _natural_gamma_ceiling_dispersed(
+    mus_all, cell_dispersion, clip_floor=_CLIP_FLOOR
+):
+    """The natural ceiling under per-cell dispersion.
+
+    With ``cell_dispersion`` = ``phi``, ``P(absent in j) =
+    (1 + gamma M / phi) ** (-phi p_j)`` with ``M = sum_j mu_j`` and
+    ``p_j = mu_j / M`` (see :func:`estimate_gamma_from_mus`). It
+    reaches the clip floor for every sample only once
+    ``phi p_min log1p(gamma M / phi) > -log(clip_floor)``, i.e. at a
+    much larger gamma than the dispersion-free ceiling -- often one
+    that overflows, in which case the likelihood never saturates in
+    floating point and the ceiling is infinite.
+    """
+    mus_all = np.asarray(mus_all, dtype=float)
+    m = mus_all.sum()
+    p_min = mus_all.min() / m
+    with np.errstate(over="ignore", invalid="ignore"):
+        ceiling = (cell_dispersion / m) * np.expm1(
+            -np.log(clip_floor) / (cell_dispersion * p_min)
+        )
+    return float(ceiling) if np.isfinite(ceiling) else np.inf
+
+
 class ConvergenceError(RuntimeError):
     """MCMC sampling completed but convergence diagnostics are bad.
 
@@ -87,6 +111,7 @@ def estimate_gamma_from_mus(
     rhat_threshold=1.01,
     ess_threshold=200,
     cap_at_natural_ceiling=True,
+    cell_dispersion=None,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -113,6 +138,27 @@ def estimate_gamma_from_mus(
     mus_no : array-like
         Mu values for tumors without the variant(s). Same shape
         rule as ``mus_yes``.
+
+    cell_dispersion : float or None, default None
+        Optional per-cell overdispersion ``phi``. ``None`` (default)
+        keeps the model above exactly. Given a value, each tumor's
+        rate is ``lambda_j ~ Gamma(shape=phi * p_j, rate=phi / M)``
+        with ``M = sum_j mu_j`` and ``p_j = mu_j / M`` -- mean
+        ``mu_j``, and, conditional on the total, a
+        Dirichlet-Multinomial allocation with concentration
+        ``phi * p_j`` -- so that::
+
+            P(present in j) = 1 - (1 + gamma M / phi) ** (-phi p_j)
+
+        which tends to ``1 - exp(-gamma mu_j)`` as ``phi -> inf``.
+        Ignoring real dispersion of this kind biases gamma
+        **downward**: a mutated tumor is less informative per unit
+        of rate when rates vary more between tumors than ``mu``
+        says. Both ``mus_yes`` and ``mus_no`` must together cover
+        every tumor, since ``M`` sums over all of them. The
+        construction also gives the gene's total rate a coefficient
+        of variation of ``1 / sqrt(phi)``, which overlaps any
+        separate per-gene rate correction already applied to ``mu``.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -317,7 +363,18 @@ def estimate_gamma_from_mus(
         n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
         mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
 
-    natural_ceiling = _natural_gamma_ceiling(mus_all)
+    if cell_dispersion is not None:
+        cell_dispersion = float(cell_dispersion)
+        if not np.isfinite(cell_dispersion) or cell_dispersion <= 0:
+            raise ValueError(
+                "cell_dispersion must be a positive finite number or "
+                f"None; got {cell_dispersion!r}."
+            )
+        natural_ceiling = _natural_gamma_ceiling_dispersed(
+            mus_all, cell_dispersion
+        )
+    else:
+        natural_ceiling = _natural_gamma_ceiling(mus_all)
 
     if kwargs is None:
         kwargs = {}
@@ -362,9 +419,20 @@ def estimate_gamma_from_mus(
                 else:
                     mu = mus_all
 
-                Ps = tt.clip(
-                    1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
-                )
+                if cell_dispersion is None:
+                    Ps = tt.clip(
+                        1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
+                    )
+                else:
+                    m_total = tt.sum(mu)
+                    log_absent = (
+                        -cell_dispersion
+                        * (mu / m_total)
+                        * tt.log1p(gamma * m_total / cell_dispersion)
+                    )
+                    Ps = tt.clip(
+                        1 - tt.exp(log_absent), 1e-12, 1 - 1e-12
+                    )
 
                 pm.Bernoulli(
                     name="variants_observed",

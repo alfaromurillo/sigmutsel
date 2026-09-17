@@ -641,3 +641,83 @@ def test_cell_dispersion_with_mu_posterior_cut_samples():
     g_grid = _closed_form_mle(mu[order], is_yes, phi)
     g_post = float(np.median(res.posterior["gamma"].values))
     assert abs(np.log(g_post / g_grid)) < 0.25
+
+
+def test_cell_shape_reproduces_cell_dispersion():
+    """cell_dispersion is the special case k_j = phi mu_j / M."""
+    phi = 150.0
+    mu, present = _dispersed_presence(11, 8.0, phi, n_tumors=280)
+    k = phi * mu / mu.sum()
+    constants.random_seed = 0
+    a = estimate_gamma_from_mus(
+        mu[present], mu[~present], draws=1, cell_dispersion=phi
+    )
+    b = estimate_gamma_from_mus(
+        mu[present],
+        mu[~present],
+        draws=1,
+        cell_shape=(k[present], k[~present]),
+    )
+    constants.random_seed = None
+    assert float(b["gamma"]) == pytest.approx(
+        float(a["gamma"]), rel=1e-4
+    )
+
+
+def test_cell_shape_argument_errors():
+    k = np.ones(len(_MUS_YES) + len(_MUS_NO))
+    with pytest.raises(ValueError, match="not both"):
+        estimate_gamma_from_mus(
+            _MUS_YES,
+            _MUS_NO,
+            draws=1,
+            cell_dispersion=10.0,
+            cell_shape=(k[: len(_MUS_YES)], k[len(_MUS_YES) :]),
+        )
+    with pytest.raises(ValueError, match="one shape per tumor"):
+        estimate_gamma_from_mus(
+            _MUS_YES, _MUS_NO, draws=1, cell_shape=(k[:3], k[:3])
+        )
+    with pytest.raises(ValueError, match="positive"):
+        estimate_gamma_from_mus(
+            _MUS_YES,
+            _MUS_NO,
+            draws=1,
+            cell_shape=(0 * k[: len(_MUS_YES)], k[len(_MUS_YES) :]),
+        )
+
+
+def test_variant_inheriting_gene_dispersion_recovers_gamma():
+    """A variant sharing its gene's per-tumor multiplier: the shaped
+    likelihood recovers gamma across replicates and the plain one is
+    biased low. The variant's rate is a small, tumor-varying fraction
+    of the gene's, so its own rates say nothing about the shape."""
+    gamma, phi, n = 30.0, 60.0, 400
+
+    def mle(mu_m, present, shapes):
+        grid = np.exp(np.linspace(np.log(1), np.log(400), 3000))
+        best, arg = -np.inf, None
+        for g in grid:
+            la = -shapes * np.log1p(g * mu_m / shapes)
+            ll = (
+                la[~present].sum()
+                + np.log(-np.expm1(la[present])).sum()
+            )
+            if ll > best:
+                best, arg = ll, g
+        return arg
+
+    shaped, plain = [], []
+    for seed in range(25):
+        rng = np.random.default_rng(200 + seed)
+        mu_g = np.exp(rng.normal(0, 1.2, n))
+        mu_g = 0.05 * mu_g / mu_g.mean()
+        p = mu_g / mu_g.sum()
+        shapes = phi * p
+        eps = rng.gamma(shapes, 1.0 / shapes)
+        mu_m = mu_g * rng.uniform(0.02, 0.08, n)
+        present = rng.random(n) > np.exp(-gamma * mu_m * eps)
+        shaped.append(mle(mu_m, present, shapes))
+        plain.append(mle(mu_m, present, np.full(n, 1e12)))
+    assert abs(np.log(np.median(shaped) / gamma)) < 0.15
+    assert np.median(plain) < np.median(shaped)

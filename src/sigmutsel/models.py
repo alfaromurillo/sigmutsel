@@ -3389,8 +3389,13 @@ class Model:
             ``phi`` directly; ``"fitted"`` takes ``phi`` for the
             gene's own non-silent mutation count from
             :attr:`cell_dispersion_trend` (see
-            :meth:`estimate_cell_dispersion`). Genes only, and only
-            with ``non_silent=True``.
+            :meth:`estimate_cell_dispersion`). For a gene, only with
+            ``non_silent=True``. For a variant, the variant inherits
+            its gene's per-tumor dispersion: the multiplier acts on the
+            (gene, tumor) cell, so each tumor's Gamma shape is
+            ``phi_gene * p_gene,j`` with ``p`` the gene's allocation of
+            rate across tumors and ``phi_gene`` taken at the gene's own
+            mutation count.
 
         Returns
         -------
@@ -3417,12 +3422,6 @@ class Model:
         if level is None:
             level = self._detect_item_level(item)
 
-        if level == "variant" and cell_dispersion is not None:
-            raise ValueError(
-                "cell_dispersion applies to gene-level gammas only: "
-                "phi is estimated from how a gene's mutations are "
-                "allocated across tumors."
-            )
         if level == "variant":
             result = self._estimate_gamma_variant(
                 item,
@@ -3431,6 +3430,7 @@ class Model:
                 excluded_samples=excluded_samples,
                 use_mu_posterior=use_mu_posterior,
                 r_g_variant=r_g_variant,
+                cell_dispersion=cell_dispersion,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -3539,6 +3539,7 @@ class Model:
         excluded_samples=None,
         use_mu_posterior=False,
         r_g_variant="none",
+        cell_dispersion=None,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -3565,6 +3566,8 @@ class Model:
         r_g_variant : {"none", "production", "evaluation"}, default "none"
             Which ``r_g`` feeds the mu draws when
             ``use_mu_posterior=True``; ignored otherwise.
+        cell_dispersion : None, float or "fitted", default None
+            The variant's gene's ``phi`` (see :meth:`estimate_gamma`).
 
         Returns
         -------
@@ -3594,25 +3597,40 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
+        yes_ids = present_mask.index[present_mask]
+        no_ids = absent_mask.index[absent_mask]
+        phi = None
+        if cell_dispersion is not None:
+            gene_id = self._variant_gene_id(variant)
+            phi = self._resolve_cell_dispersion(
+                cell_dispersion, gene_id, present_mask | absent_mask
+            )
+            if phi is not None:
+                shapes = self._gene_cell_shapes(
+                    gene_id, phi, yes_ids.union(no_ids)
+                )
+                extra["cell_shape"] = (
+                    shapes.loc[yes_ids].to_numpy(),
+                    shapes.loc[no_ids].to_numpy(),
+                )
         if use_mu_posterior:
             draws = self.compute_mu_m_posterior_draws(
                 variant, r_g_variant=r_g_variant
             )
             result = estimate_gamma_from_mus(
-                draws.loc[
-                    :, present_mask.index[present_mask]
-                ].to_numpy(),
-                draws.loc[
-                    :, absent_mask.index[absent_mask]
-                ].to_numpy(),
+                draws.loc[:, yes_ids].to_numpy(),
+                draws.loc[:, no_ids].to_numpy(),
                 **extra,
             )
         else:
             result = estimate_gamma_from_mus(
-                self.mu_ms.loc[variant][present_mask],
-                self.mu_ms.loc[variant][absent_mask],
+                self.mu_ms.loc[variant, yes_ids],
+                self.mu_ms.loc[variant, no_ids],
                 **extra,
             )
+
+        if phi is not None and hasattr(result, "posterior"):
+            result.posterior.attrs["cell_dispersion"] = float(phi)
 
         if store:
             self.gammas[variant] = result
@@ -3804,6 +3822,54 @@ class Model:
             return phi if np.isfinite(phi) else None
         return float(cell_dispersion)
 
+    def _variant_gene_id(self, variant):
+        """The ensembl_gene_id a variant belongs to."""
+        vdb = getattr(self.dataset, "_variant_db", None)
+        if vdb is not None and variant in vdb.index:
+            return vdb.loc[variant, "ensembl_gene_id"]
+        db = self.dataset.mutation_db
+        hit = db.loc[db["variant"] == variant, "ensembl_gene_id"]
+        if hit.empty:
+            raise ValueError(
+                f"Cannot find the gene of variant {variant!r}."
+            )
+        return hit.iloc[0]
+
+    def _dispersion_baseline(self):
+        """Per-tumor rates the dispersion is defined against.
+
+        The non-synonymous channel's baseline for a channel-split model,
+        otherwise the merged baseline. Only the allocation across
+        tumors matters -- per-gene scalars cancel -- so the covariate
+        scale and ``r_g`` are not needed.
+        """
+        for base in (self._base_mus_nonsyn, self._base_mus):
+            if base is not None and not isinstance(base, dict):
+                return base
+        raise ValueError(
+            "Cell dispersion needs signature-independent baseline "
+            "rates; call compute_base_mus() (or "
+            "compute_channel_base_mus()) first."
+        )
+
+    def _gene_cell_shapes(self, gene_id, phi, tumors):
+        """``phi * p_gene,j`` over ``tumors``, as a Series."""
+        row = (
+            self._dispersion_baseline()
+            .loc[gene_id]
+            .reindex(tumors)
+            .fillna(0.0)
+            .astype(float)
+        )
+        total = row.sum()
+        if total <= 0:
+            raise ValueError(
+                f"Gene {gene_id!r} has no baseline rate in these tumors."
+            )
+        # A tumor with zero gene rate has zero variant rate too, so its
+        # shape never matters; keep it positive for the likelihood.
+        return (phi * row / total).clip(lower=1e-12)
+
     def estimate_cell_dispersion(
         self, excluded_samples=None, strata=None, min_genes=15
     ):
@@ -3811,8 +3877,9 @@ class Model:
 
         Uses how passenger genes' non-silent mutations are allocated
         across tumors, against the non-synonymous channel's per-tumor
-        rates, so it needs a channel-split model
-        (:meth:`compute_channel_base_mus`). Driver genes are excluded:
+        rates for a channel-split model and the merged baseline
+        otherwise -- the same rates non-silent gammas are scored
+        against. Driver genes are excluded:
         their allocation reflects selection, not rate. The rate
         model's own fit is not touched -- the allocation likelihood
         conditions on each gene's total, so ``phi`` is estimable from
@@ -3837,15 +3904,7 @@ class Model:
         )
         from .estimate_presence import filter_passenger_genes_ensembl
 
-        if self._base_mus_nonsyn is None or isinstance(
-            self._base_mus_nonsyn, dict
-        ):
-            raise ValueError(
-                "estimate_cell_dispersion needs signature-independent "
-                "channel baselines; call compute_channel_base_mus() "
-                "first."
-            )
-        base = self._base_mus_nonsyn
+        base = self._dispersion_baseline()
         samples = base.columns
         if excluded_samples is not None:
             samples = samples[~samples.isin(list(excluded_samples))]

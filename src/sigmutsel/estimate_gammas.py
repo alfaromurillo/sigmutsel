@@ -79,6 +79,30 @@ def _natural_gamma_ceiling_dispersed(
     return float(ceiling) if np.isfinite(ceiling) else np.inf
 
 
+def _natural_gamma_ceiling_shaped(
+    mus_all, shapes, clip_floor=_CLIP_FLOOR
+):
+    """The natural ceiling under per-tumor shapes ``k_j``.
+
+    ``P(absent in j) = (1 + gamma mu_j / k_j) ** (-k_j)`` reaches the
+    clip floor once ``gamma > (k_j / mu_j) expm1(-log(clip_floor) /
+    k_j)``; every tumor must get there, so the largest such value is
+    the ceiling (infinite if it overflows).
+    """
+    mus_all = np.asarray(mus_all, dtype=float)
+    shapes = np.asarray(shapes, dtype=float)
+    with np.errstate(
+        over="ignore", invalid="ignore", divide="ignore"
+    ):
+        per = (shapes / mus_all) * np.expm1(
+            -np.log(clip_floor) / shapes
+        )
+    per = per[np.isfinite(mus_all) & (mus_all > 0)]
+    if per.size == 0 or not np.all(np.isfinite(per)):
+        return np.inf
+    return float(per.max())
+
+
 class ConvergenceError(RuntimeError):
     """MCMC sampling completed but convergence diagnostics are bad.
 
@@ -112,6 +136,7 @@ def estimate_gamma_from_mus(
     ess_threshold=200,
     cap_at_natural_ceiling=True,
     cell_dispersion=None,
+    cell_shape=None,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -159,6 +184,18 @@ def estimate_gamma_from_mus(
         construction also gives the gene's total rate a coefficient
         of variation of ``1 / sqrt(phi)``, which overlaps any
         separate per-gene rate correction already applied to ``mu``.
+
+    cell_shape : tuple of array-like or None, default None
+        The same per-cell Gamma dispersion, with each tumor's shape
+        ``k_j`` given directly as ``(shapes_yes, shapes_no)`` in the
+        order of ``mus_yes``/``mus_no``: ``P(present in j) =
+        1 - (1 + gamma mu_j / k_j) ** (-k_j)``. ``cell_dispersion``
+        is the special case ``k_j = phi mu_j / M``. Use this form when
+        the dispersion belongs to a larger unit than the item being
+        scored -- e.g. a variant inheriting its gene's per-tumor
+        multiplier, whose shape is ``phi_gene * p_gene,j`` rather than
+        anything computed from the variant's own rates. Mutually
+        exclusive with ``cell_dispersion``.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -363,7 +400,35 @@ def estimate_gamma_from_mus(
         n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
         mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
 
-    if cell_dispersion is not None:
+    shapes_all = None
+    if cell_shape is not None:
+        if cell_dispersion is not None:
+            raise ValueError(
+                "Pass cell_dispersion or cell_shape, not both."
+            )
+        shapes_yes, shapes_no = cell_shape
+        shapes_all = np.concatenate(
+            [
+                np.asarray(shapes_yes, dtype=float).ravel(),
+                np.asarray(shapes_no, dtype=float).ravel(),
+            ]
+        )
+        if shapes_all.shape[0] != n_yes + n_no:
+            raise ValueError(
+                "cell_shape must give one shape per tumor, in the order "
+                f"of mus_yes then mus_no; got {shapes_all.shape[0]} for "
+                f"{n_yes + n_no} tumors."
+            )
+        if not np.all(np.isfinite(shapes_all)) or np.any(
+            shapes_all <= 0
+        ):
+            raise ValueError(
+                "cell_shape values must be positive and finite."
+            )
+        natural_ceiling = _natural_gamma_ceiling_shaped(
+            mus_all, shapes_all
+        )
+    elif cell_dispersion is not None:
         cell_dispersion = float(cell_dispersion)
         if not np.isfinite(cell_dispersion) or cell_dispersion <= 0:
             raise ValueError(
@@ -419,7 +484,14 @@ def estimate_gamma_from_mus(
                 else:
                     mu = mus_all
 
-                if cell_dispersion is None:
+                if shapes_all is not None:
+                    log_absent = -shapes_all * tt.log1p(
+                        gamma * mu / shapes_all
+                    )
+                    Ps = tt.clip(
+                        1 - tt.exp(log_absent), 1e-12, 1 - 1e-12
+                    )
+                elif cell_dispersion is None:
                     Ps = tt.clip(
                         1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
                     )

@@ -238,10 +238,6 @@ def test_cell_dispersion_argument_errors(tmp_path):
         model._resolve_cell_dispersion("fitted", "ENSG_B", kept)
     with pytest.raises(ValueError, match="'fitted'"):
         model._resolve_cell_dispersion("sometimes", "ENSG_B", kept)
-    with pytest.raises(ValueError, match="gene-level"):
-        model.estimate_gamma(
-            "X p.A1B", level="variant", cell_dispersion=10.0
-        )
     with pytest.raises(ValueError, match="non_silent"):
         model.estimate_gamma(
             "ENSG_B",
@@ -249,3 +245,34 @@ def test_cell_dispersion_argument_errors(tmp_path):
             non_silent=False,
             cell_dispersion=10.0,
         )
+
+
+def test_gene_cell_shapes_sum_to_phi(tmp_path):
+    model = _fitted_model(tmp_path)
+    shapes = model._gene_cell_shapes(
+        "ENSG_A", 40.0, pd.Index(["T1", "T2"])
+    )
+    assert shapes.sum() == pytest.approx(40.0)
+    assert (shapes > 0).all()
+
+
+def test_dispersion_baseline_falls_back_to_merged(tmp_path):
+    """A model without the channel split (the no_cov models) fits phi
+    against its merged baseline."""
+    model = _model_with_channels(tmp_path)
+    model._base_mus_nonsyn = None
+    model.dataset.compute_gene_counts_channels()
+    assert model._dispersion_baseline() is model._base_mus
+    model.estimate_cell_dispersion(min_genes=1)
+    assert model.cell_dispersion_trend is not None
+
+
+def test_variant_gene_lookup(tmp_path):
+    model = _model_with_channels(tmp_path)
+    assert model._variant_gene_id("X p.A1B") in {
+        "ENSG_A",
+        "ENSG_B",
+        "ENSG_C",
+    }
+    with pytest.raises(ValueError, match="gene of variant"):
+        model._variant_gene_id("NOPE p.Z9Z")

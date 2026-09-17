@@ -208,36 +208,6 @@ def test_gene_tumor_dispersion_trend_survives_save_and_load(tmp_path):
     )
 
 
-def test_model_saved_before_the_rename_still_loads(tmp_path):
-    import json
-
-    model = _fitted_model(tmp_path / "work")
-    model.dataset.save_dataset(tmp_path / "ds")
-    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
-    out = tmp_path / "model"
-    model.save_model(out)
-    manifest_path = next(
-        p
-        for p in out.glob("*.json")
-        if "gene_tumor_dispersion_trend" in p.read_text()
-    )
-    manifest = json.loads(manifest_path.read_text())
-    manifest["cell_dispersion_trend"] = manifest.pop(
-        "gene_tumor_dispersion_trend"
-    )
-    manifest_path.write_text(json.dumps(manifest))
-    loaded = Model.load_model(out)
-    assert (
-        loaded.gene_tumor_dispersion_trend
-        == model.gene_tumor_dispersion_trend
-    )
-    with pytest.warns(DeprecationWarning):
-        assert (
-            loaded.cell_dispersion_trend
-            == model.gene_tumor_dispersion_trend
-        )
-
-
 def test_fitted_phi_uses_the_genes_own_count(tmp_path):
     model = _fitted_model(tmp_path)
     model.gene_tumor_dispersion_trend = {
@@ -318,18 +288,3 @@ def test_variant_gene_lookup(tmp_path):
     }
     with pytest.raises(ValueError, match="gene of variant"):
         model._variant_gene_id("NOPE p.Z9Z")
-
-
-def test_pre_rename_names_still_work():
-    """``cell_*`` names are deprecated aliases, not removed."""
-    import importlib
-    import sys
-
-    sys.modules.pop("sigmutsel.cell_dispersion", None)
-    with pytest.warns(DeprecationWarning):
-        old = importlib.import_module("sigmutsel.cell_dispersion")
-    assert old.phi_for_count is phi_for_count
-    assert (
-        old.fit_cell_dispersion_trend
-        is fit_gene_tumor_dispersion_trend
-    )

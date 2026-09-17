@@ -10,7 +10,6 @@ sample.
 """
 
 import logging
-import warnings
 
 import arviz as az
 import numpy as np
@@ -115,34 +114,6 @@ class ConvergenceError(RuntimeError):
     """
 
 
-def _renamed_dispersion_args(
-    dispersion, shape, old_dispersion, old_shape
-):
-    """Map the pre-rename ``cell_*`` arguments onto their new names."""
-    for old, new, value, current in (
-        (
-            "cell_dispersion",
-            "gene_tumor_dispersion",
-            old_dispersion,
-            dispersion,
-        ),
-        ("cell_shape", "gene_tumor_shape", old_shape, shape),
-    ):
-        if value is None:
-            continue
-        warnings.warn(
-            f"{old} is deprecated; use {new}.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        if current is not None:
-            raise ValueError(f"Pass {new} only, not also {old}.")
-    return (
-        dispersion if old_dispersion is None else old_dispersion,
-        shape if old_shape is None else old_shape,
-    )
-
-
 def estimate_gamma_from_mus(
     mus_yes,
     mus_no,
@@ -166,8 +137,6 @@ def estimate_gamma_from_mus(
     cap_at_natural_ceiling=True,
     gene_tumor_dispersion=None,
     gene_tumor_shape=None,
-    cell_dispersion=None,
-    cell_shape=None,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -431,14 +400,6 @@ def estimate_gamma_from_mus(
         n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
         mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
 
-    gene_tumor_dispersion, gene_tumor_shape = (
-        _renamed_dispersion_args(
-            gene_tumor_dispersion,
-            gene_tumor_shape,
-            cell_dispersion,
-            cell_shape,
-        )
-    )
     shapes_all = None
     if gene_tumor_shape is not None:
         if gene_tumor_dispersion is not None:

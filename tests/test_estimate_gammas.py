@@ -602,30 +602,6 @@ def test_gene_tumor_dispersion_recovers_planted_gamma():
     assert np.median(plain) < np.median(disp)
 
 
-def test_cell_dispersion_is_a_deprecated_alias():
-    constants.random_seed = 0
-    a = estimate_gamma_from_mus(
-        _MUS_YES, _MUS_NO, draws=1, gene_tumor_dispersion=50.0
-    )
-    with pytest.warns(DeprecationWarning):
-        b = estimate_gamma_from_mus(
-            _MUS_YES, _MUS_NO, draws=1, cell_dispersion=50.0
-        )
-    constants.random_seed = None
-    assert float(b["gamma"]) == pytest.approx(float(a["gamma"]))
-    with (
-        pytest.raises(ValueError, match="not also"),
-        pytest.warns(DeprecationWarning),
-    ):
-        estimate_gamma_from_mus(
-            _MUS_YES,
-            _MUS_NO,
-            draws=1,
-            gene_tumor_dispersion=50.0,
-            cell_dispersion=50.0,
-        )
-
-
 def test_gene_tumor_dispersion_large_phi_matches_default():
     constants.random_seed = 0
     a = estimate_gamma_from_mus(_MUS_YES, _MUS_NO, draws=1)

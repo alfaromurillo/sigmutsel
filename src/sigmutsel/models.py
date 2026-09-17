@@ -3,7 +3,6 @@
 import inspect
 import json
 import logging
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -3333,7 +3332,6 @@ class Model:
         use_mu_posterior=False,
         r_g_variant="none",
         gene_tumor_dispersion=None,
-        cell_dispersion=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -3424,18 +3422,6 @@ class Model:
         if level is None:
             level = self._detect_item_level(item)
 
-        if cell_dispersion is not None:
-            warnings.warn(
-                "cell_dispersion is deprecated; use gene_tumor_dispersion.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if gene_tumor_dispersion is not None:
-                raise ValueError(
-                    "Pass gene_tumor_dispersion only, not also "
-                    "cell_dispersion."
-                )
-            gene_tumor_dispersion = cell_dispersion
         if level == "variant":
             result = self._estimate_gamma_variant(
                 item,
@@ -3889,27 +3875,6 @@ class Model:
         # A tumor with zero gene rate has zero variant rate too, so its
         # shape never matters; keep it positive for the likelihood.
         return (phi * row / total).clip(lower=1e-12)
-
-    @property
-    def cell_dispersion_trend(self):
-        """Deprecated name of :attr:`gene_tumor_dispersion_trend`."""
-        warnings.warn(
-            "cell_dispersion_trend is deprecated; use "
-            "gene_tumor_dispersion_trend.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.gene_tumor_dispersion_trend
-
-    def estimate_cell_dispersion(self, *args, **kwargs):
-        """Deprecated name of :meth:`estimate_gene_tumor_dispersion`."""
-        warnings.warn(
-            "estimate_cell_dispersion is deprecated; use "
-            "estimate_gene_tumor_dispersion.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.estimate_gene_tumor_dispersion(*args, **kwargs)
 
     def estimate_gene_tumor_dispersion(
         self, excluded_samples=None, strata=None, min_genes=15
@@ -4998,10 +4963,8 @@ class Model:
         model._rg_theta = manifest.get("rg_theta")
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
         model._rg_separate_c = manifest.get("rg_separate_c", False)
-        # Models saved before the rename carry the old key.
         model.gene_tumor_dispersion_trend = manifest.get(
-            "gene_tumor_dispersion_trend",
-            manifest.get("cell_dispersion_trend"),
+            "gene_tumor_dispersion_trend"
         )
         if "base_mus_syn" in files:
             model._base_mus_syn = _load_dataframe(

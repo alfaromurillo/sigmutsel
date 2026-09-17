@@ -167,7 +167,7 @@ def estimate_gamma_from_mus(
     gene_tumor_dispersion : float or None, default None
         Optional gene-tumor overdispersion ``phi``. ``None`` (default)
         keeps the model above exactly. Given a value, each tumor's
-        rate is ``lambda_j ~ Gamma(shape=phi * p_j, rate=phi / M)``
+        rate is ``mu_tilde_j ~ Gamma(shape=phi * p_j, rate=phi / M)``
         with ``M = sum_j mu_j`` and ``p_j = mu_j / M`` -- mean
         ``mu_j``, and, conditional on the total, a
         Dirichlet-Multinomial allocation with concentration

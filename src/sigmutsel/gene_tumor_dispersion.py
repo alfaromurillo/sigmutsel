@@ -4,9 +4,10 @@ A gene's mutations, given how many it has, are allocated across tumors
 in proportion to each tumor's rate. A Poisson rate model says that
 allocation is Multinomial. Real allocations are often more dispersed:
 some tumors carry more of a gene's mutations than their rate predicts.
-The natural extension is a gene-tumor Gamma rate,
+The natural extension is a gene-tumor Gamma rate ``mu_tilde_gj``,
+the model's ``mu_gj`` randomized around itself,
 
-    lambda_gj ~ Gamma(shape = phi * p_gj, rate = phi / M_g),
+    mu_tilde_gj ~ Gamma(shape = phi * p_gj, rate = phi / M_g),
 
 with ``M_g = sum_j mu_gj`` and ``p_gj = mu_gj / M_g``. Conditional on
 the gene's total this is a Dirichlet-Multinomial allocation with

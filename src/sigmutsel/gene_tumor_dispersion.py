@@ -217,6 +217,10 @@ def fit_gene_tumor_dispersion_trend(
 ):
     """Fit ``log phi = intercept + slope * log N_g``, if the data support it.
 
+    ``intercept`` and ``slope`` are written ``a`` and ``b`` in the
+    write-up, as ``log phi_g = a + b log N_g``; the names differ, the
+    quantities do not.
+
     Parameters
     ----------
     counts : ndarray, shape (genes, tumors)

@@ -265,14 +265,16 @@ class _StubChannelModel:
     channel_gene_cv_passenger_r2's fold-orchestration logic from the
     real (expensive) PyMC fit."""
 
-    def __init__(self, cov_matrix):
+    def __init__(self, cov_matrix, rg_fitted=True):
         self.cov_matrix = cov_matrix
+        self.rg_fitted = rg_fitted
         self.train_gene_calls = []
         self.test_gene_calls = []
         self.target_calls = []
+        self.gene_scaling_calls = []
 
     def estimate_channel_rg_cov_effects(
-        self, train_genes=None, excluded_samples=None
+        self, train_genes=None, excluded_samples=None, **kwargs
     ):
         self.train_gene_calls.append(set(train_genes))
 
@@ -289,6 +291,7 @@ class _StubChannelModel:
     ):
         genes = set(genes)
         self.target_calls.append(target)
+        self.gene_scaling_calls.append(gene_scaling)
         self.test_gene_calls.append(genes)
         r2 = float(len(genes))  # deterministic fake "r2" per fold
         if return_per_gene:
@@ -416,3 +419,20 @@ def test_channel_gene_statistics_train_genes_restricts_non_silent_only():
     assert stats["counts_non_silent"]["ENSG_C"] == 0
     assert stats["counts_silent"]["ENSG_B"] == 1  # still counted
     assert stats["counts_silent"]["ENSG_C"] == 3
+
+
+def test_channel_gene_cv_skips_r_g_for_an_arm_that_did_not_fit_one():
+    """An arm fitted with fit_rg=False (the nested ladder's arms 0-3)
+    has no r_g, and asking for one raises. The fold loop must decide
+    from `rg_fitted` rather than scaling every arm alike -- scoring a
+    no-r_g arm with an r_g would hand it a correction it never
+    fitted and overstate what r_g buys at the arm-3-to-4 step."""
+    cov_matrix = pd.DataFrame(
+        {"cov1": range(10)},
+        index=[f"ENSG{i:03d}" for i in range(10)],
+    )
+    model = _StubChannelModel(cov_matrix, rg_fitted=False)
+
+    channel_gene_cv_passenger_r2(model, n_splits=5, random_state=0)
+
+    assert all(s is None for s in model.gene_scaling_calls)

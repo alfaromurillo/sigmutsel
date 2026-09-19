@@ -2477,6 +2477,8 @@ class Model:
     _rg_statistics: dict = None
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
+    _rg_fit_rg: bool = True
+    _rg_use_silent_channel: bool = True
     gene_tumor_dispersion_trend: dict = None
     _channel_cov_effects: np.ndarray = None
     cov_effects_posteriors: object = None
@@ -2541,6 +2543,8 @@ class Model:
         self._rg_statistics = None
         self._rg_separate_c = False
         self._rg_delta_intercept = None
+        self._rg_fit_rg = True
+        self._rg_use_silent_channel = True
         self.gene_tumor_dispersion_trend = None
         self._channel_cov_effects = None
         self.cov_effects_posteriors = None
@@ -3853,7 +3857,8 @@ class Model:
             if base is not None and not isinstance(base, dict):
                 return base
         raise ValueError(
-            "Cell dispersion needs signature-independent baseline "
+            "Gene-tumor dispersion needs signature-independent "
+            "baseline "
             "rates; call compute_base_mus() (or "
             "compute_channel_base_mus()) first."
         )
@@ -3935,7 +3940,8 @@ class Model:
         )
         self.gene_tumor_dispersion_trend = trend
         logger.info(
-            "Cell dispersion (%s): log phi = %.3f + %.3f log N_g; "
+            "Gene-tumor dispersion (%s): log phi = %.3f + %.3f "
+            "log N_g; "
             "pooled phi %.4g",
             trend["method"],
             trend["intercept"],
@@ -4757,7 +4763,10 @@ class Model:
         # persisting them a reloaded model silently drops the
         # channel corrections instead of failing, so they are saved
         # whenever a fit is present.
-        if self._rg_theta is not None:
+        if (
+            self._rg_theta is not None
+            or self._rg_statistics is not None
+        ):
             if self._base_mus_syn is not None:
                 files["base_mus_syn"] = _save_dataframe(
                     self._base_mus_syn, "base_mus_syn.parquet"
@@ -4816,6 +4825,8 @@ class Model:
             "rg_theta": self._rg_theta,
             "rg_delta_intercept": self._rg_delta_intercept,
             "rg_separate_c": self._rg_separate_c,
+            "rg_fit_rg": self._rg_fit_rg,
+            "rg_use_silent_channel": self._rg_use_silent_channel,
             "gene_tumor_dispersion_trend": self.gene_tumor_dispersion_trend,
             "prob_g_tau_tau_independent": (
                 self._prob_g_tau_tau_independent
@@ -4963,6 +4974,10 @@ class Model:
         model._rg_theta = manifest.get("rg_theta")
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
         model._rg_separate_c = manifest.get("rg_separate_c", False)
+        model._rg_fit_rg = manifest.get("rg_fit_rg", True)
+        model._rg_use_silent_channel = manifest.get(
+            "rg_use_silent_channel", True
+        )
         model.gene_tumor_dispersion_trend = manifest.get(
             "gene_tumor_dispersion_trend"
         )
@@ -6945,6 +6960,9 @@ class Model:
         include_drivers=True,
         separate_c="intercept",
         train_genes=None,
+        fit_rg=True,
+        fit_intercept=True,
+        use_silent_channel=True,
     ):
         """Fit the full unified model: shared ``c``, ``θ`` and ``r_g``.
 
@@ -6998,6 +7016,34 @@ class Model:
             :meth:`estimate_passenger_genes_r2`'s ``genes`` on the
             held-out complement; see :func:`cross_validation.
             gene_cv_passenger_r2`.
+        fit_rg : bool, default True
+            ``False`` drops ``r_g``/``θ`` and leaves the plain
+            two-channel Poisson -- the same likelihood with the Gamma
+            marginalisation removed, not a different one. ``rg_theta``
+            and both ``r_g`` variants then raise, which is the point:
+            an arm without ``r_g`` must not be scored with one. Ladder
+            arms 0-3 (see ``mutation_rates``' nested-ladder notes).
+        fit_intercept : bool, default True
+            ``False`` pins the shared intercept at 0 rather than
+            fitting it, which is the only way to reach ladder arm 0
+            (``μ = μ̄``, nothing fitted) -- a zero-column
+            ``cov_matrix`` still leaves the prepended intercept free
+            and so gives arm 1. ``cov_effects`` keeps its full
+            ``1 + n_covariates`` length either way, with a 0 in the
+            first slot, so ``compute_mu_gs`` and everything else
+            downstream need no special case.
+        use_silent_channel : bool, default True
+            ``False`` fits the **non-synonymous channel alone**, over
+            passenger genes only: the silent channel leaves the
+            likelihood and the gene set shrinks from ``G`` to ``P``.
+            With ``fit_rg=False`` this is a single-channel Poisson GLM
+            with offset ``log μ̄^(nonsyn)_g`` -- ladder arms 1p/2ap,
+            December's data under a Poisson rather than a Bernoulli.
+            ``include_drivers`` has no effect in this mode (there is
+            no silent channel for a driver to enter through) and
+            ``separate_c`` must be ``False``. Because the data differ,
+            the resulting log-likelihood is **not** comparable with a
+            two-channel arm's; compare on a common held-out target.
 
         Returns
         -------
@@ -7065,18 +7111,47 @@ class Model:
             excluded_samples=excluded_samples,
             train_genes=train_genes,
         )
+        if not use_silent_channel:
+            # The single-channel arms fit P, not G: a gene outside
+            # the non-synonymous set has no data left once the silent
+            # channel is gone, and keeping it would only contribute a
+            # baseline of 0 to the offset. The silent vectors are
+            # zeroed as well so that anything reading `_rg_statistics`
+            # later cannot quietly pick up silent counts this fit
+            # never saw.
+            genes = stats["in_non_silent"]
+            stats = {
+                "genes": genes,
+                "counts_silent": pd.Series(0.0, index=genes),
+                "baseline_silent": pd.Series(0.0, index=genes),
+                "counts_non_silent": stats["counts_non_silent"].loc[
+                    genes
+                ],
+                "baseline_non_silent": stats[
+                    "baseline_non_silent"
+                ].loc[genes],
+                "in_non_silent": genes,
+            }
         self._rg_statistics = stats
         self._n_in_cov_effects_estimation = len(
             stats["in_non_silent"]
         )
 
-        logger.info(
-            f"Fitting shared c and theta over {len(stats['genes'])} "
-            f"genes (drivers "
-            f"{'included' if include_drivers else 'excluded'}), "
-            f"{len(stats['in_non_silent'])} of them in the "
-            "non-silent channel"
-        )
+        if use_silent_channel:
+            logger.info(
+                f"Fitting shared c{' and theta' if fit_rg else ''} "
+                f"over {len(stats['genes'])} genes (drivers "
+                f"{'included' if include_drivers else 'excluded'}), "
+                f"{len(stats['in_non_silent'])} of them in the "
+                "non-silent channel"
+            )
+        else:
+            logger.info(
+                f"Fitting c{' and theta' if fit_rg else ''} over the "
+                f"non-silent channel alone: "
+                f"{len(stats['genes'])} passenger genes, no silent "
+                "channel (include_drivers is inert here)"
+            )
 
         result = estimate_channel_rg_effect(
             counts_silent=stats["counts_silent"].values,
@@ -7088,9 +7163,20 @@ class Model:
             draws=draws,
             chains=chains,
             burn=burn,
+            fit_rg=fit_rg,
+            fit_intercept=fit_intercept,
+            use_silent_channel=use_silent_channel,
             **cov_effects_kwargs,
         )
         self._rg_separate_c = separate_c
+        self._rg_fit_rg = fit_rg
+        self._rg_use_silent_channel = use_silent_channel
+        # With nothing to fit (ladder arm 0) the low-level function
+        # returns the fixed c without going near PyMC, whatever
+        # `sample` asked for -- there is no posterior over an empty
+        # parameter set to sample.
+        if isinstance(result, dict):
+            is_mcmc = False
 
         self._rg_delta_intercept = None
         if is_mcmc:
@@ -7102,12 +7188,16 @@ class Model:
                 .mean(dim="sample")
                 .values
             )
-            self._rg_theta = float(
-                np.exp(
-                    az.extract(result, var_names=["log_theta"])
-                    .mean(dim="sample")
-                    .values
+            self._rg_theta = (
+                float(
+                    np.exp(
+                        az.extract(result, var_names=["log_theta"])
+                        .mean(dim="sample")
+                        .values
+                    )
                 )
+                if fit_rg
+                else None
             )
             if separate_c == "intercept":
                 self._rg_delta_intercept = float(
@@ -7115,7 +7205,10 @@ class Model:
                     .mean(dim="sample")
                     .values
                 )
-            summary = az.summary(result, var_names=["c", "log_theta"])
+            summary = az.summary(
+                result,
+                var_names=["c", "log_theta"] if fit_rg else ["c"],
+            )
             logger.info("Posterior summary:\n%s", summary.to_string())
             candidates = (
                 (
@@ -7132,7 +7225,9 @@ class Model:
             mode_desc = "Posterior HDI"
         else:
             self.cov_effects = result["c"]
-            self._rg_theta = float(np.exp(result["log_theta"]))
+            self._rg_theta = (
+                float(np.exp(result["log_theta"])) if fit_rg else None
+            )
             self._rg_delta_intercept = (
                 float(result["delta_intercept"])
                 if "delta_intercept" in result
@@ -7141,7 +7236,10 @@ class Model:
             candidates = (self.cov_effects, self.cov_effects)
             mode_desc = "MAP estimates"
 
-        logger.info(f"Fitted theta = {self._rg_theta:.4g}")
+        if fit_rg:
+            logger.info(f"Fitted theta = {self._rg_theta:.4g}")
+        else:
+            logger.info("r_g not fitted (fit_rg=False): no theta")
 
         lower_bounds_arr, upper_bounds_arr = (
             self._resolve_covariate_bounds(
@@ -7209,10 +7307,22 @@ class Model:
 
         The constant Poisson term dropped by the likelihood is the
         same for both models, so it cancels in the difference.
+
+        The same holds along the nested ladder: arms that share the
+        gene sets and channels of the fit differ only in which
+        parameters are free, so their values here are directly
+        comparable. The single-channel arms (``use_silent_channel=
+        False``) are **not** -- they are fitted to different data and
+        drop a different constant.
         """
         from .estimate_rg import channel_rg_log_likelihood
 
-        if self._rg_statistics is None or self._rg_theta is None:
+        if self._rg_statistics is None:
+            raise ValueError(
+                "No r_g fit available. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+        if self._rg_fit_rg and self._rg_theta is None:
             raise ValueError(
                 "No r_g fit available. Call "
                 "estimate_channel_rg_cov_effects() first."
@@ -7240,15 +7350,28 @@ class Model:
             channel_rg_log_likelihood(
                 eta_silent=eta_silent,
                 eta_non_silent=eta_non_silent,
-                theta=self.rg_theta,
+                theta=self.rg_theta if self._rg_fit_rg else None,
                 counts_silent=stats["counts_silent"].values,
                 counts_non_silent=stats["counts_non_silent"].values,
                 baseline_silent=stats["baseline_silent"].values,
                 baseline_non_silent=stats[
                     "baseline_non_silent"
                 ].values,
+                use_silent=self._rg_use_silent_channel,
             )
         )
+
+    @property
+    def rg_fitted(self):
+        """Whether the last channel fit actually fitted ``r_g``.
+
+        ``False`` after a ``fit_rg=False`` fit (ladder arms 0-3),
+        where :attr:`rg_theta` and both ``r_g`` variants raise by
+        design. Evaluation code that would otherwise scale rates by
+        ``compute_r_g_for_evaluation()`` should branch on this rather
+        than catching the error.
+        """
+        return self._rg_fit_rg
 
     @property
     def rg_theta(self):
@@ -7256,7 +7379,10 @@ class Model:
         if self._rg_theta is None:
             raise ValueError(
                 "theta not fitted. Call "
-                "estimate_channel_rg_cov_effects() first."
+                "estimate_channel_rg_cov_effects() first -- or, if "
+                "it was called with fit_rg=False, this arm has no "
+                "r_g by construction and nothing downstream may ask "
+                "for one."
             )
         return self._rg_theta
 

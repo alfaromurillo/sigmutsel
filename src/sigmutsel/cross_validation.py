@@ -159,6 +159,15 @@ def channel_gene_cv_passenger_r2(
     ``estimate_passenger_genes_r2(target="non_silent_counts",
     gene_scaling=model.compute_r_g_for_evaluation())``, just gene-CV'd.
 
+    An arm fitted without ``r_g`` (``channel_rg_kwargs={"fit_rg":
+    False}``, the nested ladder's arms 0-3) is scored with no gene
+    scaling at all -- :attr:`models.Model.rg_fitted` decides, so no
+    arm is ever handed a correction it did not fit. Every arm is
+    otherwise scored on the same held-out target, the non-silent
+    passenger counts, which is what makes the single-channel arms
+    (``use_silent_channel=False``) comparable with the rest even
+    though their likelihoods are not.
+
     Held-out genes still contribute their silent-channel counts to
     the fit (as do driver genes, via ``include_drivers``) -- only
     their non-silent signal, the one being scored, is withheld; see
@@ -246,7 +255,11 @@ def channel_gene_cv_passenger_r2(
         scored = model.estimate_passenger_genes_r2(
             excluded_samples=excluded_samples,
             target="non_silent_counts",
-            gene_scaling=model.compute_r_g_for_evaluation(),
+            gene_scaling=(
+                model.compute_r_g_for_evaluation()
+                if model.rg_fitted
+                else None
+            ),
             genes=test_genes,
             return_per_gene=return_per_gene,
         )

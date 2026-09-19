@@ -64,6 +64,24 @@ reproduce the leakage that killed the first ``r_g`` attempt:
 Both take ``theta`` and the covariate-scaled expectations from the
 same joint fit, so they differ *only* in which channel informs each
 gene's own correction.
+
+Restrictions of this one likelihood
+-----------------------------------
+This model is the top of a nested ladder, and the rungs below it are
+reached by *removing* parameters from the same likelihood rather than
+by writing a second model -- which is the only way the difference
+between two rungs can be read as "what this addition buys" instead of
+"what these two implementations disagree about".
+
+``fit_rg=False`` drops the Gamma marginalisation and leaves the plain
+two-channel Poisson (``theta=None`` in
+:func:`channel_rg_log_likelihood`); ``fit_intercept=False`` pins the
+shared intercept at 0 rather than fitting it, which a zero-column
+``cov_matrix`` does **not** do, since the ones column is prepended
+unconditionally; and ``use_silent_channel=False`` drops the silent
+channel's terms, leaving a single-channel Poisson GLM with offset
+``log mu_bar^(nonsyn)``. See each argument's entry on
+:func:`estimate_channel_rg_effect`.
 """
 
 import logging
@@ -258,6 +276,7 @@ def channel_rg_log_likelihood(
     baseline_silent,
     baseline_non_silent,
     eta_non_silent=None,
+    use_silent=True,
 ):
     """Marginal log-likelihood of the two channels with ``r_g`` integrated out.
 
@@ -284,9 +303,32 @@ def channel_rg_log_likelihood(
     consequence, and the per-gene rate correction still has to be
     identified from the silent channel for driver genes.
 
+    ``theta = None`` drops ``r_g`` altogether and leaves the plain
+    two-channel Poisson,
+    ``Σ nᵍʸⁿ ηˢʸⁿ + Σ nⁿᵒⁿ ηⁿᵒⁿ - Σ (μ̄ˢʸⁿ e^ηˢʸⁿ + μ̄ⁿᵒⁿ e^ηⁿᵒⁿ)``.
+    That is the ``θ → ∞`` limit of the expression below, written
+    out rather than approached: ``lnGamma(θ+n) - lnGamma(θ) → n log θ``
+    and ``-(θ+n) log(θ+M) → -n log θ - M``, so the ``log θ`` terms
+    cancel and ``-M`` is what survives. Arms 0-3 of the nested ladder
+    are this restriction; arm 4 is the full expression.
+
+    ``use_silent = False`` drops the **silent** channel's terms
+    entirely -- not by zeroing ``baseline_silent`` (which
+    :func:`estimate_channel_rg_effect` clips away from 0 for the log),
+    but by leaving them out of ``counts``, ``expected`` and
+    ``linear``. Combined with ``theta = None`` and a gene set
+    restricted to ``P`` this is a single-channel Poisson GLM with log
+    link and offset ``log μ̄ⁿᵒⁿ_g`` -- the ladder's 1p/2ap arms, which
+    are December's data (non-synonymous, passengers) under a Poisson
+    rather than a Bernoulli. Their likelihood is over different data
+    from the two-channel arms', so the two are **not** comparable as
+    likelihoods; compare them on a common held-out target instead.
+
     The ``Σ_j [N log μ̄ - log N!]`` part of the Poisson terms does not
     depend on ``c`` or ``θ`` and is omitted -- an additive constant
-    that shifts the objective without moving its argmax.
+    that shifts the objective without moving its argmax. It is the
+    same constant for every arm that keeps the same gene sets and
+    channels, which is what makes arms 0-4 directly comparable.
     """
     if eta_non_silent is None:
         eta_non_silent = eta_silent
@@ -296,15 +338,20 @@ def channel_rg_log_likelihood(
     gammaln = tt.gammaln if is_tensor else _np_gammaln
     log = tt.log if is_tensor else np.log
 
-    expected_silent = exp(eta_silent) * baseline_silent
     expected_non_silent = exp(eta_non_silent) * baseline_non_silent
+    linear = (counts_non_silent * eta_non_silent).sum()
 
-    counts = counts_silent + counts_non_silent
-    expected = expected_silent + expected_non_silent
+    if use_silent:
+        expected_silent = exp(eta_silent) * baseline_silent
+        counts = counts_silent + counts_non_silent
+        expected = expected_silent + expected_non_silent
+        linear = linear + (counts_silent * eta_silent).sum()
+    else:
+        counts = counts_non_silent
+        expected = expected_non_silent
 
-    linear = (counts_silent * eta_silent).sum() + (
-        counts_non_silent * eta_non_silent
-    ).sum()
+    if theta is None:
+        return linear - expected.sum()
 
     return (
         linear
@@ -332,6 +379,25 @@ def _np_gammaln(x):
     return gammaln(x)
 
 
+def _drop_intercept_bound(bound, n_coeffs):
+    """Drop a per-coefficient bound's intercept entry.
+
+    ``lower_bounds_c``/``upper_bounds_c`` may be a scalar (one bound
+    for every coefficient, nothing to drop) or an array sized for the
+    full ``c`` including the prepended intercept. Only the latter
+    needs trimming when the intercept is pinned rather than fitted.
+    """
+    arr = np.asarray(bound)
+    if arr.ndim == 0:
+        return bound
+    if arr.shape[-1] != n_coeffs:
+        raise ValueError(
+            f"A per-coefficient bound must have {n_coeffs} entries "
+            f"(intercept included); got shape {arr.shape}."
+        )
+    return arr[..., 1:]
+
+
 def estimate_channel_rg_effect(
     counts_silent: np.ndarray,
     baseline_silent: np.ndarray,
@@ -345,6 +411,9 @@ def estimate_channel_rg_effect(
     log_theta_bounds: tuple[float, float] = (-5.0, 10.0),
     burn: int = 1000,
     chains: int = 4,
+    fit_rg: bool = True,
+    fit_intercept: bool = True,
+    use_silent_channel: bool = True,
     save_path: str | Path | None = None,
     kwargs: dict | None = None,
 ) -> az.InferenceData | dict:
@@ -388,6 +457,34 @@ def estimate_channel_rg_effect(
         offset.
     draws, lower_bounds_c, upper_bounds_c, burn, chains, save_path, kwargs
         As in :func:`estimate_covariates_effect.estimate_covariates_effect`.
+    fit_rg : bool, default True
+        ``False`` drops ``r_g`` and ``θ`` and fits the plain
+        two-channel Poisson (``theta=None`` in
+        :func:`channel_rg_log_likelihood`). The returned dict/posterior
+        then has **no** ``log_theta`` entry. Ladder arms 0-3.
+    fit_intercept : bool, default True
+        ``False`` pins the intercept at 0 instead of fitting it: the
+        ones column is still prepended (so ``c`` always comes back
+        with ``1 + n_covariates`` entries and every downstream
+        consumer of ``cov_effects`` keeps working unchanged), but its
+        coefficient is held at 0 rather than given a prior. This is
+        the only way to reach ladder arm 0 -- ``μ = μ̄`` with nothing
+        fitted -- since a zero-column ``cov_matrix`` still leaves the
+        prepended intercept free and so gives arm 1, not arm 0.
+        With no covariate columns, no ``δ`` and ``fit_rg=False`` there
+        is nothing left to fit at all; the function then skips PyMC
+        entirely and returns the fixed ``c = 0`` vector, which is the
+        honest representation of "nothing fitted" and avoids
+        ``find_MAP`` failing on a model with no free variables.
+    use_silent_channel : bool, default True
+        ``False`` drops the silent channel from the likelihood
+        (:func:`channel_rg_log_likelihood`'s ``use_silent``). Pass a
+        gene set already restricted to ``P`` with it -- the caller
+        owns the gene set, this argument only owns the likelihood.
+        With ``fit_rg=False`` this is the ladder's 1p/2ap arms: a
+        single-channel Poisson GLM with offset
+        ``log μ̄ⁿᵒⁿ_g``. ``separate_c`` must be ``False`` here, since
+        ``δ`` is an offset *between* channels and only one is left.
     log_theta_bounds : (float, float), default (-5, 10)
         Uniform prior bounds on ``log θ``. Fitted in log space because
         θ spans orders of magnitude across cohorts (dNdScv reports
@@ -402,6 +499,9 @@ def estimate_channel_rg_effect(
     arviz.InferenceData | dict
         As elsewhere: a dict with keys ``c`` and ``log_theta`` for
         ``draws == 1`` (MAP), otherwise posterior samples.
+        ``log_theta`` is absent when ``fit_rg=False``, and a dict is
+        returned regardless of ``draws`` when there is nothing to fit
+        (see ``fit_intercept``).
 
     Notes
     -----
@@ -418,6 +518,12 @@ def estimate_channel_rg_effect(
         raise ValueError(
             f"separate_c must be False, True or 'intercept'; got "
             f"{separate_c!r}."
+        )
+    if not use_silent_channel and separate_c is not False:
+        raise ValueError(
+            "separate_c is an offset between the two channels; with "
+            "use_silent_channel=False there is only one channel, so "
+            f"separate_c must be False (got {separate_c!r})."
         )
 
     n_genes = counts_silent.shape[0]
@@ -441,9 +547,12 @@ def estimate_channel_rg_effect(
     n_in_non_silent = int((baseline_non_silent > 0).sum())
     logger.info(
         f"r_g mode ({_c_mode_label(separate_c)}): "
-        f"{n_genes} genes in the silent channel, "
-        f"{n_in_non_silent} also in the non-silent channel, "
-        f"{cov_matrix.shape[1]} covariate(s)"
+        f"{n_genes} genes in the "
+        f"{'silent' if use_silent_channel else 'non-silent'} channel, "
+        f"{n_in_non_silent} in the non-silent channel, "
+        f"{cov_matrix.shape[1]} covariate(s), "
+        f"r_g {'fitted' if fit_rg else 'off'}, "
+        f"intercept {'fitted' if fit_intercept else 'pinned at 0'}"
     )
 
     ones = np.ones((n_genes, 1), dtype="float64")
@@ -455,19 +564,92 @@ def estimate_channel_rg_effect(
     if lower_bounds_c is None:
         lower_bounds_c = -upper_bounds_c
 
+    # The ones column stays in `cov_ext` even when the intercept is
+    # not fitted, so `c` keeps its `1 + n_covariates` length for every
+    # arm and nothing downstream has to know which arm produced it;
+    # only the *prior* is withheld. An array-valued bound was sized
+    # for the full `c`, so drop its intercept entry to match.
+    n_free_c = n_coeffs if fit_intercept else n_coeffs - 1
+    if not fit_intercept:
+        lower_bounds_c = _drop_intercept_bound(
+            lower_bounds_c, n_coeffs
+        )
+        upper_bounds_c = _drop_intercept_bound(
+            upper_bounds_c, n_coeffs
+        )
+
+    n_free = n_free_c * (2 if separate_c is True else 1)
+    n_free += 1 if separate_c == "intercept" else 0
+    n_free += 1 if fit_rg else 0
+    if n_free == 0:
+        # Ladder arm 0: mu = mu_bar, nothing fitted. There is no
+        # optimisation to run and no posterior to sample -- find_MAP
+        # on a model with no free variables raises -- so return the
+        # fixed coefficient vector directly. `draws` is ignored on
+        # purpose: the "posterior" of a model with no parameters is a
+        # point mass, and pretending otherwise would invite a caller
+        # to average over it.
+        logger.info(
+            "No free parameters (ladder arm 0): returning the fixed "
+            "c = 0 vector without fitting."
+        )
+        results = {"c": np.zeros(n_coeffs, dtype="float64")}
+        if save_path is not None:
+            base_path = Path(save_path)
+            base_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(f"{base_path}.npz", **results)
+        return results
+
     with pm.Model():
-        c = pm.Uniform(
-            name="c",
-            lower=lower_bounds_c,
-            upper=upper_bounds_c,
-            shape=(2, n_coeffs) if separate_c is True else n_coeffs,
-        )
-        log_theta = pm.Uniform(
-            name="log_theta",
-            lower=log_theta_bounds[0],
-            upper=log_theta_bounds[1],
-        )
-        theta = tt.exp(log_theta)
+        if fit_intercept:
+            c = pm.Uniform(
+                name="c",
+                lower=lower_bounds_c,
+                upper=upper_bounds_c,
+                shape=(
+                    (2, n_coeffs) if separate_c is True else n_coeffs
+                ),
+            )
+        elif n_free_c == 0:
+            # No covariates and no fitted intercept: `c` is the zero
+            # vector, but something else (delta or theta) is still
+            # free, so the PyMC model is not degenerate.
+            c = pm.Deterministic(
+                "c",
+                tt.zeros(
+                    (2, n_coeffs) if separate_c is True else n_coeffs
+                ),
+            )
+        else:
+            c_slopes = pm.Uniform(
+                name="c_slopes",
+                lower=lower_bounds_c,
+                upper=upper_bounds_c,
+                shape=(
+                    (2, n_free_c) if separate_c is True else n_free_c
+                ),
+            )
+            c = pm.Deterministic(
+                "c",
+                tt.concatenate(
+                    [
+                        tt.zeros(
+                            (2, 1) if separate_c is True else (1,)
+                        ),
+                        c_slopes,
+                    ],
+                    axis=-1,
+                ),
+            )
+        if fit_rg:
+            log_theta = pm.Uniform(
+                name="log_theta",
+                lower=log_theta_bounds[0],
+                upper=log_theta_bounds[1],
+            )
+            theta = tt.exp(log_theta)
+        else:
+            theta = None
 
         cov32 = pm.Data("cov_ext", cov_ext)
         if separate_c is True:
@@ -510,14 +692,14 @@ def estimate_channel_rg_effect(
                     "baseline_non_silent",
                     baseline_non_silent.astype("float64"),
                 ),
+                use_silent=use_silent_channel,
             ),
         )
 
         if draws == 1:
             logger.info(
-                "Finding MAP estimate for "
-                f"{n_coeffs * (2 if separate_c is True else 1)} "
-                "coefficient(s) plus log_theta"
+                f"Finding MAP estimate for {n_free} free "
+                "parameter(s)"
             )
             results = pm.find_MAP(
                 seed=constants.random_seed, **kwargs

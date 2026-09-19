@@ -6984,7 +6984,15 @@ class Model:
 
         Parameters
         ----------
-        sample, chains, burn, tol, excluded_samples, include_drivers
+        sample : {"MAP", "full"} | int, default "MAP"
+            ``"MAP"`` for a point estimate, ``"full"`` for 4000
+            posterior draws, or an integer for that many draws (at
+            least ``chains``). **Unlike**
+            :meth:`estimate_channel_cov_effects`, where an integer
+            subsamples genes, an integer here is the number of draws
+            -- this method has no gene-subsampling mode, and until
+            2026-09-19 an integer was silently treated as ``"full"``.
+        chains, burn, tol, excluded_samples, include_drivers
             As in :meth:`estimate_channel_cov_effects`. The same
             ``excluded_samples`` must be used here and in any later
             ``r_g`` or R² call, since the per-gene statistics are sums
@@ -7092,14 +7100,35 @@ class Model:
                 "effects without covariates."
             )
 
-        if isinstance(sample, int) or (
-            isinstance(sample, str) and sample.lower() == "full"
-        ):
+        if isinstance(sample, str) and sample.lower() == "full":
             draws = 4000
             is_mcmc = True
         elif isinstance(sample, str) and sample.lower() == "map":
             draws = 1
             is_mcmc = False
+        elif isinstance(sample, int) and not isinstance(sample, bool):
+            # An integer is the number of posterior draws. It used to
+            # be silently mapped to 4000 like "full", so a caller
+            # asking for fewer got a full-size fit and no indication
+            # of it -- `bayesian_gof.py --draws 200` ran exactly the
+            # same 4000-draw fit as --draws 1000, which made an ELPD
+            # sweep far more expensive than it looked and could not
+            # be made cheaper by the one argument that appeared to
+            # control it.
+            #
+            # Note this differs from `estimate_channel_cov_effects`,
+            # where an integer `sample` subsamples GENES. That method
+            # implements gene subsampling; this one never did, so an
+            # integer here meant nothing at all and there is no
+            # existing behaviour to preserve.
+            if sample < chains:
+                raise ValueError(
+                    f"sample={sample} is fewer draws than chains="
+                    f"{chains}; the sampler would get zero draws per "
+                    "chain. Pass 'MAP' for a point estimate."
+                )
+            draws = sample
+            is_mcmc = True
         else:
             raise ValueError(
                 f"sample must be 'MAP', 'full', or an integer, "
@@ -7179,6 +7208,16 @@ class Model:
             is_mcmc = False
 
         self._rg_delta_intercept = None
+        if not is_mcmc:
+            # A MAP fit must not leave the previous fit's posterior
+            # readable. Anything that reaches for
+            # cov_effects_posteriors -- bayesian_gof.py's ELPD, the
+            # mu-posterior cut -- would otherwise silently score this
+            # fit's point estimate against an earlier, different
+            # model's draws. It matters most exactly where the arms
+            # are swept in one process, which is what the nested
+            # ladder does.
+            self.cov_effects_posteriors = None
         if is_mcmc:
             import arviz as az
 

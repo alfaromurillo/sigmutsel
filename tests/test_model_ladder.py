@@ -666,3 +666,65 @@ def test_posterior_carries_the_pinned_intercept_as_c():
     assert drawn.shape[0] == 3
     assert np.all(drawn.values[0, :] == 0.0)
     assert "log_theta" not in result.posterior
+
+
+def test_map_fit_clears_a_previous_posterior(tmp_path):
+    """Sweeping the arms in one process must not let a MAP arm be
+    scored against the previous arm's posterior draws. Nothing warns
+    if it does -- the numbers just come out wrong."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample=200, chains=2, burn=200, separate_c=False
+    )
+    assert model.cov_effects_posteriors is not None
+    assert model.has_cov_effects_posteriors()
+
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
+    assert model.cov_effects_posteriors is None
+    assert not model.has_cov_effects_posteriors()
+
+
+def test_integer_sample_is_the_number_of_draws(tmp_path):
+    """An integer `sample` must give that many draws, not 4000.
+
+    It used to be mapped to "full" silently, so a caller asking for
+    fewer got a full-size fit with no indication -- which made an
+    ELPD sweep cost four times what the argument suggested and left
+    no way to make it cheaper.
+    """
+    import arviz as az
+
+    model = _rg_model(tmp_path)
+    idata = model.estimate_channel_rg_cov_effects(
+        sample=200, chains=2, burn=200, separate_c=False
+    )
+    assert az.extract(idata, var_names=["c"]).sizes["sample"] == 200
+
+
+def test_fewer_draws_than_chains_raises(tmp_path):
+    """int(draws/chains) would be 0 per chain; say so rather than
+    handing the sampler an empty request."""
+    model = _rg_model(tmp_path)
+    with pytest.raises(ValueError, match="fewer draws than chains"):
+        model.estimate_channel_rg_cov_effects(
+            sample=2, chains=4, separate_c=False
+        )
+
+
+def test_full_and_map_are_unchanged(tmp_path):
+    """The two string modes production uses must not move."""
+    import arviz as az
+
+    model = _rg_model(tmp_path)
+    idata = model.estimate_channel_rg_cov_effects(
+        sample="full", chains=2, burn=200, separate_c=False
+    )
+    assert az.extract(idata, var_names=["c"]).sizes["sample"] == 4000
+
+    result = model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
+    assert np.asarray(result).ndim == 1
+    assert model.cov_effects_posteriors is None

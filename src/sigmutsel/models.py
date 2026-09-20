@@ -2479,6 +2479,7 @@ class Model:
     _rg_delta_intercept: float = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
+    _rg_map_diagnostics: dict = None
     gene_tumor_dispersion_trend: dict = None
     _channel_cov_effects: np.ndarray = None
     cov_effects_posteriors: object = None
@@ -2545,6 +2546,7 @@ class Model:
         self._rg_delta_intercept = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
+        self._rg_map_diagnostics = None
         self.gene_tumor_dispersion_trend = None
         self._channel_cov_effects = None
         self.cov_effects_posteriors = None
@@ -7208,6 +7210,10 @@ class Model:
             is_mcmc = False
 
         self._rg_delta_intercept = None
+        # Cleared unconditionally, for the same reason the posterior
+        # is: an MCMC fit following a MAP fit would otherwise leave
+        # the optimiser's diagnostics readable and apparently current.
+        self._rg_map_diagnostics = None
         if not is_mcmc:
             # A MAP fit must not leave the previous fit's posterior
             # readable. Anything that reaches for
@@ -7249,6 +7255,27 @@ class Model:
                 var_names=["c", "log_theta"] if fit_rg else ["c"],
             )
             logger.info("Posterior summary:\n%s", summary.to_string())
+            # A convergence gate, because an unconverged fit is not a
+            # worse number, it is not a number. On 2026-09-19 the
+            # no-r_g covariate arms at nc=100-200 came back with
+            # r_hat up to 1.69 and 6 effective draws in 1000, and
+            # nothing in the pipeline said so -- the values were
+            # written to disk looking exactly like the converged ones.
+            if "r_hat" in summary.columns:
+                worst = float(summary["r_hat"].max())
+                if worst >= 1.05:
+                    logger.warning(
+                        "CHAINS DID NOT MIX: r_hat max %.3f. These "
+                        "draws are not a posterior sample; raise "
+                        "`burn` and refit before using them.",
+                        worst,
+                    )
+                elif worst > 1.01:
+                    logger.warning(
+                        "Marginal convergence: r_hat max %.3f "
+                        "(want < 1.01).",
+                        worst,
+                    )
             candidates = (
                 (
                     summary["hdi_3%"].to_numpy()[
@@ -7264,6 +7291,11 @@ class Model:
             mode_desc = "Posterior HDI"
         else:
             self.cov_effects = result["c"]
+            self._rg_map_diagnostics = {
+                k: result[k]
+                for k in ("map_grad_norm", "map_success", "map_nit")
+                if k in result
+            } or None
             self._rg_theta = (
                 float(np.exp(result["log_theta"])) if fit_rg else None
             )
@@ -7399,6 +7431,18 @@ class Model:
                 use_silent=self._rg_use_silent_channel,
             )
         )
+
+    @property
+    def map_diagnostics(self):
+        """Optimiser diagnostics from the last MAP fit, or ``None``.
+
+        ``map_grad_norm`` and ``map_success`` are the MAP analogue of
+        ``r_hat``: they say whether the optimiser reached a mode
+        rather than merely stopping. ``None`` after an MCMC fit, or
+        after an arm with no free parameters, since neither runs an
+        optimiser.
+        """
+        return self._rg_map_diagnostics
 
     @property
     def rg_fitted(self):

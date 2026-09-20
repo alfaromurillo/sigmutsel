@@ -701,10 +701,47 @@ def estimate_channel_rg_effect(
                 f"Finding MAP estimate for {n_free} free "
                 "parameter(s)"
             )
-            results = pm.find_MAP(
-                seed=constants.random_seed, **kwargs
+            results, opt = pm.find_MAP(
+                seed=constants.random_seed,
+                return_raw=True,
+                **kwargs,
             )
-            logger.info("MAP optimization completed")
+            # The MAP analogue of r_hat. A MAP fit has no chains, so
+            # no convergence diagnostic was ever recorded for it --
+            # `pca_nc_production_sweep.py` selected every cohort's nc
+            # from MAP fits and stored theta and an R2, with nothing
+            # saying the optimiser had actually reached a mode. The
+            # gradient norm and scipy's own success flag say exactly
+            # that, cost nothing, and travel with the result.
+            jac = getattr(opt, "jac", None)
+            grad_norm = (
+                float(
+                    np.linalg.norm(np.asarray(jac, dtype="float64"))
+                )
+                if jac is not None
+                else float("nan")
+            )
+            success = bool(getattr(opt, "success", False))
+            results = dict(results)
+            results["map_grad_norm"] = grad_norm
+            results["map_success"] = success
+            results["map_nit"] = int(getattr(opt, "nit", -1))
+            if not success or not np.isfinite(grad_norm):
+                logger.warning(
+                    "MAP did NOT converge: success=%s, ||grad||=%.4g, "
+                    "message=%r. Treat the coefficients as a stopping "
+                    "point, not a mode.",
+                    success,
+                    grad_norm,
+                    getattr(opt, "message", ""),
+                )
+            else:
+                logger.info(
+                    "MAP optimization completed: success=True, "
+                    "||grad||=%.4g after %d iterations",
+                    grad_norm,
+                    results["map_nit"],
+                )
         else:
             logger.info(
                 f"Sampling posterior: {draws} draws across "

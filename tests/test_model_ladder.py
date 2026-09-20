@@ -728,3 +728,34 @@ def test_full_and_map_are_unchanged(tmp_path):
     )
     assert np.asarray(result).ndim == 1
     assert model.cov_effects_posteriors is None
+
+
+def test_map_fit_records_optimiser_diagnostics(tmp_path):
+    """A MAP fit has no chains, so nothing ever said whether the
+    optimiser reached a mode -- which is the gap every nc was
+    selected through. The gradient norm and scipy's success flag are
+    the MAP analogue of r_hat and must travel with the fit."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
+
+    diag = model.map_diagnostics
+    assert diag is not None
+    assert diag["map_success"] is True
+    assert np.isfinite(diag["map_grad_norm"])
+    assert diag["map_grad_norm"] < 1.0
+    assert diag["map_nit"] >= 0
+
+
+def test_mcmc_fit_has_no_map_diagnostics(tmp_path):
+    """They would be stale from an earlier MAP fit otherwise."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c=False
+    )
+    assert model.map_diagnostics is not None
+    model.estimate_channel_rg_cov_effects(
+        sample=200, chains=2, burn=200, separate_c=False
+    )
+    assert model.map_diagnostics is None

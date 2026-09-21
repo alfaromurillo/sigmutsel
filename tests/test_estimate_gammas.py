@@ -873,3 +873,85 @@ def test_gamma_sample_accounting_shows_a_gamma_with_no_counts(
     assert table.loc["VAR1", "n_tumors_included"] == 4
     assert np.isnan(table.loc["OLD", "n_tumors_included"])
     assert list(table.index) == ["VAR1", "OLD"]
+
+
+# --- presence_probability, the extracted link, and the
+# --- presence_model= seam that replaces it. The three branches are
+# --- checked against closed forms and against each other, since the
+# --- scalar-dispersion branch is meant to be the per-tumor-shape
+# --- branch's special case k_j = phi mu_j / M.
+
+
+def _p(gamma, mus, **kwargs):
+    from sigmutsel.estimate_gammas import presence_probability
+
+    return np.asarray(
+        presence_probability(gamma, np.asarray(mus), **kwargs).eval()
+    )
+
+
+def test_plain_link_is_the_poisson_presence_probability():
+    mus = np.array([0.01, 0.1, 1.0])
+    assert np.allclose(_p(3.0, mus), 1 - np.exp(-3.0 * mus))
+
+
+def test_shape_link_is_the_negative_binomial_form():
+    mus = np.array([0.01, 0.1, 1.0])
+    k = np.array([2.0, 5.0, 50.0])
+    assert np.allclose(
+        _p(3.0, mus, gene_tumor_shape=k),
+        1 - (1 + 3.0 * mus / k) ** (-k),
+    )
+
+
+def test_scalar_dispersion_is_the_per_tumor_shape_special_case():
+    mus = np.array([0.01, 0.1, 1.0])
+    phi = 40.0
+    k = phi * mus / mus.sum()
+    assert np.allclose(
+        _p(3.0, mus, gene_tumor_dispersion=phi),
+        _p(3.0, mus, gene_tumor_shape=k),
+    )
+
+
+def test_dispersion_vanishes_as_phi_grows():
+    mus = np.array([0.01, 0.1, 1.0])
+    assert np.allclose(
+        _p(3.0, mus, gene_tumor_dispersion=1e12),
+        _p(3.0, mus),
+        atol=1e-9,
+    )
+
+
+def test_link_is_clipped_off_zero_and_one():
+    from sigmutsel.estimate_gammas import _CLIP_FLOOR
+
+    mus = np.array([1e-300, 1.0])
+    probabilities = _p(1e12, mus)
+    assert probabilities[0] == pytest.approx(_CLIP_FLOOR)
+    assert probabilities[1] == pytest.approx(1 - _CLIP_FLOOR)
+
+
+def test_presence_model_replaces_the_link():
+    """A link ten times weaker per mutation should need about ten
+    times the gamma to explain the same presence pattern."""
+    import pytensor.tensor as tt
+
+    def weaker(gamma, mu, **kwargs):
+        return tt.clip(1 - tt.exp(-gamma * mu / 10), 1e-12, 1 - 1e-12)
+
+    constants.random_seed = 11
+    default = estimate_gamma_from_mus(
+        _MUS_YES, _MUS_NO, draws=1, upper_bound_prior=1e5
+    )
+    replaced = estimate_gamma_from_mus(
+        _MUS_YES,
+        _MUS_NO,
+        draws=1,
+        upper_bound_prior=1e5,
+        presence_model=weaker,
+    )
+
+    assert float(replaced["gamma"]) == pytest.approx(
+        10 * float(default["gamma"]), rel=0.05
+    )

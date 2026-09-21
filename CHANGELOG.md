@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `estimate_gammas.presence_probability` exposes the link from
+  gamma to P(present) as its own function, and
+  `estimate_gamma_from_mus(presence_model=...)` replaces it.
 - Compound variants: `compound_variants.define_compound_variants`
   groups variants by annotation columns and genomic proximity, and
   `Model.estimate_gamma_compound` fits one shared gamma over a

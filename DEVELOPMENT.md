@@ -110,6 +110,23 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   for the same failure mode in any other bounded-prior estimation
   added later, and don't trust a capped-looking γ just because MCMC
   diagnostics look fine.
+- **The link is one function, `presence_probability`**: gamma and
+  a rate to P(present), in its three forms (plain Poisson, scalar
+  `phi`, per-tumor shape `k_j`), and the only place `_CLIP_FLOOR`
+  is applied -- the same constant `_natural_gamma_ceiling` derives
+  gamma's identifiable range from, which is why it is not a literal
+  in two places. `estimate_gamma_from_mus(presence_model=...)`
+  replaces it, called inside the active model context so a
+  replacement may create its own random variables.
+  **What a replacement must not change** is the parameterization
+  around it: the natural ceiling, the bound auto-expansion and the
+  convergence retries all read gamma as a scalar with a
+  `Uniform(0, bound)` prior, and a model that broke that would keep
+  running while quietly ceasing to be retried correctly. This is a
+  seam for a future selection model with per-tumor covariates, not
+  a general model-plugin system -- cancereffectsizeR can offer one
+  because `bbmle` discovers a likelihood's parameters, and none of
+  our scaffolding can.
 - **Every fit stamps its own sample accounting** into
   `posterior.attrs`: `n_tumors_with`, `n_tumors_without`,
   `n_tumors_included`, `n_tumors_excluded`, `n_tumors_held_out`,

@@ -114,6 +114,74 @@ class ConvergenceError(RuntimeError):
     """
 
 
+def presence_probability(
+    gamma,
+    mu,
+    gene_tumor_dispersion=None,
+    gene_tumor_shape=None,
+):
+    """P(tumor carries the variant), given gamma and its rate.
+
+    The model's link, in three forms. With no gene-tumor
+    dispersion, a tumor's presence is Poisson with rate
+    ``gamma * mu``, so ``P = 1 - exp(-gamma mu)``. With dispersion,
+    the rate is Gamma-randomized around itself and integrating it
+    out gives the negative-binomial form ``P = 1 - (1 + gamma mu /
+    k)^(-k)``, written through ``log1p`` for stability: `k` is the
+    per-tumor shape ``phi p_gj`` when one is supplied, and
+    ``phi mu / sum(mu)`` when a scalar `phi` is.
+
+    Parameters
+    ----------
+    gamma : tensor or float
+        Selection intensity, shared across the tumors.
+    mu : tensor or array
+        Per-tumor mutation rate, in the fit's tumor order.
+    gene_tumor_dispersion : float, optional
+        Scalar `phi` for the gene.
+    gene_tumor_shape : array, optional
+        Per-tumor shape ``k_j``, which takes precedence over a
+        scalar `phi`.
+
+    Returns
+    -------
+    The per-tumor probability, clipped off 0 and 1 by
+    ``_CLIP_FLOOR`` -- the same bound ``_natural_gamma_ceiling``
+    computes gamma's identifiable range from, which is why this is
+    one constant and not a literal in two places.
+
+    Notes
+    -----
+    This is the unit ``estimate_gamma_from_mus``'s
+    ``presence_model=`` replaces. A replacement is called inside the
+    active ``pm.Model()`` context, so it may create random variables
+    of its own -- which is the point, for a selection model with
+    per-tumor covariates. What it must not change is the
+    parameterization the machinery around it depends on: gamma is a
+    scalar with a ``Uniform(0, bound)`` prior, and the natural
+    ceiling, the bound auto-expansion and the convergence retries
+    all read it as one. A model that broke that would keep running
+    and quietly stop being retried correctly.
+    """
+    ceiling = 1 - _CLIP_FLOOR
+
+    if gene_tumor_shape is not None:
+        log_absent = -gene_tumor_shape * tt.log1p(
+            gamma * mu / gene_tumor_shape
+        )
+    elif gene_tumor_dispersion is None:
+        log_absent = -gamma * mu
+    else:
+        m_total = tt.sum(mu)
+        log_absent = (
+            -gene_tumor_dispersion
+            * (mu / m_total)
+            * tt.log1p(gamma * m_total / gene_tumor_dispersion)
+        )
+
+    return tt.clip(1 - tt.exp(log_absent), _CLIP_FLOOR, ceiling)
+
+
 def estimate_gamma_from_mus(
     mus_yes,
     mus_no,
@@ -137,6 +205,7 @@ def estimate_gamma_from_mus(
     cap_at_natural_ceiling=True,
     gene_tumor_dispersion=None,
     gene_tumor_shape=None,
+    presence_model=None,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -196,6 +265,17 @@ def estimate_gamma_from_mus(
         multiplier, whose shape is ``phi_gene * p_gene,j`` rather than
         anything computed from the variant's own rates. Mutually
         exclusive with ``gene_tumor_dispersion``.
+
+    presence_model : callable or None, default None
+        Replaces :func:`presence_probability`, the link from gamma
+        and a rate to P(present). Called as ``presence_model(gamma,
+        mu, gene_tumor_dispersion=, gene_tumor_shape=)`` inside the
+        active model context, so it may create random variables of
+        its own; it must return a per-tumor probability aligned with
+        ``mus_yes`` followed by ``mus_no``. See that function's
+        notes for what a replacement must leave alone -- everything
+        around this call assumes gamma is the bounded scalar it was
+        handed.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -513,29 +593,12 @@ def estimate_gamma_from_mus(
                 else:
                     mu = mus_all
 
-                if shapes_all is not None:
-                    log_absent = -shapes_all * tt.log1p(
-                        gamma * mu / shapes_all
-                    )
-                    Ps = tt.clip(
-                        1 - tt.exp(log_absent), 1e-12, 1 - 1e-12
-                    )
-                elif gene_tumor_dispersion is None:
-                    Ps = tt.clip(
-                        1 - tt.exp(-gamma * mu), 1e-12, 1 - 1e-12
-                    )
-                else:
-                    m_total = tt.sum(mu)
-                    log_absent = (
-                        -gene_tumor_dispersion
-                        * (mu / m_total)
-                        * tt.log1p(
-                            gamma * m_total / gene_tumor_dispersion
-                        )
-                    )
-                    Ps = tt.clip(
-                        1 - tt.exp(log_absent), 1e-12, 1 - 1e-12
-                    )
+                Ps = (presence_model or presence_probability)(
+                    gamma,
+                    mu,
+                    gene_tumor_dispersion=gene_tumor_dispersion,
+                    gene_tumor_shape=shapes_all,
+                )
 
                 pm.Bernoulli(
                     name="variants_observed",

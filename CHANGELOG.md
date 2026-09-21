@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Gamma fits now record how many tumors they used --
+  `n_tumors_with` / `_without` / `_included` / `_excluded` /
+  `_held_out` in `posterior.attrs`, tabulated by
+  `Model.gamma_sample_accounting()`.
 - `signature_attribution.compute_signature_probabilities` returns
   the full per-mutation, per-signature attribution frame (the
   breakdown behind the existing gene-level and summed-mass

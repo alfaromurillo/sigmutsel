@@ -109,6 +109,21 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   for the same failure mode in any other bounded-prior estimation
   added later, and don't trust a capped-looking γ just because MCMC
   diagnostics look fine.
+- **Every fit stamps its own sample accounting** into
+  `posterior.attrs`: `n_tumors_with`, `n_tumors_without`,
+  `n_tumors_included`, `n_tumors_excluded`, `n_tumors_held_out`,
+  tabulated across a model by `Model.gamma_sample_accounting()`. A
+  gamma is a claim about its denominator, and `excluded_samples`
+  moves that denominator leaving no trace in the posterior itself,
+  so without the counts a gamma that shifted because tumors were
+  dropped is indistinguishable from one that shifted for any other
+  reason. `attrs` is the right home because it survives the netCDF
+  round trip that `save_model` puts gammas through.
+  `n_tumors_held_out` is a real zero, reserved for a same-gene
+  hold-out rule that does not exist yet; there is deliberately no
+  `uncovered` count, since this package has one fixed
+  capture-target gene universe for every sample rather than
+  per-sample coverage intervals.
 - `constants.random_seed` controls reproducibility; default is
   `None` (stochastic). Callers override at runtime via
   `import sigmutsel.constants; sigmutsel.constants.random_seed = 777`

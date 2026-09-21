@@ -3699,6 +3699,9 @@ class Model:
             result.posterior.attrs["gene_tumor_dispersion"] = float(
                 phi
             )
+        self._record_sample_accounting(
+            result, present_mask, absent_mask
+        )
 
         if store:
             self.gammas[variant] = result
@@ -3853,12 +3856,100 @@ class Model:
             result.posterior.attrs["gene_tumor_dispersion"] = float(
                 phi
             )
+        self._record_sample_accounting(
+            result, present_mask, absent_mask
+        )
 
         if store:
             # Always store with ensembl_gene_id for consistency
             self.gammas[gene_id] = result
 
         return result
+
+    @staticmethod
+    def _record_sample_accounting(
+        result, present_mask, absent_mask, held_out=0
+    ):
+        """Stamp which tumors a gamma fit actually used.
+
+        A gamma is a statement about a denominator -- the tumors
+        that could have carried the mutation and did not -- and
+        that denominator moves silently: ``excluded_samples`` drops
+        QC-flagged tumors, and a future same-gene hold-out rule
+        would drop more. Without the counts beside the posterior, a
+        gamma that moved because the sample set changed cannot be
+        told from one that moved for any other reason.
+
+        Written into ``posterior.attrs``, which survives the
+        netCDF round trip, like ``gene_tumor_dispersion`` above.
+
+        There is deliberately no ``uncovered`` count, the fourth of
+        cancereffectsizeR's: it has per-sample coverage intervals
+        and this package has one fixed capture-target gene universe
+        applied to every sample, so the number would always be a
+        fabricated zero. ``n_tumors_held_out`` is a real zero --
+        the slot for a same-gene hold-out rule, which does not
+        exist yet.
+        """
+        if not hasattr(result, "posterior"):
+            return result
+
+        n_with = int(present_mask.sum())
+        n_without = int(absent_mask.sum())
+        result.posterior.attrs.update(
+            {
+                "n_tumors_with": n_with,
+                "n_tumors_without": n_without,
+                "n_tumors_included": n_with + n_without,
+                "n_tumors_excluded": int(
+                    len(present_mask) - n_with - n_without - held_out
+                ),
+                "n_tumors_held_out": int(held_out),
+            }
+        )
+        return result
+
+    def gamma_sample_accounting(self, keys=None):
+        """Tumor counts behind each stored gamma, as a table.
+
+        Parameters
+        ----------
+        keys : iterable, optional
+            Which of :attr:`gammas` to report. Default: all of them.
+
+        Returns
+        -------
+        pd.DataFrame
+            Indexed by gamma key, with the columns
+            :meth:`_record_sample_accounting` writes. A result
+            fitted before this existed, or one that is not a
+            posterior at all, gives a row of NaN rather than being
+            dropped -- a gamma with no accounting is exactly what
+            the table should make visible.
+        """
+        columns = [
+            "n_tumors_with",
+            "n_tumors_without",
+            "n_tumors_included",
+            "n_tumors_excluded",
+            "n_tumors_held_out",
+        ]
+        keys = list(self.gammas) if keys is None else list(keys)
+        rows = {}
+        for key in keys:
+            attrs = getattr(
+                getattr(self.gammas[key], "posterior", None),
+                "attrs",
+                {},
+            )
+            rows[key] = {
+                column: attrs.get(column, np.nan)
+                for column in columns
+            }
+
+        return pd.DataFrame.from_dict(
+            rows, orient="index", columns=columns
+        )
 
     def _resolve_gene_tumor_dispersion(
         self, gene_tumor_dispersion, gene_id, kept

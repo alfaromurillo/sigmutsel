@@ -768,3 +768,108 @@ def test_cut_rejects_a_carried_mutation_at_zero_rate():
         estimate_gamma_from_mus(
             mus_yes_2d, mus_no_2d, draws=10, burn=10
         )
+
+
+# --- Per-variant/per-gene sample accounting. A gamma is a claim
+# --- about its denominator, and excluded_samples moves that
+# --- denominator without leaving a trace in the posterior, so the
+# --- counts are stamped into posterior.attrs beside it.
+
+
+def _fake_posterior_result():
+    """A minimal real InferenceData -- attrs must survive netCDF."""
+    import arviz as az
+
+    return az.from_dict({"gamma": np.ones((2, 5))})
+
+
+def _patch_fit(monkeypatch, result):
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
+        lambda mus_yes, mus_no, **kwargs: result,
+    )
+
+
+def test_variant_accounting_counts_the_excluded(monkeypatch):
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant(
+        "VAR1", store=False, excluded_samples=["T1", "T4"]
+    )
+
+    attrs = result.posterior.attrs
+    # Of four tumors, T1 (present) and T4 (absent) were dropped.
+    assert attrs["n_tumors_with"] == 1
+    assert attrs["n_tumors_without"] == 1
+    assert attrs["n_tumors_included"] == 2
+    assert attrs["n_tumors_excluded"] == 2
+    assert attrs["n_tumors_held_out"] == 0
+
+
+def test_accounting_without_exclusions_covers_every_tumor(
+    monkeypatch,
+):
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant("VAR1", store=False)
+
+    attrs = result.posterior.attrs
+    assert attrs["n_tumors_with"] == 2
+    assert attrs["n_tumors_without"] == 2
+    assert attrs["n_tumors_excluded"] == 0
+
+
+def test_gene_accounting_is_recorded_too(monkeypatch):
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+
+    model = _model_for_gamma_gene_channel()
+    model._estimate_gamma_gene("GENE1", store=False)
+
+    assert result.posterior.attrs["n_tumors_included"] == len(
+        model.dataset.genes_present_non_silent.columns
+    )
+
+
+def test_accounting_survives_the_netcdf_round_trip(
+    monkeypatch, tmp_path
+):
+    """attrs is the storage claim: gammas are saved as .nc files."""
+    import arviz as az
+
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant(
+        "VAR1", store=False, excluded_samples=["T1"]
+    )
+
+    path = tmp_path / "gamma.nc"
+    result.to_netcdf(str(path))
+    reloaded = az.from_netcdf(str(path))
+
+    assert reloaded.posterior.attrs["n_tumors_with"] == 1
+    assert reloaded.posterior.attrs["n_tumors_excluded"] == 1
+
+
+def test_gamma_sample_accounting_shows_a_gamma_with_no_counts(
+    monkeypatch,
+):
+    """A result fitted before this existed must be visible, not
+    dropped: the table's job is to show what is unaccounted for."""
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant("VAR1")
+    model.gammas["OLD"] = "a result from before the accounting"
+
+    table = model.gamma_sample_accounting()
+
+    assert table.loc["VAR1", "n_tumors_included"] == 4
+    assert np.isnan(table.loc["OLD", "n_tumors_included"])
+    assert list(table.index) == ["VAR1", "OLD"]

@@ -15,6 +15,27 @@ from .provenance import record_call
 logger = logging.getLogger(__name__)
 
 
+def _gamma_posterior_draws(result):
+    """Flatten a gamma result's posterior draws to a 1-D array."""
+    if hasattr(result, "posterior"):
+        return np.asarray(result.posterior["gamma"]).reshape(-1)
+    return np.atleast_1d(np.asarray(result, dtype=float))
+
+
+def _gamma_point_estimate(result, statistic):
+    """Reduce a gamma result to a single selection intensity."""
+    draws = _gamma_posterior_draws(result)
+    return float(
+        np.mean(draws) if statistic == "mean" else np.median(draws)
+    )
+
+
+def _gamma_draws(result, n_draws, rng):
+    """Resample `n_draws` gammas from a posterior."""
+    draws = _gamma_posterior_draws(result)
+    return rng.choice(draws, size=n_draws, replace=True)
+
+
 @dataclass(repr=False)
 class MutationDataset:
     """Container for mutation and variant data.
@@ -3989,6 +4010,160 @@ class Model:
             trend["pooled_phi"],
         )
         return trend
+
+    def signature_effect_shares(
+        self,
+        level="gene",
+        gammas=None,
+        samples=None,
+        statistic="mean",
+        n_draws=0,
+        random_seed=None,
+    ):
+        """Share of this cohort's selection due to each signature.
+
+        Weighs every mutation's signature attribution
+        ``P(sigma|tau,j)`` by the selection intensity ``gamma`` of
+        the gene or variant it hit, normalizes within each tumor and
+        averages over tumors -- the cohort's *effect* shares, to be
+        read against its *source* shares (the plain average of the
+        per-sample signature proportions). A signature above its
+        source share drives oncogenesis out of proportion to the
+        mutations it causes. See
+        :func:`.signature_attribution.compute_signature_effect_shares`
+        for the computation and its reference.
+
+        Parameters
+        ----------
+        level : {"gene", "variant"}, default "gene"
+            Which of :attr:`gammas`' keys to use. ``"gene"`` reads
+            each tumor's **non-silent** mutations in the fitted
+            genes; ``"variant"`` reads the mutations at the fitted
+            variants themselves.
+        gammas : dict, optional
+            Gamma results keyed as in :attr:`gammas`, if not this
+            model's own. Values may be ``arviz.InferenceData`` or
+            plain floats.
+        samples : sequence, optional
+            Restrict to these tumors. Default: all of them.
+        statistic : {"mean", "median"}, default "mean"
+            How a posterior is reduced to the gamma used for the
+            point estimate.
+        n_draws : int, default 0
+            If positive, also return that many draws of the cohort
+            shares, by resampling each unit's gamma posterior. The
+            units were fitted separately, so a draw pairs
+            independent posteriors -- it propagates their
+            uncertainty, it does not represent a joint posterior.
+        random_seed : int, optional
+            Seed for that resampling.
+
+        Returns
+        -------
+        dict
+            As
+            :func:`.signature_attribution.compute_signature_effect_shares`
+            returns, with ``"level"`` added.
+
+        Notes
+        -----
+        **The answer is only as wide as the gammas it is given.**
+        Fitting gammas costs an MCMC run apiece, so a cohort
+        typically has them for a few top genes or variants, and
+        tumors carrying none of those units drop out of the average
+        entirely -- as do the effects of every gene that was not
+        fitted. Both the tumor count and the unit count are returned
+        for that reason: read them before quoting a share.
+        """
+        from .compute_alphas import estimate_alphas
+        from .signature_attribution import (
+            compute_signature_effect_shares,
+            compute_signature_probabilities,
+        )
+
+        if level not in ("gene", "variant"):
+            raise ValueError(
+                f"level must be 'gene' or 'variant', got {level!r}."
+            )
+        if statistic not in ("mean", "median"):
+            raise ValueError(
+                "statistic must be 'mean' or 'median', got "
+                f"{statistic!r}."
+            )
+
+        gammas = self.gammas if gammas is None else gammas
+        if not gammas:
+            raise ValueError(
+                "No gamma results to attribute. Run "
+                "estimate_gamma() first."
+            )
+
+        db = self.dataset.mutation_db
+        if samples is not None:
+            db = db[db["Tumor_Sample_Barcode"].isin(list(samples))]
+
+        unit_column = (
+            "ensembl_gene_id" if level == "gene" else "variant"
+        )
+        if level == "gene":
+            # Gamma is fitted on the non-synonymous channel, so the
+            # silent mutations in a fitted gene are not what it
+            # selected on.
+            db = db[db["Variant_Classification"] != "Silent"]
+
+        # gammas holds both levels' keys; a key of the other level
+        # simply never matches this level's column.
+        units = db[unit_column]
+        point_gammas = {
+            key: _gamma_point_estimate(result, statistic)
+            for key, result in gammas.items()
+            if key in set(units)
+        }
+        if not point_gammas:
+            raise ValueError(
+                f"None of the {len(gammas)} gamma keys match the "
+                f"{unit_column!r} of any mutation; is level="
+                f"{level!r} right for them?"
+            )
+
+        db = db[units.isin(point_gammas)]
+
+        L_low = self._auto_mu_taus_kwargs.get("L_low")
+        L_high = self._auto_mu_taus_kwargs.get("L_high")
+        alphas = estimate_alphas(
+            self.dataset.mutation_db,
+            self.dataset.sig_assignments,
+            L_low,
+            L_high,
+        )
+
+        probabilities = compute_signature_probabilities(
+            db,
+            self.dataset.sig_assignments,
+            self.dataset.signature_matrix,
+            L_low=L_low,
+            L_high=L_high,
+            alphas=alphas,
+        )
+
+        gamma_draws = None
+        if n_draws > 0:
+            rng = np.random.default_rng(random_seed)
+            gamma_draws = {
+                key: _gamma_draws(gammas[key], n_draws, rng)
+                for key in point_gammas
+            }
+
+        result = compute_signature_effect_shares(
+            probabilities,
+            db["Tumor_Sample_Barcode"].values,
+            db[unit_column].values,
+            point_gammas,
+            source_shares=alphas,
+            gamma_draws=gamma_draws,
+        )
+        result["level"] = level
+        return result
 
     def plot_gamma_results(
         self,

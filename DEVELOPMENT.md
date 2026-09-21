@@ -12,7 +12,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `estimate_gammas.py` | Bayesian γ inference (PyMC) |
 | `estimate_covariates_effect.py` | Covariate log-linear regression |
 | `signature_decomposition.py` | COSMIC SBS decomposition wrapper |
-| `signature_attribution.py` | P(σ\|τ,j) per gene |
+| `signature_attribution.py` | P(σ\|τ,j) per gene, per mutation, and gamma-weighted effect shares |
 | `compute_mutation_burden.py` | Synonymous burden, ℓ̂ estimation |
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
@@ -425,6 +425,58 @@ the silent channel can inform its own rate.
   `estimate_passenger_genes_r2(gene_scaling=...)`. A scaled R² is
   returned but **never stored**, so it cannot be read back as the
   model's own number.
+
+## Signature attribution and effect shares
+
+Three entry points over one Bayes rule,
+`P(sigma|tau,j) = alpha_sigma(j) s_sigma(tau) / sum_sigma' ...`,
+sharing `_prepare_attribution` / `_attribution_chunks`:
+
+| Function | Returns |
+|---|---|
+| `assign_signatures_per_gene_id` | attribution aggregated to genes |
+| `compute_signature_probability_mass` | one summed column over chosen signatures, per mutation |
+| `compute_signature_probabilities` | the full per-mutation x per-signature frame |
+
+The third materializes `n_mutations x n_signatures`, which the other
+two exist to avoid: pass it a `db` already restricted to the
+mutations of interest.
+
+`compute_signature_effect_shares` then weights each mutation's
+attribution by the selection intensity `gamma` of the gene or
+variant it hit, normalizes **within each tumor**, and averages over
+tumors, which is what `Model.signature_effect_shares(level=)` wires
+up from a model's own `gammas`. Read the result against
+`average_source_shares` (the plain average of the per-sample
+signature proportions): a signature above its source share
+contributes to oncogenesis out of proportion to the mutations it
+causes (Cannataro et al. 2022, doi:10.1093/molbev/msac084).
+
+Four things to know before quoting a number from it:
+
+- **Per-tumor normalization before averaging is the method**, not a
+  detail. It weights every tumor equally, so a hypermutator does
+  not decide the cohort's answer.
+- **The scope is exactly the units with a fitted gamma.** Gammas
+  cost an MCMC run apiece, so a cohort has them for a handful of
+  genes or variants; tumors carrying none of those drop out of the
+  average entirely. `n_units`, `n_samples` and `n_mutations` are
+  returned so this is visible.
+- **Alphas must come from the whole cohort**, not from the
+  restricted `db`. The attribution itself is invariant (a
+  per-sample rescaling cancels in the Bayes ratio), but the source
+  shares would otherwise be proportions of the subset. Hence the
+  `alphas=` parameter, and hence the source shares are restricted
+  to the *tumors* that carry effects, so both averages describe the
+  same population.
+- **Gene level reads non-silent mutations only**, since gamma is
+  fitted on the non-synonymous channel; variant level applies no
+  consequence filter.
+
+`gamma_draws=` propagates the gamma posteriors into a distribution
+of cohort shares. The units are fitted separately, so a draw pairs
+independent posteriors: it carries their uncertainty, it is not a
+joint posterior.
 
 ## Provenance (`provenance.py`)
 

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `signature_attribution.compute_signature_probabilities` returns
+  the full per-mutation, per-signature attribution frame (the
+  breakdown behind the existing gene-level and summed-mass
+  functions).
+- `signature_attribution.compute_signature_effect_shares` and
+  `Model.signature_effect_shares` compute the share of a cohort's
+  selection attributable to each signature -- attribution weighted
+  by each unit's gamma, normalized per tumor and averaged over
+  tumors -- against the signatures' plain source shares.
 - Saved datasets and models now record their provenance: the
   `sigmutsel` version and git commit that wrote them (warned about
   on load if the running build differs), and a `run_history` of the

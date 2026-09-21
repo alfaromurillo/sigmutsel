@@ -22,6 +22,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
 | `tcga_sample_selection.py` | Which downloaded MAF files to use: sample-type filter + per-case duplicate policy (see below) |
+| `provenance.py` | Package stamp and run history written into saved manifests |
 | `constants.py` | Central parameters (SBS96 types, chr list) |
 | `locations.py` | Data file paths; respects `SIGMUTSEL_DATA_DIR` |
 | `figures.py` | γ posterior scatter plots; **no titles** |
@@ -424,6 +425,50 @@ the silent channel can inform its own rate.
   `estimate_passenger_genes_r2(gene_scaling=...)`. A scaled R² is
   returned but **never stored**, so it cannot be read back as the
   model's own number.
+
+## Provenance (`provenance.py`)
+
+Saved datasets and models carry, besides their configuration, a
+record of where they came from. Two independent pieces:
+
+- **The build stamp.** `package_provenance()` writes
+  `sigmutsel_version`, `sigmutsel_commit` and `saved_at` into the
+  manifest; `check_provenance()` compares them on load and warns on
+  a difference. The commit is a `git describe` resolved at call
+  time, and it is the field that matters in a development checkout:
+  `__version__` comes from `_version.py`, which `setuptools-scm`
+  writes at *install* time, so under `pip install -e` it keeps
+  reporting whatever was checked out then -- possibly many commits
+  back. The commit is `None` off a git work tree (an ordinary wheel
+  install), which is the case where `__version__` is accurate
+  instead, so the check falls back to it.
+- **The run history.** `@record_call` decorates the state-mutating,
+  parameterized methods of `MutationDataset` and `Model`
+  (`generate_*`, `run_*`, `build_full_dataset`, `compute_*`,
+  `estimate_*`, `assign_cov_matrix`, `aggregate_signatures`). Each
+  call appends `{"call", "at", "args"}` to the object's
+  `_run_history`, exposed read-only as the `run_history` property,
+  saved in the manifest and restored on load. Only arguments the
+  caller actually passed are recorded, so an entry reads like the
+  call that was written rather than like the full signature; frames
+  and arrays become `<DataFrame (300, 4)>` stand-ins, keeping the
+  manifest JSON-safe and small.
+
+Two details worth knowing before relying on it:
+
+- **A call that raised is still recorded**, with a `"failed"` field
+  naming the exception class. The entry is appended before the body
+  runs, precisely so a fit that died leaves a trace of what was
+  asked for.
+- **The history is capped** at `MAX_RUN_HISTORY` entries, since
+  `estimate_gamma` runs once per gene or variant. Past the cap the
+  *middle* is dropped and replaced by an `{"elided": n}` marker:
+  the first entries (how the object was built) and the last ones
+  (what it was last asked to do) are the informative ends.
+
+Manifest schema versions moved with this: dataset 3 -> 4, model
+1 -> 2. Older manifests carry no stamp and no history, and load
+silently -- an unstamped manifest is an older file, not a mismatch.
 
 ## General conventions
 

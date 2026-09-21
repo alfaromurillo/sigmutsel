@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Saved datasets and models now record their provenance: the
+  `sigmutsel` version and git commit that wrote them (warned about
+  on load if the running build differs), and a `run_history` of the
+  calls that produced them, exposed as
+  `MutationDataset.run_history` / `Model.run_history`. Manifest
+  schema versions bumped accordingly (dataset 3 -> 4, model 1 -> 2);
+  manifests written before this load unchanged.
+
 ### Changed
 - `Model.aggregate_signatures` now raises `TypeError` (was
   `ValueError`) when `base_mus` isn't signature-separated -- it's a

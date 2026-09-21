@@ -9,6 +9,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import provenance
+from .provenance import record_call
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,6 +185,9 @@ class MutationDataset:
     _sample_qc_flags: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
+    )
+    _run_history: list = field(
+        default_factory=list, init=False, repr=False
     )
 
     def __post_init__(self):
@@ -437,8 +443,14 @@ class MutationDataset:
             # load -- documentary only, so an old manifest (version
             # 1, no sample_qc_flags file) still loads fine, and a
             # version-3 manifest without the split tables is the
-            # normal case, not a defect.
-            "version": 3,
+            # normal case, not a defect. 4 -> adds the provenance
+            # stamp and run_history, which *are* read on load, by
+            # provenance.check_provenance (a warning, never a
+            # failure: an older manifest carries no stamp and loads
+            # silently).
+            "version": 4,
+            **provenance.package_provenance(),
+            "run_history": list(self._run_history),
             "signature_class": self.signature_class,
             "location_maf_files": str(self.location_maf_files),
             "source_maf": (
@@ -474,11 +486,13 @@ class MutationDataset:
             )
 
         manifest = json.loads(manifest_path.read_text())
+        provenance.check_provenance(manifest, "dataset", directory)
         dataset = cls(
             location_maf_files=manifest.get("location_maf_files"),
             signature_class=manifest.get("signature_class", "SBS"),
             source_maf=manifest.get("source_maf"),
         )
+        dataset._run_history = list(manifest.get("run_history", []))
         # Manifests predating this field used the (then-only)
         # own-cohort-restricted behavior, so that's the correct
         # default for old manifests, not an unknown/null state.
@@ -836,10 +850,22 @@ class MutationDataset:
             .set_index("variant")
         )
 
+    @property
+    def run_history(self):
+        """Calls that produced this dataset, oldest first.
+
+        A list of entries recorded by
+        :func:`.provenance.record_call`, saved with the dataset and
+        restored on load. :func:`.provenance.format_run_history`
+        renders it for printing.
+        """
+        return list(self._run_history)
+
     def has_mutation_db(self):
         """Check if mutation database has been loaded."""
         return self._mutation_db is not None
 
+    @record_call
     def generate_mutation_db(self, location_gene_set=None, **kwargs):
         """Generate mutation database from MAF files.
 
@@ -951,6 +977,7 @@ class MutationDataset:
         """Check if variants have been loaded."""
         return self._variant_db is not None
 
+    @record_call
     def generate_variant_db(self, position_tolerance=3):
         """Generate variant database from the mutation database.
 
@@ -1217,6 +1244,7 @@ class MutationDataset:
         output_dir = Path(self.location_maf_files) / "output"
         return output_dir.exists()
 
+    @record_call
     def generate_mutational_matrices(
         self,
         reference_genome="GRCh38",
@@ -1290,6 +1318,7 @@ class MutationDataset:
             **kwargs,
         )
 
+    @record_call
     def run_signature_decomposition(
         self,
         force_generation=False,
@@ -1581,6 +1610,7 @@ class MutationDataset:
         print()
         return self._sig_assignments
 
+    @record_call
     def run_two_pass_signature_decomposition(
         self,
         artifact_threshold=0.5,
@@ -2018,6 +2048,7 @@ class MutationDataset:
         print()
         return pass_b_assignments
 
+    @record_call
     def generate_contexts_by_gene(
         self, fastas=None, gene_universe="own_cohort"
     ):
@@ -2132,6 +2163,7 @@ class MutationDataset:
             "'own_cohort' or 'wes_target'."
         )
 
+    @record_call
     def generate_consequence_contexts_by_gene(
         self, fastas=None, gene_universe="own_cohort"
     ):
@@ -2215,6 +2247,7 @@ class MutationDataset:
             self._contexts_by_gene_nonsyn,
         )
 
+    @record_call
     def build_full_dataset(
         self,
         fastas=None,
@@ -2527,6 +2560,7 @@ class Model:
         signature_selection: list | tuple | None = None,
         include_other: bool = False,
     ):
+        self._run_history = []
         self.dataset = dataset
         self.cov_matrix = cov_matrix
         self.cov_effects_kwargs = (
@@ -2914,6 +2948,7 @@ class Model:
         """
         return self._passenger_genes_r2_non_silent
 
+    @record_call
     def assign_cov_matrix(
         self,
         cov_matrix,
@@ -3328,6 +3363,7 @@ class Model:
             new_model.cov_matrix = None
         return new_model
 
+    @record_call
     def estimate_gamma(
         self,
         item,
@@ -3884,6 +3920,7 @@ class Model:
         # shape never matters; keep it positive for the likelihood.
         return (phi * row / total).clip(lower=1e-12)
 
+    @record_call
     def estimate_gene_tumor_dispersion(
         self, excluded_samples=None, strata=None, min_genes=15
     ):
@@ -4438,6 +4475,7 @@ class Model:
 
         return result
 
+    @record_call
     def compute_mu_ms(self, use_cov_effects=True, **kwargs):
         """Compute per-variant mutation rates per sample.
 
@@ -4904,7 +4942,11 @@ class Model:
             )
 
         manifest = {
-            "version": 1,
+            # 2 -> adds the provenance stamp and run_history (see
+            # save_dataset's note on what that means on load).
+            "version": 2,
+            **provenance.package_provenance(),
+            "run_history": list(self._run_history),
             "dataset_snapshot": dataset_snapshot,
             "dataset_location": getattr(
                 self.dataset, "location_maf_files", None
@@ -4942,6 +4984,7 @@ class Model:
             )
 
         manifest = json.loads(manifest_path.read_text())
+        provenance.check_provenance(manifest, "model", directory)
 
         dataset_snapshot = manifest.get("dataset_snapshot")
         if not dataset_snapshot:
@@ -4968,6 +5011,10 @@ class Model:
             dataset=MutationDataset.load_dataset(snapshot_path),
             cov_matrix=None,
         )
+        # Replaces, not extends: construction above recorded its own
+        # auto-configuration calls, but this model's history is the
+        # one that was saved.
+        model._run_history = list(manifest.get("run_history", []))
 
         files = manifest.get("files", {})
 
@@ -5099,6 +5146,15 @@ class Model:
         model._saved_location = str(directory.resolve())
 
         return model
+
+    @property
+    def run_history(self):
+        """Calls that produced this model, oldest first.
+
+        See :attr:`MutationDataset.run_history`; the dataset keeps
+        its own, so a model's history starts at its construction.
+        """
+        return list(self._run_history)
 
     @property
     def saved_location(self):
@@ -5332,6 +5388,11 @@ class Model:
             self._prob_g_tau_tau_independent
         )
 
+        # The copy inherits the calls that produced what it
+        # shares (mu_taus, base_mus), then records its own.
+        new_model._run_history = list(self._run_history)
+        provenance.record_event(new_model, "Model.copy")
+
         # Model-specific results are left as None (default)
         # These will be recomputed for the new covariate matrix:
         # - cov_effects, passenger_genes_r2, cov_effects_posteriors
@@ -5354,6 +5415,7 @@ class Model:
         """Set mutation burdens per tumor."""
         self._mu_taus = value
 
+    @record_call
     def compute_mu_taus(self, separate_per_sigma=False, **kwargs):
         """Compute mutation burden (total mutations) per tumor.
 
@@ -5536,6 +5598,7 @@ class Model:
 
         return self._mu_taus
 
+    @record_call
     def compute_base_mus(self, prob_g_tau_tau_independent=False):
         """Compute baseline mutation rates per gene per tumor.
 
@@ -5697,6 +5760,7 @@ class Model:
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
         return self._base_mus
 
+    @record_call
     def compute_channel_base_mus(
         self, prob_g_tau_tau_independent=None
     ):
@@ -5845,6 +5909,7 @@ class Model:
 
         return rates
 
+    @record_call
     def compute_mu_gs(self, assign_base_mus_to_rest=True, **kwargs):
         """Compute per-gene, per-sample mutation rates.
 
@@ -6021,6 +6086,7 @@ class Model:
 
         return self._mu_gs
 
+    @record_call
     def estimate_cov_effects(
         self,
         sample="MAP",
@@ -6596,6 +6662,7 @@ class Model:
         else:
             return self.cov_effects
 
+    @record_call
     def estimate_channel_cov_effects(
         self,
         sample="MAP",
@@ -7039,6 +7106,7 @@ class Model:
             "in_non_silent": passenger_genes,
         }
 
+    @record_call
     def estimate_channel_rg_cov_effects(
         self,
         sample="MAP",
@@ -8205,6 +8273,7 @@ class Model:
                 return signature_names
         return [f"signature_{i}" for i in range(n_signatures)]
 
+    @record_call
     def estimate_passenger_genes_r2(
         self,
         sample_weights=None,
@@ -8620,6 +8689,7 @@ class Model:
 
         return r2
 
+    @record_call
     def aggregate_signatures(
         self, signature_selection, include_other=False
     ):

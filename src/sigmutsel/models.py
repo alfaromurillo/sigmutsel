@@ -3708,6 +3708,181 @@ class Model:
 
         return result
 
+    @record_call
+    def estimate_gamma_compound(
+        self,
+        variants,
+        name=None,
+        upper_bound_prior=None,
+        store=True,
+        excluded_samples=None,
+        use_mu_posterior=False,
+        r_g_variant="none",
+        gene_tumor_dispersion=None,
+    ):
+        """Estimate one gamma shared by several variants.
+
+        A compound variant treats a set of distinct substitutions as
+        interchangeable: a hotspot codon's three routes, a tumor
+        suppressor's truncating variants, any group that plausibly
+        shares a selection coefficient and is individually too rare
+        to fit. The members are mutually exclusive in one tumor, so
+        their rates add, and a tumor carries the compound if it
+        carries any member -- one gamma against that pair, fitted
+        exactly as a single variant's is.
+
+        :func:`.compound_variants.define_compound_variants` builds
+        the groups; this fits one of them.
+
+        Parameters
+        ----------
+        variants : sequence of str
+            The member variant keys, as in ``mu_ms``' index.
+        name : str, optional
+            Key to store the result under. Default: the members
+            joined by ``" + "``.
+        upper_bound_prior, store, excluded_samples, use_mu_posterior, r_g_variant
+            As in :meth:`estimate_gamma`.
+        gene_tumor_dispersion : None, float or "fitted", default None
+            As in :meth:`estimate_gamma`, but ``"fitted"`` requires
+            every member to sit in the **same gene**: `phi` is a
+            per-gene quantity, and a compound spanning genes has no
+            single one to inherit. Pass a number to override.
+
+        Returns
+        -------
+        The gamma result, also stored in :attr:`gammas` under `name`
+        unless ``store=False``.
+
+        Notes
+        -----
+        With ``use_mu_posterior=True`` the members' rate draws are
+        summed draw-wise. Members of one gene share their `r_g` and
+        covariate draws, so that sum is a draw from the compound's
+        own posterior. Across genes the draws are independent, and
+        pairing them by index propagates their uncertainty without
+        representing a joint posterior -- the same caveat as
+        elsewhere in this package.
+        """
+        import json
+
+        from .compound_variants import (
+            compound_presence,
+            compound_rates,
+        )
+        from .estimate_gammas import estimate_gamma_from_mus
+
+        variants = list(variants)
+        if not variants:
+            raise ValueError("A compound variant needs members.")
+        if len(set(variants)) != len(variants):
+            raise ValueError(
+                "Repeated members would double-count a rate: "
+                f"{sorted({v for v in variants if variants.count(v) > 1})}."
+            )
+
+        if self.mu_ms is None:
+            self.compute_mu_ms()
+        missing = [v for v in variants if v not in self.mu_ms.index]
+        if missing:
+            raise ValueError(
+                f"Variant(s) not found in mutation rates: {missing}."
+            )
+
+        name = " + ".join(variants) if name is None else name
+
+        variants_present = self.dataset.variants_present
+        present_mask = compound_presence(variants_present, variants)
+        absent_mask = ~present_mask
+        if excluded_samples is not None:
+            not_excluded = ~present_mask.index.isin(excluded_samples)
+            present_mask &= not_excluded
+            absent_mask &= not_excluded
+
+        extra = (
+            {}
+            if upper_bound_prior is None
+            else {"upper_bound_prior": upper_bound_prior}
+        )
+        yes_ids = present_mask.index[present_mask]
+        no_ids = absent_mask.index[absent_mask]
+
+        phi = None
+        if gene_tumor_dispersion is not None:
+            # Only resolved here: a compound needs no gene at all
+            # unless a per-gene phi is being asked for.
+            gene_ids = {self._variant_gene_id(v) for v in variants}
+            if len(gene_ids) > 1 and isinstance(
+                gene_tumor_dispersion, str
+            ):
+                raise ValueError(
+                    "gene_tumor_dispersion='fitted' needs one gene: "
+                    f"this compound spans {sorted(gene_ids)}. Pass a "
+                    "number to set phi explicitly."
+                )
+            phi = self._resolve_gene_tumor_dispersion(
+                gene_tumor_dispersion,
+                next(iter(gene_ids)),
+                present_mask | absent_mask,
+            )
+            if phi is not None:
+                shapes = self._gene_tumor_shapes(
+                    next(iter(gene_ids)),
+                    phi,
+                    yes_ids.union(no_ids),
+                )
+                extra["gene_tumor_shape"] = (
+                    shapes.loc[yes_ids].to_numpy(),
+                    shapes.loc[no_ids].to_numpy(),
+                )
+
+        if use_mu_posterior:
+            draws = [
+                self.compute_mu_m_posterior_draws(
+                    variant, r_g_variant=r_g_variant
+                )
+                for variant in variants
+            ]
+            n_draws = {frame.shape[0] for frame in draws}
+            if len(n_draws) > 1:
+                raise ValueError(
+                    "Members' mu posteriors have different draw "
+                    f"counts ({sorted(n_draws)}), so they cannot be "
+                    "summed draw-wise."
+                )
+            columns = draws[0].columns
+            total = sum(
+                frame.loc[:, columns].to_numpy() for frame in draws
+            )
+            total = pd.DataFrame(total, columns=columns)
+            result = estimate_gamma_from_mus(
+                total.loc[:, yes_ids].to_numpy(),
+                total.loc[:, no_ids].to_numpy(),
+                **extra,
+            )
+        else:
+            rates = compound_rates(self.mu_ms, variants)
+            result = estimate_gamma_from_mus(
+                rates.loc[yes_ids], rates.loc[no_ids], **extra
+            )
+
+        if hasattr(result, "posterior"):
+            if phi is not None:
+                result.posterior.attrs["gene_tumor_dispersion"] = (
+                    float(phi)
+                )
+            result.posterior.attrs["compound_members"] = json.dumps(
+                variants
+            )
+        self._record_sample_accounting(
+            result, present_mask, absent_mask
+        )
+
+        if store:
+            self.gammas[name] = result
+
+        return result
+
     def _estimate_gamma_gene(
         self,
         gene,

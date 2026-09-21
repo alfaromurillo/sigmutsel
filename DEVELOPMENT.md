@@ -16,6 +16,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `compute_mutation_burden.py` | Synonymous burden, ℓ̂ estimation |
 | `compute_alphas.py` | Per-sample signature exposure α |
 | `contexts_by_gene.py` | Trinucleotide context counts from CDS |
+| `compound_variants.py` | Grouping variants that share one gamma, and the grouping rules |
 | `estimate_rg.py` | Shared per-gene rate correction `r_g`, marginalized |
 | `gene_tumor_dispersion.py` | Gene-tumor dispersion `phi` of a gene's mutations across tumors, fitted as a trend in the gene's mutation count |
 | `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
@@ -131,6 +132,45 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   random_seed = 777` (that only rebinds a local name and has no
   effect, since the estimation functions read `constants.random_seed`
   as a module attribute at call time).
+
+### Compound variants (`compound_variants.py`)
+
+A compound variant is a set of distinct substitutions fitted with
+one shared gamma -- a hotspot codon's routes, a tumor suppressor's
+truncating variants, any group individually too rare to fit alone.
+The fit is arithmetic, not a new model: members are mutually
+exclusive in a tumor, so `compound_rates` **adds** their rates, and
+`compound_presence` **ORs** their presence, after which
+`Model.estimate_gamma_compound` runs the ordinary variant fit
+against that pair. The result records its members (JSON in
+`posterior.attrs["compound_members"]`) alongside the sample
+accounting.
+
+`define_compound_variants(variant_db, by=, merge_distance=)` builds
+the groups, in cancereffectsizeR's two-stage shape: `by` splits on
+annotation columns (the biology), `merge_distance` then merges
+within each split by genomic proximity (transitively -- a chain of
+near neighbours becomes one compound however far apart its ends
+are; `np.inf` merges a whole `by` group across chromosomes). It is
+one sort and one vectorized pass, so a full cohort variant table is
+sub-second.
+
+Three decisions worth keeping:
+
+- **Nothing is dropped.** Singleton groups are returned, a missing
+  `by` value becomes its own `<column>.NA` group, and a variant
+  with no `Start_Position` (a multi-site splice annotation) becomes
+  a compound of its own with a warning. Each alternative would
+  decide something the caller did not ask about -- and a silently
+  missing variant is a silently smaller denominator later.
+- **`gene_tumor_dispersion="fitted"` needs one gene.** `phi` is
+  per-gene; a compound spanning genes has none to inherit, so it
+  raises rather than picking one. A number can always be passed.
+- **`use_mu_posterior=True` sums the members' draws draw-wise.**
+  Within a gene the members share their `r_g` and covariate draws,
+  so the sum is a draw from the compound's own posterior. Across
+  genes it pairs independent posteriors: the uncertainty
+  propagates, but it is not a joint posterior.
 
 ### Gene-tumor dispersion (`gene_tumor_dispersion.py`)
 

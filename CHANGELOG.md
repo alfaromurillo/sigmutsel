@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Compound variants: `compound_variants.define_compound_variants`
+  groups variants by annotation columns and genomic proximity, and
+  `Model.estimate_gamma_compound` fits one shared gamma over a
+  group (rates summed, presence ORed).
 - Gamma fits now record how many tumors they used --
   `n_tumors_with` / `_without` / `_included` / `_excluded` /
   `_held_out` in `posterior.attrs`, tabulated by

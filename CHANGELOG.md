@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MutationDataset.counts_by` cross-tabulates per-variant or
+  per-gene tumor counts against a caller-supplied grouping of the
+  tumors, in counts or in per-group prevalence.
 - `estimate_gammas.presence_probability` exposes the link from
   gamma to P(present) as its own function, and
   `estimate_gamma_from_mus(presence_model=...)` replaces it.

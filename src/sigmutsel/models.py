@@ -804,6 +804,133 @@ class MutationDataset:
             .sort_values(ascending=False)
         )
 
+    def counts_by(
+        self,
+        by,
+        level="variant",
+        units=None,
+        scope="any",
+        prevalence=False,
+    ):
+        """Tumor counts per variant or gene, split by tumor group.
+
+        :attr:`variant_counts` and :attr:`gene_counts` are cohort
+        totals. This is the same count cross-tabulated against a
+        grouping of the tumors -- subtype, treatment, burden class,
+        a QC flag -- which is what turns "this hotspot is in 30
+        tumors" into "and 28 of them are one subtype".
+
+        The grouping comes from the caller, not from a sample table:
+        this package keeps no general per-sample annotation, and
+        inventing one to hold a label the caller already has would
+        be a bigger change than the question deserves.
+
+        Parameters
+        ----------
+        by : pd.Series, mapping, or str
+            Tumor group labels, indexed or keyed by
+            ``Tumor_Sample_Barcode``; or the name of a column of
+            ``mutation_db`` to group by. Tumors with no label are
+            dropped, and their number is reported in the result's
+            ``attrs["unlabeled_tumors"]``.
+        level : {"variant", "gene"}, default "variant"
+            Whether rows are variants or ``ensembl_gene_id``.
+        units : sequence, optional
+            Restrict to these variants or genes.
+        scope : {"any", "silent", "non-silent"}, default "any"
+            Which mutations count. Gene-level presence is normally
+            read on the non-silent channel; this does not default
+            to it, because the right scope depends on what the
+            table is for.
+        prevalence : bool, default False
+            Return each count as a fraction of its *group's* tumors
+            rather than as a count. The denominators are the
+            group sizes in `by`, not the tumors that appear in
+            `mutation_db`, so a tumor with no mutation of the
+            requested scope still counts against its group.
+
+        Returns
+        -------
+        pd.DataFrame
+            Units x groups, sorted by total descending, with
+            ``attrs["tumors_per_group"]`` giving the denominators
+            and ``attrs["unlabeled_tumors"]`` how many tumors `by`
+            did not name.
+        """
+        if level not in ("variant", "gene"):
+            raise ValueError(
+                f"level must be 'variant' or 'gene', got {level!r}."
+            )
+
+        db = self.mutation_db
+        if scope == "silent":
+            db = db[db["Variant_Classification"] == "Silent"]
+        elif scope == "non-silent":
+            db = db[db["Variant_Classification"] != "Silent"]
+        elif scope != "any":
+            raise ValueError(
+                "scope must be 'any', 'silent' or 'non-silent'; "
+                f"got {scope!r}."
+            )
+
+        if isinstance(by, str):
+            if by not in db.columns:
+                raise ValueError(
+                    f"{by!r} is not a column of mutation_db; pass a "
+                    "Series or mapping of tumor labels instead."
+                )
+            groups = db[by]
+            unlabeled = int(groups.isna().sum())
+        else:
+            labels = pd.Series(by)
+            groups = db["Tumor_Sample_Barcode"].map(labels)
+            unlabeled = int(
+                db.loc[
+                    groups.isna(), "Tumor_Sample_Barcode"
+                ].nunique()
+            )
+
+        unit_column = (
+            "variant" if level == "variant" else "ensembl_gene_id"
+        )
+        table = db.assign(_group=groups)
+        table = table[table["_group"].notna()]
+        if units is not None:
+            table = table[table[unit_column].isin(list(units))]
+
+        counts = (
+            table.groupby([unit_column, "_group"])[
+                "Tumor_Sample_Barcode"
+            ]
+            .nunique()
+            .unstack("_group")
+            .fillna(0)
+            .astype(int)
+        )
+        counts = counts.loc[
+            counts.sum(axis=1).sort_values(ascending=False).index
+        ]
+        counts.columns.name = None
+
+        if isinstance(by, str):
+            sizes = (
+                db.groupby(by)["Tumor_Sample_Barcode"]
+                .nunique()
+                .to_dict()
+            )
+        else:
+            sizes = pd.Series(by).value_counts().to_dict()
+
+        if prevalence:
+            denominators = pd.Series(
+                {group: sizes.get(group, 0) for group in counts}
+            )
+            counts = counts.div(denominators.replace(0, np.nan))
+
+        counts.attrs["tumors_per_group"] = sizes
+        counts.attrs["unlabeled_tumors"] = unlabeled
+        return counts
+
     @property
     def gene_counts(self):
         """Number of tumors each gene is mutated in.

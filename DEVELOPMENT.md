@@ -498,6 +498,25 @@ the silent channel can inform its own rate.
   returned but **never stored**, so it cannot be read back as the
   model's own number.
 
+## Cross-tabulating prevalence (`MutationDataset.counts_by`)
+
+`variant_counts` and `gene_counts` are cohort totals;
+`counts_by(by, level=, scope=, prevalence=)` splits the same count
+by a grouping of the tumors. **The grouping is the caller's**: this
+package keeps no general per-sample annotation table, and adding
+one to hold a label the caller already has would be a larger change
+than the question deserves, so `by` is a Series/mapping keyed by
+tumor barcode (or the name of a `mutation_db` column).
+
+Two things it gets right that a `groupby` written on the spot
+usually does not: it counts **tumors, not mutation rows** (a tumor
+with two mutations in a gene is one), and `prevalence=True` divides
+by the **group's own size as `by` gives it**, not by the tumors
+that happen to appear in `mutation_db` -- a tumor with no mutation
+is still a tumor. Tumors `by` does not name are dropped, and how
+many is reported in `attrs["unlabeled_tumors"]` rather than left to
+be noticed.
+
 ## Signature attribution and effect shares
 
 Three entry points over one Bayes rule,

@@ -476,6 +476,25 @@ def test_mu_m_posterior_draws_shape_positivity_and_matches_point(
     np.testing.assert_allclose(geo_mean, point.to_numpy(), rtol=0.2)
 
 
+def test_compute_mu_ms_divides_by_the_nonsyn_opportunities(tmp_path):
+    """A channel model's variant rate is its gene's non-syn type rate
+    over the non-syn opportunities of that type, not over every
+    position with the type's context."""
+    from sigmutsel.constants import canonical_types_order
+
+    model = _fitted_model_with_variants(tmp_path)
+    model.compute_mu_ms()
+    tau = canonical_types_order[0]
+    per_type = model._compute_mu_g_taus()[tau].loc["ENSG_B"]
+    n_nonsyn = model.dataset.contexts_by_gene_nonsyn.at["ENSG_B", tau]
+    np.testing.assert_allclose(
+        model.mu_ms.loc["VAR1"].reindex(per_type.index).to_numpy()
+        * n_nonsyn,
+        per_type.to_numpy(),
+        rtol=1e-6,
+    )
+
+
 def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(
     tmp_path,
 ):

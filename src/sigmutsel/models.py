@@ -4481,11 +4481,21 @@ class Model:
             use_cov_effects=use_cov_effects
         )
 
+        # A channel model's per-type rates are the non-synonymous
+        # channel's (a variant is non-silent), so each site's share is
+        # over that channel's own opportunities, not every position
+        # with tau's context -- see variant_site_denominators.
+        opportunity_by_type = (
+            self.dataset.contexts_by_gene_nonsyn
+            if self.has_channel_base_mus()
+            else None
+        )
         self.mu_ms = compute_mu_m_per_tumor(
             variants_df=self.dataset.variant_db,
             mu_g_tau_j=mu_g_tau_j,
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
+            opportunity_by_type=opportunity_by_type,
             **kwargs,
         )
 
@@ -7794,7 +7804,8 @@ class Model:
         gene's variants) that drive
         :meth:`compute_mu_g_posterior_draws` drive this too, just
         multiplied by each mutation type's fixed opportunity share
-        (``1 / n_{g,c(tau)}``) instead of summed into the gene total.
+        (``1 / n^{nonsyn}_{g,tau}``, the non-synonymous channel's own
+        opportunities) instead of summed into the gene total.
 
         Only meaningful for a channel-split model: a variant is
         inherently non-silent, so there is no merged-baseline
@@ -7869,7 +7880,10 @@ class Model:
             )
 
         from .constants import extract_context
-        from .estimate_mus import compute_mu_g_channel_per_tumor
+        from .estimate_mus import (
+            compute_mu_g_channel_per_tumor,
+            variant_site_denominators,
+        )
 
         row = self.dataset.variant_db.loc[variant]
         gene_id = row["ensembl_gene_id"]
@@ -7882,17 +7896,15 @@ class Model:
         )
 
         contexts_by_gene = self.dataset.contexts_by_gene
-        if self.prob_g_tau_tau_independent:
-            # Mirrors compute_mu_m_per_tumor's own genome-wide
-            # redistribution -- must match whatever contexts_by_gene
-            # compute_mu_g_channel_per_tumor is about to use below.
-            contexts_by_gene = (
-                pd.DataFrame(contexts_by_gene.sum(axis=1))
-                @ pd.DataFrame(
-                    contexts_by_gene.sum(axis=0)
-                    / contexts_by_gene.values.sum()
-                ).T
-            )
+        # Same divisor as compute_mu_ms: the non-synonymous channel's
+        # own opportunities for each type (tau-independent
+        # redistribution included), so these draws stay centred on
+        # mu_ms.
+        denominators = variant_site_denominators(
+            contexts_by_gene,
+            opportunity_by_type=self.dataset.contexts_by_gene_nonsyn,
+            prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
+        )
 
         total = None
         tumor_index = None
@@ -7903,7 +7915,7 @@ class Model:
                 or context not in contexts_by_gene.columns
             ):
                 continue
-            n_context = contexts_by_gene.at[gene_id, context]
+            n_context = denominators.at[gene_id, tau]
             if not n_context:
                 continue
 

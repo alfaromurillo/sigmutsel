@@ -1001,11 +1001,100 @@ def compute_mus_per_gene_per_sample(
         return mus_full
 
 
+def variant_site_denominators(
+    contexts_by_gene: pd.DataFrame,
+    opportunity_by_type: pd.DataFrame | None = None,
+    prob_g_tau_tau_independent: bool = False,
+) -> pd.DataFrame:
+    """Per-(gene, type) site counts that turn a gene rate into a site rate.
+
+    A variant's rate is its gene's type-tau rate spread evenly over
+    the sites that rate was built from, so the divisor has to count
+    exactly the opportunities in that rate's numerator:
+
+    * **Merged rate** (``opportunity_by_type`` is None): every
+      position with tau's source context offers one type-tau
+      opportunity, so the divisor is ``n_{g,c(tau)}``.
+    * **One consequence channel** (``opportunity_by_type`` is that
+      channel's genes x 96 table, e.g. the non-synonymous one): only
+      that channel's opportunities are in the numerator, so the
+      divisor is ``n^{channel}_{g,tau}``. Dividing a channel rate by
+      the full ``n_{g,c(tau)}`` would scale every site by the gene's
+      channel fraction for tau -- a site's rate must not depend on how
+      many *other* sites in its gene happen to be synonymous.
+
+    Under ``prob_g_tau_tau_independent`` each gene's total is spread
+    over types by the exome-wide context proportions, mirroring how
+    the tau-independent gene rates are built: positions
+    (``contexts_by_gene.sum(axis=1)``) for the merged rate, and
+    channel opportunities / 3 for a channel (3 opportunities per
+    position), which reduces to the merged form when the channel is
+    everything.
+
+    Parameters
+    ----------
+    contexts_by_gene : pandas.DataFrame
+        Genes x 32 contexts (positions).
+    opportunity_by_type : pandas.DataFrame or None
+        Genes x 96 canonical types, one consequence channel's
+        opportunities, or None for the merged rate.
+    prob_g_tau_tau_independent : bool
+        Must match the setting the gene rates were built with.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Genes x 96 canonical types (``contexts_by_gene``'s genes).
+    """
+    from .constants import canonical_types_order, extract_context
+
+    type_contexts = [
+        extract_context(t) for t in canonical_types_order
+    ]
+
+    if prob_g_tau_tau_independent:
+        context_share = (
+            contexts_by_gene.sum(axis=0)
+            / contexts_by_gene.values.sum()
+        )
+        if opportunity_by_type is None:
+            per_gene = contexts_by_gene.sum(axis=1)
+        else:
+            per_gene = (
+                opportunity_by_type.reindex(contexts_by_gene.index)
+                .fillna(0)
+                .sum(axis=1)
+                / 3.0
+            )
+        out = pd.DataFrame(
+            np.outer(
+                per_gene.to_numpy(),
+                context_share[type_contexts].to_numpy(),
+            ),
+            index=contexts_by_gene.index,
+            columns=canonical_types_order,
+        )
+    elif opportunity_by_type is None:
+        out = contexts_by_gene[type_contexts].copy()
+        out.columns = canonical_types_order
+    else:
+        out = (
+            opportunity_by_type.reindex(
+                index=contexts_by_gene.index,
+                columns=canonical_types_order,
+            )
+            .fillna(0)
+            .astype(float)
+        )
+    return out
+
+
 def compute_mu_m_per_tumor(
     variants_df: pd.DataFrame,
     mu_g_tau_j: dict[str, pd.DataFrame],
     contexts_by_gene: pd.DataFrame,
     prob_g_tau_tau_independent=False,
+    opportunity_by_type: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     r"""Compute per-variant expected mutation rate per tumor.
 
@@ -1053,6 +1142,15 @@ def compute_mu_m_per_tumor(
         match the one used to compute ``mu_g_tau_j``, via
         :func:`compute_mu_g_per_tumor`.
 
+    opportunity_by_type : pandas.DataFrame or None, default None
+        Genes x 96 canonical types: the opportunities of the channel
+        ``mu_g_tau_j`` was built from, e.g. the non-synonymous table
+        when ``mu_g_tau_j`` comes from
+        :func:`compute_mu_g_channel_per_tumor`. The divisor is then
+        ``n^{channel}_{g,tau}`` instead of ``n_{g,c(tau)}``; see
+        :func:`variant_site_denominators`. None (the default) keeps
+        the merged-rate divisor.
+
     Returns
     -------
     pandas.DataFrame
@@ -1092,19 +1190,15 @@ def compute_mu_m_per_tumor(
 
     variants = variants_df.copy()
 
-    # When prob_g_tau_tau_independent=True, reconstruct contexts_by_gene
-    # by redistributing each gene's total contexts according to
-    # genome-wide proportions. This assumes the distribution of context
-    # types is the same across all genes, useful when gene-specific
-    # context counts may not reflect what mutation calling scanned.
-    if prob_g_tau_tau_independent:
-        contexts_by_gene = (
-            pd.DataFrame(contexts_by_gene.sum(axis=1))
-            @ pd.DataFrame(
-                contexts_by_gene.sum(axis=0)
-                / contexts_by_gene.values.sum()
-            ).T
-        )
+    # One divisor per (gene, type), matching the opportunities in the
+    # numerator's rate: n_{g,c(tau)} for a merged rate, the channel's
+    # own n_{g,tau} for a consequence channel. Includes the
+    # tau-independent genome-wide redistribution.
+    denominators = variant_site_denominators(
+        contexts_by_gene,
+        opportunity_by_type=opportunity_by_type,
+        prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+    )
 
     valid_genes = set(contexts_by_gene.index)
     valid_contexts = set(contexts_by_gene.columns)
@@ -1142,7 +1236,7 @@ def compute_mu_m_per_tumor(
             # about doesn't apply here.
             n_contexts = gene_ids.map(
                 lambda g: (
-                    contexts_by_gene.at[g, context]  # noqa: B023
+                    denominators.at[g, tau]  # noqa: B023
                     if g in valid_genes
                     else np.nan
                 )
@@ -1174,7 +1268,7 @@ def compute_mu_m_per_tumor(
                     or gene_id not in mu_g_tau_j[tau].index
                 ):
                     continue
-                n_context = contexts_by_gene.at[gene_id, context]
+                n_context = denominators.at[gene_id, tau]
                 if n_context == 0:
                     continue
                 total = (

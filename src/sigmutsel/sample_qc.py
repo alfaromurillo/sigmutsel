@@ -61,11 +61,12 @@ def flag_low_purity_samples(
         Column holding the purity estimate, 0-1 scale.
     threshold : float, default 0.30
         Samples with purity strictly below this are flagged. Default
-        based on Cheng et al. 2023 (colorectal cancer, MuTect2 +
-        validation against TCGA via MuSE/SomaticSniper/VarScan2 --
-        overlapping methods with MC3, which called the MAF data this
-        pipeline consumes): false-negative mutation calls rose
-        sharply below 30% purity.
+        based on Yu et al. 2023 (Clin. Transl. Med. 13:e1252,
+        doi:10.1002/ctm2.1252; colorectal cancer, MuTect2 calls on
+        TCGA and MSK data): false-negative mutation calls rose
+        sharply below 30% purity. MuTect2 is one of the callers
+        merged into GDC's "Aliquot Ensemble Somatic Variant Merging
+        and Masking" MAFs, the usual TCGA input.
 
     Returns
     -------

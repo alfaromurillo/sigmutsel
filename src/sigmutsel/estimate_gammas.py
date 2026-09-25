@@ -369,6 +369,7 @@ def estimate_gamma_from_mus(
 
     use_mu_prior = mus_yes_arr.ndim == 2 or mus_no_arr.ndim == 2
     log_mu_mean = log_mu_sigma = None
+    n_zero_rate_absent = 0
     if use_mu_prior:
         if mus_yes_arr.ndim != 2 or mus_no_arr.ndim != 2:
             raise ValueError(
@@ -383,6 +384,31 @@ def estimate_gamma_from_mus(
                 "mus_yes and mus_no must share the same number of "
                 f"posterior draws (axis 0); got {mus_yes_arr.shape[0]}"
                 f" and {mus_no_arr.shape[0]}."
+            )
+        # A tumor whose rate is 0 in every draw cannot carry the
+        # mutation, so its absence has probability 1 whatever gamma is
+        # and dropping it changes nothing -- but log(0) would make the
+        # cut's initial log-probability -inf and stop the sampler from
+        # starting at all. This happens: a tumor whose fitted
+        # signatures emit nothing of a type has mu = 0 for it, and it
+        # silently cost TP53 p.R175H its gamma in two TCGA cohorts.
+        dead_no = (mus_no_arr <= 0).all(axis=0)
+        n_zero_rate_absent = int(dead_no.sum())
+        if n_zero_rate_absent:
+            mus_no_arr = mus_no_arr[:, ~dead_no]
+            if gene_tumor_shape is not None:
+                shapes_yes, shapes_no = gene_tumor_shape
+                gene_tumor_shape = (
+                    shapes_yes,
+                    np.asarray(shapes_no, dtype=float).ravel()[
+                        ~dead_no
+                    ],
+                )
+        if (mus_yes_arr <= 0).any() or (mus_no_arr <= 0).any():
+            raise ValueError(
+                "The mu-posterior cut needs positive rates: a tumor "
+                "carrying the mutation has rate 0, or a rate is 0 in "
+                "only some draws."
             )
         n_yes, n_no = mus_yes_arr.shape[1], mus_no_arr.shape[1]
         log_mu_draws = np.log(
@@ -719,6 +745,9 @@ def estimate_gamma_from_mus(
                 results.posterior.attrs["natural_gamma_ceiling"] = (
                     natural_ceiling
                 )
+                results.posterior.attrs[
+                    "n_zero_rate_absent_dropped"
+                ] = n_zero_rate_absent
 
             return results
 

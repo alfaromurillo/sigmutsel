@@ -727,3 +727,44 @@ def test_variant_inheriting_gene_dispersion_recovers_gamma():
         plain.append(mle(mu_m, present, np.full(n, 1e12)))
     assert abs(np.log(np.median(shaped) / gamma)) < 0.15
     assert np.median(plain) < np.median(shaped)
+
+
+def test_cut_drops_absent_tumors_with_zero_rate():
+    """A tumor with rate 0 lacks the mutation with probability 1 for
+    every gamma, so adding such tumors must leave the estimate alone
+    rather than stop the sampler at log(0)."""
+    rng = np.random.default_rng(2)
+    mus_yes_2d = _lognormal_draws(_MUS_YES, 1e-4, 200, rng)
+    mus_no_2d = _lognormal_draws(_MUS_NO, 1e-4, 200, rng)
+    padded_no = np.concatenate(
+        [mus_no_2d, np.zeros((200, 3))], axis=1
+    )
+    kwargs = {
+        "draws": 1000,
+        "burn": 500,
+        "upper_bound_prior": 1e6,
+        "auto_raise_target_accept": False,
+    }
+
+    constants.random_seed = 2
+    base = estimate_gamma_from_mus(mus_yes_2d, mus_no_2d, **kwargs)
+    constants.random_seed = 2
+    padded = estimate_gamma_from_mus(mus_yes_2d, padded_no, **kwargs)
+    constants.random_seed = None
+
+    assert padded.posterior.attrs["n_zero_rate_absent_dropped"] == 3
+    np.testing.assert_allclose(
+        padded.posterior["gamma"].values,
+        base.posterior["gamma"].values,
+    )
+
+
+def test_cut_rejects_a_carried_mutation_at_zero_rate():
+    rng = np.random.default_rng(3)
+    mus_yes_2d = _lognormal_draws(_MUS_YES, 1e-4, 50, rng)
+    mus_yes_2d[:, 0] = 0.0
+    mus_no_2d = _lognormal_draws(_MUS_NO, 1e-4, 50, rng)
+    with pytest.raises(ValueError, match="positive rates"):
+        estimate_gamma_from_mus(
+            mus_yes_2d, mus_no_2d, draws=10, burn=10
+        )

@@ -4241,7 +4241,9 @@ class Model:
             show=show,
         )
 
-    def _compute_mu_g_taus(self, use_cov_effects=True):
+    def _compute_mu_g_taus(
+        self, use_cov_effects=True, channel="nonsyn", taus=None
+    ):
         """Compute per-gene, per-type, per-sample mutation rates.
 
         Mirrors :meth:`compute_mu_gs`, but keeps mutation type τ as
@@ -4252,6 +4254,19 @@ class Model:
         all 96 types, as ``mu_gs`` is) there would be wrong --- it
         would divide an all-type total by a single type's context
         count.
+
+        Parameters
+        ----------
+        use_cov_effects : bool, default True
+            Scale by the covariate effects when they are available.
+        channel : {"nonsyn", "syn"}, default "nonsyn"
+            Which consequence channel's per-type rates a channel-split
+            model returns: the non-synonymous one (with its
+            ``delta_intercept``), or the synonymous one (without it),
+            which a synonymous variant needs. Ignored for a merged
+            model.
+        taus : list of str or None, default None
+            Restrict to these types (all 96 when None).
 
         Returns
         -------
@@ -4265,11 +4280,10 @@ class Model:
 
         Notes
         -----
-        ``compute_mu_ms``, this method's only caller, is inherently
-        about non-silent (missense/nonsense) variants. For a
-        channel-split model (``has_channel_base_mus()``), this
-        routes through the non-synonymous channel's own opportunity
-        table (:func:`estimate_mus.compute_mu_g_channel_per_tumor`)
+        ``compute_mu_ms`` is this method's only caller. For a
+        channel-split model (``has_channel_base_mus()``) and the
+        default ``channel="nonsyn"``, this routes through the
+        non-synonymous channel's own opportunity table (:func:`estimate_mus.compute_mu_g_channel_per_tumor`)
         and applies that fit's ``delta_intercept`` -- the same
         channel-rate distinction :meth:`compute_channel_mu_gs` makes
         and :meth:`_estimate_gamma_gene` was fixed to make. Using the
@@ -4284,7 +4298,18 @@ class Model:
             compute_mus_per_gene_per_sample,
         )
 
+        if channel not in ("nonsyn", "syn"):
+            raise ValueError(
+                f"channel must be 'nonsyn' or 'syn', got {channel!r}"
+            )
         is_channel = self.has_channel_base_mus()
+        channel_table = None
+        if is_channel:
+            channel_table = (
+                self.dataset.contexts_by_gene_syn
+                if channel == "syn"
+                else self.dataset.contexts_by_gene_nonsyn
+            )
         signature_separated = isinstance(self._mu_taus, dict)
 
         # self._base_mus may have been aggregated (e.g. 30 raw
@@ -4344,13 +4369,11 @@ class Model:
         # and sample counts, so each tau's baseline is built,
         # covariate-scaled, and freed before moving to the next.
         result = {}
-        for tau in canonical_types_order:
+        for tau in canonical_types_order if taus is None else taus:
             if is_channel:
                 base_g_tau = compute_mu_g_channel_per_tumor(
                     mu_taus=mu_taus_for_g_taus,
-                    channel_contexts_by_gene=(
-                        self.dataset.contexts_by_gene_nonsyn
-                    ),
+                    channel_contexts_by_gene=channel_table,
                     contexts_by_gene=self.dataset.contexts_by_gene,
                     prob_g_tau_tau_independent=(
                         self.prob_g_tau_tau_independent
@@ -4390,8 +4413,13 @@ class Model:
 
             # A separate_c="intercept" fit puts the non-synonymous
             # channel's own intercept in _rg_delta_intercept rather
-            # than in cov_effects -- see compute_channel_mu_gs.
-            if is_channel and self._rg_delta_intercept is not None:
+            # than in cov_effects -- see compute_channel_mu_gs. The
+            # synonymous channel has no such offset.
+            if (
+                is_channel
+                and channel == "nonsyn"
+                and self._rg_delta_intercept is not None
+            ):
                 scaled = scaled * np.exp(self._rg_delta_intercept)
 
             # Genes without covariate coverage keep their baseline
@@ -4476,30 +4504,78 @@ class Model:
 
         # Per-type gene rates: mu_ms needs the type-tau-specific share
         # of each gene's rate, not the gene total (self.mu_gs / self.
-        # base_mus), so that dividing by n_{g,c(tau)} is correct.
-        mu_g_tau_j = self._compute_mu_g_taus(
-            use_cov_effects=use_cov_effects
-        )
-
-        # A channel model's per-type rates are the non-synonymous
-        # channel's (a variant is non-silent), so each site's share is
-        # over that channel's own opportunities, not every position
-        # with tau's context -- see variant_site_denominators.
-        opportunity_by_type = (
-            self.dataset.contexts_by_gene_nonsyn
-            if self.has_channel_base_mus()
-            else None
-        )
-        self.mu_ms = compute_mu_m_per_tumor(
-            variants_df=self.dataset.variant_db,
-            mu_g_tau_j=mu_g_tau_j,
+        # base_mus), so that dividing by the type's sites is correct.
+        variants = self.dataset.variant_db
+        common = dict(
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
-            opportunity_by_type=opportunity_by_type,
             **kwargs,
         )
+        if not self.has_channel_base_mus():
+            self.mu_ms = compute_mu_m_per_tumor(
+                variants_df=variants,
+                mu_g_tau_j=self._compute_mu_g_taus(
+                    use_cov_effects=use_cov_effects
+                ),
+                **common,
+            )
+            return self.mu_ms
 
+        # A channel model gives each variant its own consequence
+        # channel's rate, spread over that channel's own sites of the
+        # type -- see variant_site_denominators. Almost every variant
+        # is non-silent; a synonymous one (p.X=) takes the synonymous
+        # channel, which carries no delta_intercept.
+        silent = variants.index.isin(self._silent_variant_labels())
+        parts = [
+            compute_mu_m_per_tumor(
+                variants_df=variants[~silent],
+                mu_g_tau_j=self._compute_mu_g_taus(
+                    use_cov_effects=use_cov_effects
+                ),
+                opportunity_by_type=self.dataset.contexts_by_gene_nonsyn,
+                **common,
+            )
+        ]
+        if silent.any():
+            taus = sorted(
+                {
+                    t
+                    for mt in variants.loc[silent, "mut_types"]
+                    for t in ([mt] if isinstance(mt, str) else mt)
+                }
+            )
+            parts.append(
+                compute_mu_m_per_tumor(
+                    variants_df=variants[silent],
+                    mu_g_tau_j=self._compute_mu_g_taus(
+                        use_cov_effects=use_cov_effects,
+                        channel="syn",
+                        taus=taus,
+                    ),
+                    opportunity_by_type=self.dataset.contexts_by_gene_syn,
+                    **common,
+                )
+            )
+        self.mu_ms = pd.concat(parts).loc[variants.index]
         return self.mu_ms
+
+    def _silent_variant_labels(self):
+        """Variant labels whose MAF calls are synonymous (``Silent``).
+
+        A variant label is one protein-level change, so it is silent
+        in every call or in none; this reads it off
+        ``mutation_db``'s ``Variant_Classification``. Empty when the
+        catalogue has no ``variant`` column.
+        """
+        db = self.dataset.mutation_db
+        if "variant" not in db.columns:
+            return set()
+        return set(
+            db.loc[
+                db["Variant_Classification"] == "Silent", "variant"
+            ]
+        )
 
     def save_model(self, directory, overwrite=False):
         """Persist this Model's results to disk.
@@ -7668,7 +7744,9 @@ class Model:
 
         return mu_draws
 
-    def _covariate_scale_draws(self, gene_id, n_draws=None, rng=None):
+    def _covariate_scale_draws(
+        self, gene_id, n_draws=None, rng=None, include_delta=True
+    ):
         """Per-draw ``exp(c . x_g [+ delta_intercept])`` for one gene.
 
         Shared by :meth:`compute_mu_g_posterior_draws` and
@@ -7684,6 +7762,9 @@ class Model:
             ``(n_draws,)``; ``n_draws`` is the resolved draw count
             (``n_draws`` echoed back, or every available draw if it
             was None).
+
+        ``include_delta=False`` drops the non-synonymous channel's
+        ``delta_intercept``, for a rate on the synonymous channel.
         """
         if gene_id not in self.cov_matrix.index:
             raise ValueError(
@@ -7724,7 +7805,7 @@ class Model:
 
         cov_row = self.cov_matrix.loc[gene_id].to_numpy(dtype=float)
         eta = c_sel[0] + cov_row @ c_sel[1:]
-        if self._rg_delta_intercept is not None:
+        if include_delta and self._rg_delta_intercept is not None:
             # See compute_channel_mu_gs's docstring: a
             # separate_c="intercept" fit puts the non-synonymous
             # channel's own intercept here rather than in `c`, and
@@ -7805,11 +7886,13 @@ class Model:
         :meth:`compute_mu_g_posterior_draws` drive this too, just
         multiplied by each mutation type's fixed opportunity share
         (``1 / n^{nonsyn}_{g,tau}``, the non-synonymous channel's own
-        opportunities) instead of summed into the gene total.
+        opportunities; ``1 / n^{syn}_{g,tau}`` and no
+        ``delta_intercept`` for a synonymous variant) instead of
+        summed into the gene total.
 
-        Only meaningful for a channel-split model: a variant is
-        inherently non-silent, so there is no merged-baseline
-        equivalent to fall back to (unlike
+        Only meaningful for a channel-split model: the draws use the
+        variant's own consequence channel, which a merged model does
+        not have (unlike
         :meth:`compute_mu_g_posterior_draws`, which also works for a
         non-channel model).
 
@@ -7856,9 +7939,9 @@ class Model:
             raise ValueError(
                 "compute_mu_m_posterior_draws requires a "
                 "channel-split model (call "
-                "compute_channel_base_mus() first) -- a variant is "
-                "inherently non-silent, so there is no "
-                "merged-baseline equivalent to fall back to."
+                "compute_channel_base_mus() first) -- the draws use "
+                "a variant's own consequence channel, which a merged "
+                "model does not have."
             )
         if self.cov_matrix is None:
             raise ValueError("Covariate matrix is None.")
@@ -7891,18 +7974,28 @@ class Model:
         if isinstance(mut_types, str):
             mut_types = [mut_types]
 
+        # Same channel as compute_mu_ms: a synonymous variant takes
+        # the synonymous channel, with no delta_intercept.
+        silent = variant in self._silent_variant_labels()
+        channel_table = (
+            self.dataset.contexts_by_gene_syn
+            if silent
+            else self.dataset.contexts_by_gene_nonsyn
+        )
         scale, n_draws = self._covariate_scale_draws(
-            gene_id, n_draws=n_draws, rng=rng
+            gene_id,
+            n_draws=n_draws,
+            rng=rng,
+            include_delta=not silent,
         )
 
         contexts_by_gene = self.dataset.contexts_by_gene
-        # Same divisor as compute_mu_ms: the non-synonymous channel's
-        # own opportunities for each type (tau-independent
-        # redistribution included), so these draws stay centred on
-        # mu_ms.
+        # Same divisor as compute_mu_ms: the channel's own
+        # opportunities for each type (tau-independent redistribution
+        # included), so these draws stay centred on mu_ms.
         denominators = variant_site_denominators(
             contexts_by_gene,
-            opportunity_by_type=self.dataset.contexts_by_gene_nonsyn,
+            opportunity_by_type=channel_table,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
         )
 
@@ -7921,9 +8014,7 @@ class Model:
 
             baseline_g_tau = compute_mu_g_channel_per_tumor(
                 mu_taus=self._mu_taus,
-                channel_contexts_by_gene=(
-                    self.dataset.contexts_by_gene_nonsyn
-                ),
+                channel_contexts_by_gene=channel_table,
                 contexts_by_gene=self.dataset.contexts_by_gene,
                 prob_g_tau_tau_independent=(
                     self.prob_g_tau_tau_independent

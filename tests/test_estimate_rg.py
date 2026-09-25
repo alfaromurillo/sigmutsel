@@ -495,6 +495,97 @@ def test_compute_mu_ms_divides_by_the_nonsyn_opportunities(tmp_path):
     )
 
 
+def _model_with_a_silent_variant(tmp_path):
+    """VAR1 plus a synonymous variant at a site of the same type in
+    the same gene, marked silent the way MAF calls would mark it."""
+    from sigmutsel.constants import canonical_types_order
+
+    model = _fitted_model_with_variants(tmp_path)
+    syn = model.dataset.contexts_by_gene_syn
+    nonsyn = model.dataset.contexts_by_gene_nonsyn
+    tau = next(
+        t
+        for t in canonical_types_order
+        if syn.at["ENSG_B", t] > 0 and nonsyn.at["ENSG_B", t] > 0
+    )
+    model.dataset._variant_db = pd.DataFrame(
+        {
+            "ensembl_gene_id": ["ENSG_B", "ENSG_B"],
+            "mut_types": [tau, tau],
+        },
+        index=["VAR_NONSYN", "VAR_SILENT"],
+    )
+    model._silent_variant_labels = lambda: {"VAR_SILENT"}
+    return model, tau
+
+
+def test_compute_mu_ms_gives_a_silent_variant_the_syn_channel(
+    tmp_path,
+):
+    """A synonymous variant's rate is the synonymous channel's type
+    rate over the synonymous sites of that type -- no delta."""
+    model, tau = _model_with_a_silent_variant(tmp_path)
+    model.compute_mu_ms()
+    per_type = model._compute_mu_g_taus(channel="syn", taus=[tau])[
+        tau
+    ].loc["ENSG_B"]
+    n_syn = model.dataset.contexts_by_gene_syn.at["ENSG_B", tau]
+    np.testing.assert_allclose(
+        model.mu_ms.loc["VAR_SILENT"]
+        .reindex(per_type.index)
+        .to_numpy()
+        * n_syn,
+        per_type.to_numpy(),
+        rtol=1e-6,
+    )
+
+
+def test_silent_and_nonsyn_sites_differ_only_by_delta(tmp_path):
+    """Under tau-dependent p_gtau one opportunity is one opportunity:
+    two sites of the same type in one gene carry the same rate,
+    except that the non-synonymous one also carries e^delta."""
+    model, _ = _model_with_a_silent_variant(tmp_path)
+    model.compute_mu_ms()
+    delta = model._rg_delta_intercept or 0.0
+    np.testing.assert_allclose(
+        model.mu_ms.loc["VAR_NONSYN"].to_numpy(),
+        model.mu_ms.loc["VAR_SILENT"].to_numpy() * np.exp(delta),
+        rtol=1e-6,
+    )
+
+
+def test_silent_variant_draws_centre_on_mu_ms_without_delta(tmp_path):
+    model, _ = _model_with_a_silent_variant(tmp_path)
+    silent = model.compute_mu_m_posterior_draws(
+        "VAR_SILENT", r_g_variant="none"
+    )
+    nonsyn = model.compute_mu_m_posterior_draws(
+        "VAR_NONSYN", r_g_variant="none"
+    )
+    # same draws, same site type: the per-draw ratio is e^delta_draw,
+    # constant across tumors
+    log_ratio = np.log(nonsyn.to_numpy() / silent.to_numpy())
+    np.testing.assert_allclose(
+        log_ratio, log_ratio[:, :1].repeat(log_ratio.shape[1], 1)
+    )
+    model.compute_mu_ms()
+    point = model.mu_ms.loc["VAR_SILENT"].reindex(silent.columns)
+    geo_mean = np.exp(np.log(silent.to_numpy()).mean(axis=0))
+    np.testing.assert_allclose(geo_mean, point.to_numpy(), rtol=0.2)
+
+
+def test_silent_variant_labels_read_the_classification(tmp_path):
+    model = _rg_model(tmp_path)
+    db = model.dataset.mutation_db
+    assert db["Variant_Classification"].eq("Silent").any()
+    labels = np.where(
+        db["Variant_Classification"].eq("Silent"), "S_", "N_"
+    ) + np.arange(len(db)).astype(str)
+    model.dataset._mutation_db = db.assign(variant=labels)
+    found = model._silent_variant_labels()
+    assert found == {v for v in labels if v.startswith("S_")}
+
+
 def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(
     tmp_path,
 ):

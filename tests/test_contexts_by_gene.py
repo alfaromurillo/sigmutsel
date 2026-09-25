@@ -321,3 +321,29 @@ def test_passenger_genes_r2_zero_weight_matches_exclusion(tmp_path):
         excluded_samples=["T3"]
     )
     assert np.isclose(r2_weighted, r2_excluded)
+
+
+def test_load_dataset_restores_every_list_not_only_a_leading_one(
+    tmp_path,
+):
+    """variant_db's mut_types mixes plain types and lists; the lists
+    must come back as lists even when the first row is a plain type.
+    """
+    dataset = _dataset_with_mutation_db(
+        tmp_path / "src",
+        pd.DataFrame({"ensembl_gene_id": ["G"], "variant": ["x"]}),
+    )
+    dataset._variant_db = pd.DataFrame(
+        {
+            "ensembl_gene_id": ["G", "G"],
+            "mut_types": ["A[C>T]G", ["C[T>G]T", "C[T>C]T"]],
+        },
+        index=["single", "multi"],
+    )
+    dataset.save_dataset(tmp_path / "saved")
+    loaded = MutationDataset.load_dataset(tmp_path / "saved")
+    assert loaded._variant_db.at["single", "mut_types"] == "A[C>T]G"
+    assert loaded._variant_db.at["multi", "mut_types"] == [
+        "C[T>G]T",
+        "C[T>C]T",
+    ]

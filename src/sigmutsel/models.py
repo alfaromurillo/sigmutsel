@@ -495,17 +495,18 @@ class MutationDataset:
 
             if fmt == "parquet":
                 value = pd.read_parquet(file_path)
-                # Convert JSON strings back to lists for columns like mut_types
+                # Convert JSON strings back to lists for columns like
+                # mut_types. Test every value, as save_dataset does:
+                # a column mixes plain strings and lists (a variant
+                # with several SNV routes), so its first value says
+                # nothing about the rest -- testing only that left
+                # every multi-route variant a string, and a rate of 0.
                 for col in value.columns:
-                    # Check if column contains JSON array strings
-                    sample = (
-                        value[col].dropna().iloc[0]
-                        if not value[col].dropna().empty
-                        else None
+                    looks_json = value[col].map(
+                        lambda x: isinstance(x, str)
+                        and x.startswith("[")
                     )
-                    if isinstance(sample, str) and sample.startswith(
-                        "["
-                    ):
+                    if looks_json.any():
                         try:
                             value[col] = value[col].apply(
                                 lambda x: (

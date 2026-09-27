@@ -1227,10 +1227,10 @@ def classify_calls(db, models, coding_in=None, splice_in=None):
         -1,
     )
 
-    channel = out["channel"].to_numpy(dtype=object)
-    reason = out["universe_reason"].to_numpy(dtype=object)
-    label = out["variant_label"].to_numpy(dtype=object)
-    routes = out["routes"].to_numpy(dtype=object)
+    channel = np.array(out["channel"], dtype=object)
+    reason = np.array(out["universe_reason"], dtype=object)
+    label = np.array(out["variant_label"], dtype=object)
+    routes = np.array(out["routes"], dtype=object)
     inside = np.zeros(n, dtype=bool)
     genes = db["gene"].astype(str).to_numpy()
     types = db["type"].astype(str).to_numpy()
@@ -1305,10 +1305,15 @@ def classify_calls(db, models, coding_in=None, splice_in=None):
     reason = np.where(
         classified & ~inside, "outside_territory", reason
     )
-    out["channel"] = channel
-    out["universe_reason"] = reason
-    out["variant_label"] = label
-    out["routes"] = routes
+    # Explicit object dtype: pandas 3 would otherwise infer its string
+    # dtype and turn the None of an unclassified call into NaN.
+    for column, values in (
+        ("channel", channel),
+        ("universe_reason", reason),
+        ("variant_label", label),
+        ("routes", routes),
+    ):
+        out[column] = pd.Series(values, index=out.index, dtype=object)
     out["in_universe"] = classified & inside
     return out
 

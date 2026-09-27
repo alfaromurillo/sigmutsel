@@ -464,3 +464,58 @@ def test_route_rates_sum_and_compounds_add(models):
         compound_rates(mu_ms, list(variants.index)),
         expected_mis + site("A[C>T]T"),
     )
+
+
+def test_splice_flank_composition_reads_both_strands(
+    models, tmp_path
+):
+    """Synthetic genome in SigProfiler's tsb format (byte % 4 = base).
+
+    GA (+ strand) has intron 110-199: G T A ... C A G at 110-112 and
+    197-199. GB (- strand) has intron 1012-1099; on the coding strand
+    its donor is GTG and its acceptor TAG, i.e. genomic C A C at
+    1099-1097 and A T C at 1014-1012.
+    """
+    from sigmutsel.channel_universe import splice_flank_composition
+
+    code = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+    def write(chrom, length, bases):
+        genome = np.full(length, 16, dtype=np.uint8)  # N
+        for pos, b in bases.items():
+            genome[pos - 1] = code[b]
+        genome.tofile(tmp_path / f"{chrom}.txt")
+
+    write(
+        "1",
+        300,
+        {110: "G", 111: "T", 112: "A", 197: "C", 198: "A", 199: "G"},
+    )
+    write(
+        "2",
+        1200,
+        {
+            1099: "C",
+            1098: "A",
+            1097: "C",
+            1014: "A",
+            1013: "T",
+            1012: "C",
+        },
+    )
+    out = splice_flank_composition(
+        models, genome_dir=tmp_path, rules=None
+    )
+    assert out["introns"] == 2 and out["canonical_introns"] == 2
+    assert out["donor_plus3"] == {
+        "A": 0.5,
+        "C": 0.0,
+        "G": 0.5,
+        "T": 0.0,
+    }
+    assert out["acceptor_minus3"] == {
+        "A": 0.0,
+        "C": 0.5,
+        "G": 0.0,
+        "T": 0.5,
+    }

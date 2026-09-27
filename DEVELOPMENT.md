@@ -401,7 +401,10 @@ makes that true by construction: both halves read the same objects.
   intronic base, so each such site is spread over four contexts with
   measured weights (`DONOR_PLUS3_COMPOSITION`,
   `ACCEPTOR_MINUS3_COMPOSITION`, renormalised to sum to 1 so a site's
-  total stays exactly 3 opportunities). Exon-junction flanking bases
+  total stays exactly 3 opportunities). They are the composition over
+  every MANE coding intron, and `splice_flank_composition` recomputes
+  them from SigProfilerMatrixGenerator's installed GRCh38 (memory-
+  mapped; about a second). Exon-junction flanking bases
   are the FASTA's, as in `contexts_by_gene.py`.
 - **Territory**: a site counts, and a call is kept, only if it lies in
   the MC3 capture BED. The BED is hg19, so each GRCh38 *position* is

@@ -68,13 +68,15 @@ intronic bases and are approximated:
   routes use the same neighbours, so a site's context agrees between
   opportunity and routes.
 
-The splice compositions were **measured**, not taken from a
-published matrix: GRCh38 bases at donor +1..+3 and acceptor -3..-1 of
-4,000 introns drawn at random from the 159,892 coding introns of
-GENCODE v38 MANE Select transcripts, fetched from the Ensembl REST
-API on 2026-09-26. 98.9% were GT-AG; the 3,957 canonical ones give
-the frequencies below, which agree with the textbook consensus
-(donor +3 mostly A/G, acceptor -3 mostly C/T).
+The splice compositions were **measured** over all 159,892 coding
+introns of the GENCODE v38 MANE Select transcripts, on GRCh38 as
+SigProfilerMatrixGenerator installs it, by
+:func:`splice_flank_composition` (which reproduces them). 99.1% are
+GT-AG; the 158,454 canonical ones give the constants below. The
+classic table (Shapiro & Senapathy 1987, Nucleic Acids Res.
+15:7155, Table 1, 542 primate sites) agrees in pattern: donor +3
+A 57, C 2, G 39, T 2%; acceptor -3 A 3, C 74, G 1, T 22%. The
+census is used because it counts the very introns modelled here.
 
 Territory
 ---------
@@ -105,21 +107,21 @@ TRANSCRIPT_RULES = ("mane_select", "ensembl_canonical", "longest_cds")
 # Measured frequencies at the intronic base the donor +2 / acceptor -2
 # contexts lack (see the module docstring for how).
 DONOR_PLUS3_COMPOSITION = {
-    "A": 0.6154,
-    "C": 0.0263,
-    "G": 0.3298,
-    "T": 0.0286,
+    "A": 0.6096,
+    "C": 0.0252,
+    "G": 0.3381,
+    "T": 0.0271,
 }
 ACCEPTOR_MINUS3_COMPOSITION = {
-    "A": 0.0561,
-    "C": 0.6384,
-    "G": 0.0015,
-    "T": 0.3040,
+    "A": 0.0564,
+    "C": 0.6457,
+    "G": 0.0017,
+    "T": 0.2961,
 }
 
 # Bumped whenever a change here alters the derived tables, so a cache
 # written by older code is never served.
-_BUILD_VERSION = 3
+_BUILD_VERSION = 4
 
 _BASES = "ACGT"
 _CODE = np.full(256, 4, dtype=np.int8)
@@ -1409,3 +1411,134 @@ def resolve_keep_ids_for_universe(restrict_to_db):
     from .contexts_by_gene import resolve_keep_ids
 
     return resolve_keep_ids(restrict_to_db)
+
+
+# ---------------------------------------------------------------------
+# Splice-site flank composition, from a genome
+# ---------------------------------------------------------------------
+
+
+def sigprofiler_genome_dir(build="GRCh38"):
+    """SigProfilerMatrixGenerator's installed reference, or None.
+
+    SigProfilerMatrixGenerator (a dependency of this package) keeps
+    each installed genome as one ``<chrom>.txt`` file per chromosome
+    under ``references/chromosomes/tsb/<build>``: one byte per base,
+    the base being ``byte % 4`` (A, C, G, T) for bytes below 16 and N
+    otherwise (the higher bits carry transcriptional-strand
+    annotation). It is present only once ``genInstall`` has run.
+    """
+    try:
+        import SigProfilerMatrixGenerator
+    except ImportError:
+        return None
+    path = (
+        Path(SigProfilerMatrixGenerator.__file__).parent
+        / "references"
+        / "chromosomes"
+        / "tsb"
+        / build
+    )
+    return path if path.is_dir() else None
+
+
+def splice_flank_composition(
+    models, genome_dir=None, rules=("mane_select",)
+):
+    """Base composition at donor +3 and acceptor -3, read from a genome.
+
+    Reproduces :data:`DONOR_PLUS3_COMPOSITION` and
+    :data:`ACCEPTOR_MINUS3_COMPOSITION`: over every coding intron of
+    the chosen transcripts (restricted to genes whose transcript came
+    from ``rules``; ``None`` keeps all), reads the canonical
+    dinucleotides and the third intronic base at each end, on the
+    coding strand, and returns the frequencies over GT-AG introns.
+    Each chromosome file is memory-mapped, so only the bytes at the
+    splice sites are read.
+
+    Parameters
+    ----------
+    models : TranscriptModels
+    genome_dir : path, optional
+        A directory of per-chromosome files in SigProfilerMatrixGenerator's
+        ``tsb`` format (see :func:`sigprofiler_genome_dir`, the default).
+    rules : tuple of str or None
+
+    Returns
+    -------
+    dict
+        ``donor_plus3`` and ``acceptor_minus3`` (A/C/G/T frequencies),
+        ``introns``, ``canonical_introns`` and ``gt_ag_fraction``.
+    """
+    genome_dir = (
+        Path(genome_dir) if genome_dir else sigprofiler_genome_dir()
+    )
+    if genome_dir is None:
+        raise FileNotFoundError(
+            "No genome: install SigProfilerMatrixGenerator's GRCh38 "
+            "reference (genInstall) or pass genome_dir."
+        )
+    sel = models.selection
+    sp = models.splice.copy()
+    if rules is not None:
+        keep = np.flatnonzero(sel["rule"].isin(rules).to_numpy())
+        sp = sp[sp["gene"].isin(keep)]
+    chrom = sel["chrom"].to_numpy()[sp["gene"].to_numpy()]
+    minus = sel["strand"].to_numpy()[sp["gene"].to_numpy()] == "-"
+    donor = sp["kind"].str.startswith("d").to_numpy()
+    pos = sp["gpos"].to_numpy()
+    # the third intronic base sits one step further from the exon
+    # than the +2 / -2 site, in transcript direction
+    step = np.where(minus, -1, 1) * np.where(donor, 1, -1)
+    base = np.full(len(sp), 4, dtype=np.int8)
+    third = np.full(len(sp), 4, dtype=np.int8)
+    for c in pd.unique(chrom):
+        path = genome_dir / f"{str(c).removeprefix('chr')}.txt"
+        if not path.exists():
+            continue
+        genome = np.memmap(path, dtype=np.uint8, mode="r")
+        idx = np.flatnonzero(chrom == c)
+        for target, at in (
+            (base, pos[idx]),
+            (third, pos[idx] + step[idx]),
+        ):
+            ok = (at >= 1) & (at <= len(genome))
+            raw = np.full(len(idx), 16, dtype=np.uint8)
+            raw[ok] = genome[at[ok] - 1]
+            target[idx] = np.where(raw < 16, raw % 4, 4)
+    base = np.where(minus, _COMPLEMENT_CODE[base], base)
+    third = np.where(minus, _COMPLEMENT_CODE[third], third)
+
+    sp = sp.assign(base=base, third=third)
+    sp["intron"] = np.where(donor, sp["anchor"], sp["anchor"] - 1)
+    wide = sp.pivot_table(
+        index=["gene", "intron"],
+        columns="kind",
+        values=["base", "third"],
+    )
+    A, G, T = 0, 2, 3
+    canonical = (
+        (wide[("base", "d1")] == G)
+        & (wide[("base", "d2")] == T)
+        & (wide[("base", "a2")] == A)
+        & (wide[("base", "a1")] == G)
+    )
+
+    def freq(values):
+        counts = np.bincount(values.astype(int), minlength=5)[:4]
+        return {
+            b: float(counts[i] / counts.sum())
+            for i, b in enumerate(_BASES)
+        }
+
+    return {
+        "donor_plus3": freq(
+            wide.loc[canonical, ("third", "d2")].to_numpy()
+        ),
+        "acceptor_minus3": freq(
+            wide.loc[canonical, ("third", "a2")].to_numpy()
+        ),
+        "introns": len(wide),
+        "canonical_introns": int(canonical.sum()),
+        "gt_ag_fraction": float(canonical.mean()),
+    }

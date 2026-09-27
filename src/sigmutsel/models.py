@@ -203,6 +203,11 @@ class MutationDataset:
     _contexts_by_gene_gene_universe: str | None = None
     _contexts_by_gene_syn: pd.DataFrame = None
     _contexts_by_gene_nonsyn: pd.DataFrame = None
+    _contexts_by_gene_mis: pd.DataFrame = None
+    _contexts_by_gene_non: pd.DataFrame = None
+    _contexts_by_gene_spl: pd.DataFrame = None
+    _gene_transcripts: pd.DataFrame = None
+    _channel_universe: dict | None = None
     _sample_qc_flags: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
@@ -410,6 +415,30 @@ class MutationDataset:
                 "csv",
             ),
             (
+                "contexts_by_gene_mis",
+                "_contexts_by_gene_mis",
+                "contexts_by_gene_mis.csv",
+                "csv",
+            ),
+            (
+                "contexts_by_gene_non",
+                "_contexts_by_gene_non",
+                "contexts_by_gene_non.csv",
+                "csv",
+            ),
+            (
+                "contexts_by_gene_spl",
+                "_contexts_by_gene_spl",
+                "contexts_by_gene_spl.csv",
+                "csv",
+            ),
+            (
+                "gene_transcripts",
+                "_gene_transcripts",
+                "gene_transcripts.csv",
+                "csv",
+            ),
+            (
                 "sample_qc_flags",
                 "_sample_qc_flags",
                 "sample_qc_flags.parquet",
@@ -468,8 +497,14 @@ class MutationDataset:
             # stamp and run_history, which *are* read on load, by
             # provenance.check_provenance (a warning, never a
             # failure: an older manifest carries no stamp and loads
-            # silently).
-            "version": 4,
+            # silently). 5 -> the channel universe: mutation_db gains
+            # `channel`/`in_universe` (and the columns classify_calls
+            # adds), the per-channel opportunity tables and the
+            # per-gene transcript record are saved, and
+            # `channel_universe` records how they were built. A
+            # dataset without it is a pre-channel-universe build and
+            # reads every call, as before.
+            "version": 5,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -483,6 +518,7 @@ class MutationDataset:
             "contexts_by_gene_gene_universe": (
                 self._contexts_by_gene_gene_universe
             ),
+            "channel_universe": self._channel_universe,
             "signature_parameters": {
                 "reference_genome": self._signature_reference_genome,
                 "exome": self._signature_exome,
@@ -520,6 +556,7 @@ class MutationDataset:
         dataset._contexts_by_gene_gene_universe = manifest.get(
             "contexts_by_gene_gene_universe", "own_cohort"
         )
+        dataset._channel_universe = manifest.get("channel_universe")
 
         for attr_name, info in manifest.get("files", {}).items():
             filename = info["filename"]
@@ -592,6 +629,89 @@ class MutationDataset:
     def mutation_db(self, value):
         """Set mutation database."""
         self._mutation_db = value
+
+    @property
+    def model_db(self):
+        """The calls every model input reads.
+
+        With the channel universe (see :meth:`classify_mutation_db`),
+        the in-universe calls of :attr:`mutation_db`; otherwise all of
+        them. :attr:`mutation_db` itself always keeps every call --
+        intron, UTR and flank calls are stored, just not modelled.
+        """
+        from .channel_universe import model_calls
+
+        return model_calls(self.mutation_db)
+
+    def has_channel_universe(self):
+        """Whether the mutation table carries the channel universe."""
+        return (
+            self._mutation_db is not None
+            and "in_universe" in self._mutation_db.columns
+        )
+
+    @property
+    def channel_universe(self):
+        """How the channel universe was built (None if it was not)."""
+        return self._channel_universe
+
+    @property
+    def gene_transcripts(self):
+        """Per-gene transcript record of the channel universe.
+
+        One row per gene with an opportunity: the chosen transcript,
+        the rule that chose it (``mane_select``, ``ensembl_canonical``
+        or ``longest_cds``) and its CDS length. None without the
+        channel universe.
+        """
+        return self._gene_transcripts
+
+    @gene_transcripts.setter
+    def gene_transcripts(self, value):
+        self._gene_transcripts = value
+
+    @property
+    def contexts_by_gene_mis(self):
+        """Missense opportunity counts by gene (channel universe)."""
+        return self._contexts_by_gene_mis
+
+    @contexts_by_gene_mis.setter
+    def contexts_by_gene_mis(self, value):
+        self._contexts_by_gene_mis = value
+
+    @property
+    def contexts_by_gene_non(self):
+        """Nonsense opportunity counts by gene (channel universe)."""
+        return self._contexts_by_gene_non
+
+    @contexts_by_gene_non.setter
+    def contexts_by_gene_non(self, value):
+        self._contexts_by_gene_non = value
+
+    @property
+    def contexts_by_gene_spl(self):
+        """Essential-splice opportunity counts by gene (channel universe)."""
+        return self._contexts_by_gene_spl
+
+    @contexts_by_gene_spl.setter
+    def contexts_by_gene_spl(self, value):
+        self._contexts_by_gene_spl = value
+
+    @property
+    def contexts_by_gene_channels(self):
+        """The four channel opportunity tables, or None.
+
+        ``{"syn", "mis", "non", "spl"}`` -> genes x 96 types; see
+        :mod:`channel_universe`.
+        """
+        if self._contexts_by_gene_mis is None:
+            return None
+        return {
+            "syn": self._contexts_by_gene_syn,
+            "mis": self._contexts_by_gene_mis,
+            "non": self._contexts_by_gene_non,
+            "spl": self._contexts_by_gene_spl,
+        }
 
     @property
     def n_samples(self):
@@ -785,7 +905,7 @@ class MutationDataset:
                 "not loaded. Call generate_mutation_db() or "
                 "load_dataset() first."
             )
-        return self._mutation_db["variant"].nunique()
+        return self.model_db["variant"].nunique()
 
     @property
     def variant_counts(self):
@@ -797,9 +917,7 @@ class MutationDataset:
             Variant counts sorted descending by frequency.
         """
         return (
-            self.mutation_db.groupby("variant")[
-                "Tumor_Sample_Barcode"
-            ]
+            self.model_db.groupby("variant")["Tumor_Sample_Barcode"]
             .nunique()
             .sort_values(ascending=False)
         )
@@ -862,16 +980,14 @@ class MutationDataset:
                 f"level must be 'variant' or 'gene', got {level!r}."
             )
 
-        db = self.mutation_db
-        if scope == "silent":
-            db = db[db["Variant_Classification"] == "Silent"]
-        elif scope == "non-silent":
-            db = db[db["Variant_Classification"] != "Silent"]
-        elif scope != "any":
+        from .channel_universe import model_calls
+
+        if scope not in ("any", "silent", "non-silent"):
             raise ValueError(
                 "scope must be 'any', 'silent' or 'non-silent'; "
                 f"got {scope!r}."
             )
+        db = model_calls(self.mutation_db, scope)
 
         if isinstance(by, str):
             if by not in db.columns:
@@ -914,7 +1030,7 @@ class MutationDataset:
 
         if isinstance(by, str):
             sizes = (
-                db.groupby(by)["Tumor_Sample_Barcode"]
+                self.mutation_db.groupby(by)["Tumor_Sample_Barcode"]
                 .nunique()
                 .to_dict()
             )
@@ -943,14 +1059,14 @@ class MutationDataset:
         """
         # Get counts per gene
         counts = (
-            self.mutation_db.groupby("gene")["Tumor_Sample_Barcode"]
+            self.model_db.groupby("gene")["Tumor_Sample_Barcode"]
             .nunique()
             .rename("count")
         )
 
         # Get ensembl_gene_id mapping (one per gene symbol)
         gene_mapping = (
-            self.mutation_db[["gene", "ensembl_gene_id"]]
+            self.model_db[["gene", "ensembl_gene_id"]]
             .drop_duplicates("gene")
             .set_index("gene")
         )
@@ -969,7 +1085,7 @@ class MutationDataset:
             Variant type counts sorted descending.
         """
         return (
-            self.mutation_db.groupby("variant")["type"]
+            self.model_db.groupby("variant")["type"]
             .nunique()
             .sort_values(ascending=False)
         )
@@ -985,7 +1101,7 @@ class MutationDataset:
             indexed by variant, sorted by types then tumors.
         """
         return (
-            self.mutation_db.groupby("variant")
+            self.model_db.groupby("variant")
             .agg(
                 num_types=("type", "nunique"),
                 num_tumors=("Tumor_Sample_Barcode", "nunique"),
@@ -1014,11 +1130,21 @@ class MutationDataset:
         return self._mutation_db is not None
 
     @record_call
-    def generate_mutation_db(self, location_gene_set=None, **kwargs):
+    def generate_mutation_db(
+        self,
+        location_gene_set=None,
+        channel_universe=True,
+        territory="mc3",
+        splice_padding=0,
+        **kwargs,
+    ):
         """Generate mutation database from MAF files.
 
         This method wraps :func:`load_maf_files.generate_compact_db`
         and stores the result in the dataset's _mutation_db attribute.
+        For SBS, it then places every call in the channel universe
+        (:meth:`classify_mutation_db`) unless ``channel_universe`` is
+        False.
 
         For ID signature class, automatically sets seqinfo_dir to
         `{location_maf_files}/output/vcf_files/ID/` if not
@@ -1031,6 +1157,12 @@ class MutationDataset:
             If None (default), uses HGNC complete set from
             locations.py for automatic gene name updates.
             Set to a custom path to use a different gene set.
+        channel_universe : bool, default True
+            Classify the calls into the channel universe (SBS only).
+            False keeps the pre-universe behaviour, where every call
+            is modelled and consequence comes from the MAF.
+        territory, splice_padding
+            Forwarded to :meth:`classify_mutation_db`.
         **kwargs : dict
             Additional arguments passed to
             :func:`load_maf_files.generate_compact_db`.
@@ -1101,6 +1233,109 @@ class MutationDataset:
             location_gene_set=location_gene_set,
             **kwargs,
         )
+        self._channel_universe = None
+        if channel_universe and self.signature_class == "SBS":
+            self.classify_mutation_db(
+                territory=territory, splice_padding=splice_padding
+            )
+
+    @record_call
+    def classify_mutation_db(self, territory="mc3", splice_padding=0):
+        """Place every call in the channel universe.
+
+        Adds to :attr:`mutation_db` the columns of
+        :func:`channel_universe.classify_calls` -- ``channel``
+        (``syn``, ``mis``, ``non``, ``spl``, or None),
+        ``in_universe``, ``universe_reason``, ``transcript_id`` and
+        ``routes`` -- and relabels ``variant`` for in-universe calls
+        with the protein change on the chosen transcript. The MAF's own
+        label is kept in ``variant_maf`` and its classification in
+        ``Variant_Classification``. No call is removed: out-of-universe
+        calls stay in the table and are skipped by every model input
+        (:attr:`model_db`).
+
+        Parameters
+        ----------
+        territory : {"mc3", None}, default "mc3"
+            ``"mc3"`` keeps only calls inside the MC3 capture
+            territory; None keeps calls anywhere on the transcript.
+        splice_padding : int, default 0
+            Bases of BED padding for essential splice sites.
+
+        Returns
+        -------
+        pandas.Series
+            Calls per ``universe_reason``.
+        """
+        from .channel_universe import (
+            _BUILD_VERSION,
+            classify_calls,
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+
+        if self.signature_class != "SBS":
+            raise ValueError(
+                "The channel universe is SBS-only; this dataset has "
+                f"signature_class={self.signature_class!r}."
+            )
+        db = self.mutation_db
+        missing = {"Reference_Allele", "Tumor_Seq_Allele2"} - set(
+            db.columns
+        )
+        if missing:
+            raise ValueError(
+                f"mutation_db lacks {sorted(missing)}, which a table "
+                "built before the channel universe did not keep. "
+                "Regenerate it with generate_mutation_db()."
+            )
+        if territory not in ("mc3", None):
+            raise ValueError(
+                f"territory must be 'mc3' or None, got {territory!r}."
+            )
+
+        models = load_or_build_transcript_models()
+        if territory == "mc3":
+            coding_in, splice_in = territory_masks(
+                models, splice_padding=splice_padding
+            )
+        else:
+            coding_in = splice_in = None
+
+        db = db.copy()
+        if "variant_maf" not in db.columns:
+            db["variant_maf"] = db["variant"]
+        classified = classify_calls(db, models, coding_in, splice_in)
+        for column in (
+            "channel",
+            "in_universe",
+            "universe_reason",
+            "transcript_id",
+            "routes",
+        ):
+            db[column] = classified[column]
+        db["variant"] = db["variant_maf"].where(
+            ~classified["in_universe"], classified["variant_label"]
+        )
+        self._mutation_db = db
+        self._channel_universe = {
+            "territory": territory,
+            "splice_padding": int(splice_padding),
+            "build_version": _BUILD_VERSION,
+            "n_genes_with_transcript": len(models.selection),
+        }
+
+        reasons = db["universe_reason"].value_counts()
+        n = len(db)
+        logger.info(
+            "Channel universe: %d of %d calls (%.2f%%) in the universe; "
+            "by reason: %s",
+            int(db["in_universe"].sum()),
+            n,
+            100 * db["in_universe"].mean() if n else 0.0,
+            reasons.to_dict(),
+        )
+        return reasons
 
     def has_gene_presence(self):
         """Check if gene presence matrix has been computed."""
@@ -1151,11 +1386,14 @@ class MutationDataset:
                 "Call generate_mutation_db() or load_dataset() first."
             )
 
+        # Only the calls the model describes: with the channel
+        # universe, a variant is an in-universe protein change on the
+        # chosen transcript, and its types are every route to it.
         variants = extract_variants_from_db(
-            self.mutation_db, position_tolerance=position_tolerance
+            self.model_db, position_tolerance=position_tolerance
         )
         variants = annotate_variants_with_types(
-            variants, self.mutation_db
+            variants, self.model_db
         )
 
         self._variant_db = variants
@@ -1602,7 +1840,31 @@ class MutationDataset:
         else:
             kwargs.pop("genome_build", None)
 
-        if not self.has_mutational_matrices():
+        # With the channel universe the matrix is built from the
+        # in-universe calls of mutation_db itself, not from the raw
+        # MAF files, so the fit sees exactly the calls the burden and
+        # the opportunity describe. It gets its own matrix file and
+        # results directory: a fit cached from the MAF-wide matrix
+        # must never be served for it.
+        universe = (
+            self.has_channel_universe()
+            and self.signature_class == "SBS"
+        )
+        if universe:
+            from .signature_decomposition import (
+                build_sbs96_matrix_from_mutation_db,
+            )
+
+            universe_matrix = (
+                Path(self.location_maf_files)
+                / "output"
+                / "SBS"
+                / "mutational_matrix.SBS96.exome.channel_universe"
+            )
+            build_sbs96_matrix_from_mutation_db(
+                self.mutation_db, universe_matrix
+            )
+        elif not self.has_mutational_matrices():
             logger.info(
                 "Mutational matrices not found. "
                 "Generating them before signature decomposition..."
@@ -1618,7 +1880,7 @@ class MutationDataset:
             logger.info("...done.")
             print()
 
-        if not self.has_mutational_matrices():
+        if not universe and not self.has_mutational_matrices():
             raise FileNotFoundError(
                 f"Mutational matrices not found at "
                 f"{self.location_maf_files}/output/. "
@@ -1668,7 +1930,11 @@ class MutationDataset:
         # Build path to matrix file
         output_dir = Path(self.location_maf_files) / "output"
         matrix_dir = output_dir / self.signature_class
-        matrix_path = matrix_dir / matrix_filename
+        matrix_path = (
+            universe_matrix
+            if universe
+            else matrix_dir / matrix_filename
+        )
 
         # Check that the specific matrix file exists
         if not matrix_path.exists():
@@ -1685,7 +1951,11 @@ class MutationDataset:
         )
         sig_decomp_dir.mkdir(parents=True, exist_ok=True)
 
-        results_dir = sig_decomp_dir / self.signature_class
+        results_dir = sig_decomp_dir / (
+            f"{self.signature_class}_channel_universe"
+            if universe
+            else self.signature_class
+        )
 
         # Check if results already exist
         solution_dir = results_dir / "Assignment_Solution"
@@ -2132,9 +2402,12 @@ class MutationDataset:
             / "output"
             / self.signature_class
         )
+        suffix = (
+            ".channel_universe" if self.has_channel_universe() else ""
+        )
         pass_b_matrix_path = (
             matrix_dir
-            / "mutational_matrix.SBS96.exome.artifact_cleaned"
+            / f"mutational_matrix.SBS96.exome{suffix}.artifact_cleaned"
         )
         build_sbs96_matrix_from_mutation_db(
             cleaned_db, pass_b_matrix_path
@@ -2143,7 +2416,10 @@ class MutationDataset:
         pass_b_results_dir = (
             Path(self.location_maf_files)
             / "signature_decomposition"
-            / f"{self.signature_class}_artifact_cleaned"
+            / (
+                f"{self.signature_class}"
+                f"{suffix.replace('.', '_')}_artifact_cleaned"
+            )
         )
 
         title = "Two-pass signature decomposition: pass B (final fit)"
@@ -2267,12 +2543,62 @@ class MutationDataset:
 
         restrict_to_db = self._resolve_gene_universe(gene_universe)
 
+        if self.has_channel_universe():
+            self._generate_channel_opportunity(restrict_to_db, fastas)
+            self._contexts_by_gene_gene_universe = gene_universe
+            return self._contexts_by_gene
+
         self._contexts_by_gene = compute_contexts_by_gene(
             fastas, restrict_to_db=restrict_to_db
         )
         self._contexts_by_gene_gene_universe = gene_universe
 
         return self._contexts_by_gene
+
+    def _generate_channel_opportunity(self, keep_ids, fastas=None):
+        """Fill every opportunity table from the channel universe.
+
+        One pass builds them all, so they cannot disagree:
+        ``contexts_by_gene`` (the site count behind the common
+        denominator), the four channel tables, ``contexts_by_gene_syn``
+        and ``contexts_by_gene_nonsyn`` (``mis + non + spl``, which the
+        rate model pools in this stage), and the per-gene transcript
+        record. The territory and splice padding are the ones the
+        calls were classified with, read from
+        :attr:`channel_universe`, so calls and opportunity always
+        cover one territory.
+        """
+        from .channel_universe import (
+            channel_opportunity,
+            load_or_build_transcript_models,
+            resolve_keep_ids_for_universe,
+        )
+
+        params = self._channel_universe or {
+            "territory": "mc3",
+            "splice_padding": 0,
+        }
+        models = load_or_build_transcript_models(fasta_paths=fastas)
+        tables = channel_opportunity(
+            keep_ids=resolve_keep_ids_for_universe(keep_ids),
+            territory=params["territory"],
+            splice_padding=params["splice_padding"],
+            models=models,
+        )
+        self._contexts_by_gene = tables["contexts"]
+        self._contexts_by_gene_syn = tables["syn"]
+        self._contexts_by_gene_mis = tables["mis"]
+        self._contexts_by_gene_non = tables["non"]
+        self._contexts_by_gene_spl = tables["spl"]
+        self._contexts_by_gene_nonsyn = (
+            tables["mis"] + tables["non"] + tables["spl"]
+        )
+        self._gene_transcripts = tables["transcripts"]
+        logger.info(
+            "Channel opportunity for %d genes (%s)",
+            len(self._contexts_by_gene),
+            tables["transcripts"]["rule"].value_counts().to_dict(),
+        )
 
     def _resolve_gene_universe(self, gene_universe):
         """Turn a gene_universe name into a `restrict_to_db` argument.
@@ -2290,19 +2616,20 @@ class MutationDataset:
                 "load_dataset() first."
             )
 
+        # A gene is "observed" through the calls the model reads.
+        db = self.model_db
+
         if gene_universe == "own_cohort":
-            return self.mutation_db
+            return db
 
         if gene_universe == "wes_target":
             from .wes_target import get_wes_target_gene_ids
 
-            own_mask = self.mutation_db["variant"].notna() & (
-                self.mutation_db["ensembl_gene_id"].notna()
+            own_mask = db["variant"].notna() & (
+                db["ensembl_gene_id"].notna()
             )
             own_ids = set(
-                self.mutation_db.loc[
-                    own_mask, "ensembl_gene_id"
-                ].astype(str)
+                db.loc[own_mask, "ensembl_gene_id"].astype(str)
             )
             return get_wes_target_gene_ids() | own_ids
 
@@ -2382,6 +2709,13 @@ class MutationDataset:
             )
 
         restrict_to_db = self._resolve_gene_universe(gene_universe)
+
+        if self.has_channel_universe():
+            self._generate_channel_opportunity(restrict_to_db, fastas)
+            return (
+                self._contexts_by_gene_syn,
+                self._contexts_by_gene_nonsyn,
+            )
 
         (
             self._contexts_by_gene_syn,
@@ -4775,6 +5109,8 @@ class Model:
                 "estimate_gamma() first."
             )
 
+        from .channel_universe import model_calls
+
         db = self.dataset.mutation_db
         if samples is not None:
             db = db[db["Tumor_Sample_Barcode"].isin(list(samples))]
@@ -4782,11 +5118,12 @@ class Model:
         unit_column = (
             "ensembl_gene_id" if level == "gene" else "variant"
         )
-        if level == "gene":
-            # Gamma is fitted on the non-synonymous channel, so the
-            # silent mutations in a fitted gene are not what it
-            # selected on.
-            db = db[db["Variant_Classification"] != "Silent"]
+        # Gamma is fitted on the non-synonymous channel (in-universe
+        # mis/non/spl calls with the channel universe), so the silent
+        # mutations in a fitted gene are not what it selected on.
+        db = model_calls(
+            db, "non-silent" if level == "gene" else None
+        )
 
         # gammas holds both levels' keys; a key of the other level
         # simply never matches this level's column.
@@ -5448,21 +5785,23 @@ class Model:
         return self.mu_ms
 
     def _silent_variant_labels(self):
-        """Variant labels whose MAF calls are synonymous (``Silent``).
+        """Variant labels whose calls are synonymous.
 
         A variant label is one protein-level change, so it is silent
-        in every call or in none; this reads it off
-        ``mutation_db``'s ``Variant_Classification``. Empty when the
-        catalogue has no ``variant`` column.
+        in every call or in none. With the channel universe this is
+        the ``syn`` channel (read off ``variant_db``'s ``channel``
+        when it has one); otherwise the MAF's ``Silent``. Empty when
+        the catalogue has no ``variant`` column.
         """
+        from .channel_universe import model_calls
+
+        vdb = self.dataset._variant_db
+        if vdb is not None and "channel" in vdb.columns:
+            return set(vdb.index[vdb["channel"] == "syn"])
         db = self.dataset.mutation_db
         if "variant" not in db.columns:
             return set()
-        return set(
-            db.loc[
-                db["Variant_Classification"] == "Silent", "variant"
-            ]
-        )
+        return set(model_calls(db, "silent")["variant"])
 
     def save_model(self, directory, overwrite=False):
         """Persist this Model's results to disk.

@@ -42,18 +42,27 @@ def compute_variants_present(
         alphabetically. Entry is 1 if the tumor carries the variant in
         ``db``, else 0.
     """
+    from .channel_universe import model_calls
+
     logger.info(
         "Producing presence matrix for all tumors per variant..."
     )
+    # Every tumor is a column, even one with no in-universe call, so
+    # this matrix has the same columns as the gene matrices.
+    tumors_sorted = sorted(
+        db["Tumor_Sample_Barcode"].dropna().unique()
+    )
+
     # drop rows without a variant label
-    db_ = db.dropna(subset=["variant", "Tumor_Sample_Barcode"])
+    db_ = model_calls(db).dropna(
+        subset=["variant", "Tumor_Sample_Barcode"]
+    )
 
     # counts per (variant, tumor) -> convert to 0/1
     present = pd.crosstab(db_["variant"], db_["Tumor_Sample_Barcode"])
     present = (present > 0).astype("uint8")
 
     # enforce ordering: rows = variants_df.index, cols = sorted tumor list
-    tumors_sorted = sorted(present.columns)  # alphabetical
     present = present.reindex(
         index=variants_df.index, columns=tumors_sorted, fill_value=0
     ).astype("uint8")
@@ -71,12 +80,11 @@ def _crosstab_genes_by_tumor(db, scope):
     the two can never disagree about which mutations are in scope or
     which tumors are columns.
     """
-    if scope == "silent":
-        db_filtered = db[db["Variant_Classification"] == "Silent"]
-    elif scope == "non-silent":
-        db_filtered = db[db["Variant_Classification"] != "Silent"]
-    else:  # None or 'all'
-        db_filtered = db
+    from .channel_universe import model_calls
+
+    # In-universe calls only once the table carries the channel
+    # universe; the MAF's classification otherwise.
+    db_filtered = model_calls(db, scope)
 
     counts = pd.crosstab(
         db_filtered["ensembl_gene_id"],
@@ -190,11 +198,12 @@ def filter_silent_variants(
         is 'Silent', ordered as in `variants_df.index` for fast .loc[].
 
     """
-    # All variants labeled 'Silent' in the MAF-like table
+    from .channel_universe import model_calls
+
+    # All variants whose calls are synonymous (the syn channel, or the
+    # MAF's 'Silent' for a table without the channel universe)
     silent_in_db = pd.Index(
-        db.loc[db["Variant_Classification"].eq("Silent"), "variant"]
-        .dropna()
-        .unique()
+        model_calls(db, "silent")["variant"].dropna().unique()
     )
 
     # Keep only those present in variants_df, preserving its order

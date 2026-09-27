@@ -21,6 +21,10 @@ def count_mutation_burden(db):
     - The total number of mutations per sample.
     - The number of synonymous ("Silent") mutations per sample.
 
+    With the channel universe (an ``in_universe`` column, see
+    :mod:`channel_universe`) both counts read in-universe calls only,
+    and "synonymous" is the ``syn`` channel.
+
     It returns a DataFrame with one row per sample and two columns:
     'total_mutations' and 'synonymous_mutations'.
 
@@ -42,13 +46,25 @@ def count_mutation_burden(db):
             Number of synonymous (silent) mutations in each sample.
 
     """
+    from .channel_universe import model_calls
+
+    # The burden counts the calls the model describes: with the
+    # channel universe, only in-universe calls, so the rate and the
+    # opportunity cover one territory. Every tumor keeps a row, even
+    # one with no in-universe call.
+    tumors = pd.Index(
+        sorted(db["Tumor_Sample_Barcode"].dropna().unique()),
+        name="Tumor_Sample_Barcode",
+    )
     total_counts = (
-        db.groupby("Tumor_Sample_Barcode")
+        model_calls(db)
+        .groupby("Tumor_Sample_Barcode")
         .size()
+        .reindex(tumors, fill_value=0)
         .rename("total_mutations")
     )
 
-    silent_db = db[db["Variant_Classification"] == "Silent"]
+    silent_db = model_calls(db, "silent")
 
     silent_counts = (
         silent_db.groupby("Tumor_Sample_Barcode")

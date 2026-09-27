@@ -1248,9 +1248,12 @@ def compute_mu_m_per_tumor(
     3. Divide the τ-specific gene rate by that count:
        ``μ_{m}^{j} = μ_{g,tau}^{j} / n_{g,c(tau)}``.
 
-    For variants with multiple mutation types (rare), the per-type
-    terms are computed and summed separately: ``μ_m^j = Σ_tau
-    μ_{g,tau}^{j} / n_{g,c(tau)}``.
+    For a variant with several types, the per-type terms are summed:
+    ``μ_m^j = Σ_tau μ_{g,tau}^{j} / n_{g,c(tau)}``. With the channel
+    universe ``mut_types`` lists every single-nucleotide route to the
+    protein change (repeats kept, one per site), so this is the rate
+    of acquiring the change by any route -- common for synonymous
+    changes and for about one missense variant in nine.
 
     See Also
     --------
@@ -1278,80 +1281,60 @@ def compute_mu_m_per_tumor(
     valid_contexts = set(contexts_by_gene.columns)
 
     tumors = next(iter(mu_g_tau_j.values())).columns
-    mu_m_j = pd.DataFrame(
-        0.0, index=variants.index, columns=tumors, dtype=float
-    )
+    mu_m_j = np.zeros((len(variants), len(tumors)))
     # Track which variants got at least one valid (gene, tau) term,
-    # so the rest can be filled with NaN -> 0, matching the
+    # so the rest can be filled with 0, matching the
     # zero-contexts/missing-gene fallback of the previous
     # implementation.
-    any_term = pd.Series(False, index=variants.index)
+    any_term = np.zeros(len(variants), dtype=bool)
 
-    is_string = variants["mut_types"].apply(
-        lambda x: isinstance(x, str)
+    # One row per (variant, route type). A list of types is summed
+    # term by term, repeats included: with every route enumerated
+    # (channel universe), two sites of one type are two routes, each
+    # at the site rate. Vectorised per type, so a cohort where most
+    # variants have several routes costs no more than one where
+    # almost none do.
+    routes = pd.DataFrame(
+        {
+            "row": np.arange(len(variants)),
+            "mut_types": variants["mut_types"].to_numpy(),
+            "ensembl_gene_id": variants["ensembl_gene_id"].to_numpy(),
+        }
     )
-    is_list = variants["mut_types"].apply(
-        lambda x: isinstance(x, list)
+    routes = routes[
+        routes["mut_types"].map(lambda x: isinstance(x, (str, list)))
+    ].explode("mut_types")
+
+    for tau, group in routes.groupby("mut_types"):
+        if tau not in mu_g_tau_j:
+            continue
+        context = extract_context(tau)
+        if context not in valid_contexts:
+            continue
+
+        gene_ids = group["ensembl_gene_id"]
+        known = gene_ids.isin(valid_genes).to_numpy()
+        n_sites = np.full(len(group), np.nan)
+        n_sites[known] = denominators.loc[
+            gene_ids[known], tau
+        ].to_numpy(dtype=float)
+        valid = np.isfinite(n_sites) & (n_sites != 0)
+        if not valid.any():
+            continue
+
+        rates = (
+            mu_g_tau_j[tau]
+            .reindex(index=gene_ids[valid], columns=tumors)
+            .to_numpy(dtype=float)
+        )
+        term = rates / n_sites[valid][:, None]
+        rows = group["row"].to_numpy()[valid]
+        np.add.at(mu_m_j, rows, np.nan_to_num(term))
+        any_term[rows] = True
+
+    mu_m_j = pd.DataFrame(
+        mu_m_j, index=variants.index, columns=tumors
     )
-
-    # Single-type variants (the common case): vectorized per type.
-    if is_string.any():
-        for tau, group in variants[is_string].groupby("mut_types"):
-            if tau not in mu_g_tau_j:
-                continue
-            context = extract_context(tau)
-            if context not in valid_contexts:
-                continue
-
-            gene_ids = group["ensembl_gene_id"]
-            # .map() evaluates the lambda immediately against every
-            # element before the next loop iteration reassigns
-            # `context`, so the late-binding closure risk B023 warns
-            # about doesn't apply here.
-            n_contexts = gene_ids.map(
-                lambda g: (
-                    denominators.at[g, tau]  # noqa: B023
-                    if g in valid_genes
-                    else np.nan
-                )
-            )
-            n_contexts.index = group.index
-            n_contexts = n_contexts.replace(0, np.nan)
-
-            mu_genes_aligned = mu_g_tau_j[tau].reindex(gene_ids)
-            mu_genes_aligned.index = group.index
-
-            term = mu_genes_aligned.div(n_contexts, axis=0)
-            valid = n_contexts.notna()
-            mu_m_j.loc[group.index[valid]] = term.loc[valid].values
-            any_term.loc[group.index[valid]] = True
-
-    # Multi-type variants (rare): sum per-type terms row by row.
-    if is_list.any():
-        for idx, row in variants[is_list].iterrows():
-            gene_id = row["ensembl_gene_id"]
-            total = pd.Series(0.0, index=tumors)
-            got_term = False
-            for tau in row["mut_types"]:
-                if tau not in mu_g_tau_j:
-                    continue
-                context = extract_context(tau)
-                if (
-                    gene_id not in valid_genes
-                    or context not in valid_contexts
-                    or gene_id not in mu_g_tau_j[tau].index
-                ):
-                    continue
-                n_context = denominators.at[gene_id, tau]
-                if n_context == 0:
-                    continue
-                total = (
-                    total + mu_g_tau_j[tau].loc[gene_id] / n_context
-                )
-                got_term = True
-            if got_term:
-                mu_m_j.loc[idx] = total.values
-                any_term.loc[idx] = True
 
     # Fill variants with no valid (gene, tau) term with 0 (missing
     # genes or zero contexts), matching the previous implementation.

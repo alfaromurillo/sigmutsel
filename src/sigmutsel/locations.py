@@ -61,6 +61,14 @@ location_wes_target_bed = (
     DATA_DIR / "gaf_20111020Plusbroad_wex_1.1_hg19.bed"
 )
 
+location_liftover_chain_hg38_to_hg19 = (
+    DATA_DIR / "hg38ToHg19.over.chain.gz"
+)
+
+# Derived tables of the channel universe (transcript models and
+# opportunity counts), regenerated from the files above.
+location_channel_universe_dir = DATA_DIR / "channel_universe"
+
 location_wes_target_gene_ids = (
     DATA_DIR / "wes_target_gene_ids_gencode19.txt"
 )
@@ -140,6 +148,9 @@ def list_data_files() -> dict[str, bool]:
         "gencode19_annotation": location_gencode19_annotation,
         "wes_target_bed": location_wes_target_bed,
         "wes_target_gene_ids": location_wes_target_gene_ids,
+        "liftover_chain_hg38_to_hg19": (
+            location_liftover_chain_hg38_to_hg19
+        ),
     }
     return {name: path.exists() for name, path in files.items()}
 

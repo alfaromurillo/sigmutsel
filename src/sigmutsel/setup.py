@@ -52,6 +52,10 @@ DOWNLOAD_URLS = {
         "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/database/"
         "rmsk.txt.gz"
     ),
+    "hg38ToHg19.over.chain.gz": (
+        "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/"
+        "hg38ToHg19.over.chain.gz"
+    ),
     "TCGA_mastercalls.abs_tables_JSedit.fixed.txt": (
         "https://api.gdc.cancer.gov/data/"
         "4f277128-f793-4354-a13d-30cc7fe9f6b5"
@@ -298,6 +302,34 @@ def download_wes_target_bed(force: bool = False) -> Path:
 
     url = DOWNLOAD_URLS[filename]
     return download_file(url, dest, decompress=False)
+
+
+def download_liftover_chain(force: bool = False) -> Path:
+    """Download UCSC's hg38-to-hg19 liftOver chain (~1.2 MB).
+
+    Used by :mod:`sigmutsel.channel_universe` to test GRCh38
+    positions against the hg19 MC3 capture BED one position at a
+    time (see :mod:`sigmutsel.liftover` for why the direction is
+    hg38 to hg19 and not the other way round).
+
+    Parameters
+    ----------
+    force : bool, default False
+        If True, download even if the file exists.
+
+    Returns
+    -------
+    Path
+        Path to the gzipped chain file.
+    """
+    filename = "hg38ToHg19.over.chain.gz"
+    dest = DATA_DIR / filename
+    if dest.exists() and not force:
+        logger.info(f"liftOver chain already exists at {dest}")
+        return dest
+    return download_file(
+        DOWNLOAD_URLS[filename], dest, decompress=False
+    )
 
 
 def download_repeatmasker_bed(
@@ -560,6 +592,12 @@ def download_all(
         # Download MC3 WES target BED
         logger.info("\n5. MC3 WES Target BED")
         downloaded["wes_target_bed"] = download_wes_target_bed(
+            force=force
+        )
+
+        # hg38 -> hg19 chain for the capture territory
+        logger.info("\n6. UCSC hg38ToHg19 liftOver chain")
+        downloaded["liftover_chain"] = download_liftover_chain(
             force=force
         )
 

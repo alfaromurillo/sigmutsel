@@ -42,7 +42,15 @@ cols_to_keep = [
     # 'Variant_Type',
     # 'Codons',
     "Start_Position",
+    # The alleles let the channel universe classify each call on its
+    # own transcript (see channel_universe.classify_calls).
+    "Reference_Allele",
+    "Tumor_Seq_Allele2",
 ]
+
+# Kept when the MAF has them: VEP's transcript, to check the channel
+# universe's labels against the MAF's on the same transcript.
+optional_cols_to_keep = ["Transcript_ID"]
 
 
 def filter_db(db, variant_type="SNP"):
@@ -158,10 +166,7 @@ def validate_alleles_snv(df):
     is_valid = is_valid_ref & is_valid_alt & is_nuc_ref & is_nuc_alt
     invalid_entries = df[~is_valid]
 
-    relevant_cols = cols_to_keep + [
-        "Reference_Allele",
-        "Tumor_Seq_Allele2",
-    ]
+    relevant_cols = cols_to_keep
 
     if not invalid_entries.empty:
         logger.warning(
@@ -264,8 +269,7 @@ def validate_reference_matches_context_snv(df, *, context_length=11):
             f"does not match CONTEXT[{mid_index}]."
         )
         logger.debug(
-            "Invalid rows:\n"
-            f"{invalid_entries[cols_to_keep + ['Reference_Allele']]}"
+            "Invalid rows:\n" f"{invalid_entries[cols_to_keep]}"
         )
     else:
         logger.debug(
@@ -683,6 +687,9 @@ def compact_data(df, *, variant_type="SNP", **kwargs):
         "t_alt_count",
     ]
 
+    final_cols_to_keep += [
+        c for c in optional_cols_to_keep if c in df
+    ]
     df = df[final_cols_to_keep]
 
     return df

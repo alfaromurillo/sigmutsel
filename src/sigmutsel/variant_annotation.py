@@ -124,8 +124,14 @@ def annotate_variants_with_types(
 ) -> "pd.DataFrame":
     """Annotate variants with the mutational type(s).
 
-    For each variant in `variants_df` adds the type(s) observed for
-    that variant in the mutation `db`.
+    For each variant in `variants_df` adds its type(s). With the
+    channel universe (`db` has a ``routes`` column, see
+    :func:`channel_universe.classify_calls`) these are *every*
+    single-nucleotide route to the variant's protein change on the
+    chosen transcript, each at its own context -- observed or not --
+    and a ``channel`` column is added too. Otherwise they are the
+    types observed for that variant in `db`, which misses every route
+    the cohort happened not to sample and so understates the rate.
 
     Parameters
     ----------
@@ -142,11 +148,15 @@ def annotate_variants_with_types(
     Returns
     -------
     pandas.DataFrame
-        Copy of `variants_df` with one extra column:
+        Copy of `variants_df` with ``mut_types``:
 
         - single type → stored as a plain string for speed/memory
-        - multiple types → stored as a list of strings
+        - multiple types → stored as a list of strings. A route list
+          keeps repeats: two sites of one type are two routes, and
+          each carries its own site rate.
         - no entry in *db* → NaN
+
+        and, with the channel universe, ``channel``.
     """
     logger.info("Annotating variants with types...")
     out = variants_df.copy()
@@ -159,6 +169,29 @@ def annotate_variants_with_types(
         lambda arr: arr[0] if len(arr) == 1 else list(arr)
     )
 
+    if "routes" in db.columns:
+        # One protein change has one route set; the first call's is
+        # every call's. An empty set (the call sits at a transcript
+        # end, where no context window exists) falls back to the
+        # observed types.
+        routes = (
+            db.dropna(subset=["routes"])
+            .groupby("variant")["routes"]
+            .first()
+        )
+        route_types = routes.map(
+            lambda text: (
+                (
+                    text.split(";")[0]
+                    if text.count(";") == 0
+                    else text.split(";")
+                )
+                if text
+                else None
+            )
+        ).dropna()
+        tidy_types = route_types.combine_first(tidy_types)
+
     # 3. align and add
     if "variant" in out.columns:
         key = out["variant"]
@@ -166,6 +199,13 @@ def annotate_variants_with_types(
         key = out.index
 
     out["mut_types"] = tidy_types.reindex(key).values
+    if "channel" in db.columns:
+        out["channel"] = (
+            db.groupby("variant")["channel"]
+            .first()
+            .reindex(key)
+            .values
+        )
 
     logger.info("... done.")
     print()

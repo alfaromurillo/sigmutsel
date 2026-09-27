@@ -20,6 +20,8 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `estimate_rg.py` | Shared per-gene rate correction `r_g`, marginalized |
 | `gene_tumor_dispersion.py` | Gene-tumor dispersion `phi` of a gene's mutations across tumors, fitted as a trend in the gene's mutation count |
 | `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
+| `channel_universe.py` | One transcript per gene (MANE Select first), the four channels `syn`/`mis`/`non`/`spl`, the capture territory, and the classification of every call on that same transcript |
+| `liftover.py` | Dependency-free point liftover through a UCSC chain, and BED membership |
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
 | `tcga_sample_selection.py` | Which downloaded MAF files to use: sample-type filter + per-case duplicate policy (see below) |
@@ -361,6 +363,67 @@ adds that axis, as a strictly additive sibling:
   (a second full CDS pass, ~47s genome-wide, for output nothing
   consumes yet); the tables are saved/loaded when present and absent
   otherwise.
+
+## The channel universe (`channel_universe.py`)
+
+The burden and the opportunity have to describe one territory, or
+calls counted in the rate have nowhere to go in `p_gτ`. This module
+makes that true by construction: both halves read the same objects.
+
+- **One transcript per gene**, for call labels and opportunity alike:
+  GENCODE v38 `MANE_Select`, else `Ensembl_canonical`, else the
+  longest CDS. A candidate is usable only if the CDS FASTA holds the
+  same stable transcript id with a sequence as long as the GTF's CDS
+  plus stop codon (after Ensembl's leading `N` padding, which puts
+  the FASTA in frame from index 0). The version may differ -- the
+  FASTA is a later Ensembl release, and most version bumps change
+  only UTRs -- and `fasta_version_match` records it. The rule used is
+  recorded per gene (`MutationDataset.gene_transcripts`).
+- **Four channels**: `syn` (stop to stop included), `mis` (start- and
+  stop-lost included), `non`, and `spl` (donor +1/+2, acceptor -2/-1
+  of every intron between coding segments). Every other call --
+  intron, UTR, flank, RNA genes, splice region 3-8 -- is *out of the
+  universe*: kept in `mutation_db`, skipped by every model input.
+- **No genome.** Codons are exact. Donor +2 and acceptor -2 lack one
+  intronic base, so each such site is spread over four contexts with
+  measured weights (`DONOR_PLUS3_COMPOSITION`,
+  `ACCEPTOR_MINUS3_COMPOSITION`, renormalised to sum to 1 so a site's
+  total stays exactly 3 opportunities). Exon-junction flanking bases
+  are the FASTA's, as in `contexts_by_gene.py`.
+- **Territory**: a site counts, and a call is kept, only if it lies in
+  the MC3 capture BED. The BED is hg19, so each GRCh38 *position* is
+  lifted to hg19 and tested (`liftover.py`), never the BED's
+  intervals to GRCh38: points map one to one, so the strand-flip and
+  duplicate traps of an interval liftover do not arise. Splice sites
+  may use a padded BED (`splice_padding`); coding positions never do.
+- **Identities, tested**: `Σ_h n^h[g,τ] == contexts[g, c(τ)]`, so the
+  common denominator `Σ_g' n_{g',c(τ)}` counts every site of every
+  channel and a site's rate is the same in every channel apart from
+  per-channel offsets. With the territory off, genes whose chosen
+  transcript is the old longest CDS reproduce `contexts_by_gene.py`
+  and `consequence_contexts_by_gene.py` exactly.
+- **Calls** (`classify_calls`) are looked up in the transcript of the
+  gene the MAF assigned them to, at their genomic position. Each gets
+  a channel, `in_universe`, a `universe_reason`, a protein-change label
+  on that transcript (`p.F2S`, `p.R213*`, `p.T2573=`; a splice call
+  is `c.9+1G>A` on the coding strand) and `routes`: every
+  single-nucleotide route to that protein change in the reference
+  codon, each at its own context, observed or not. The route list
+  keeps repeats (two sites of one type are two routes).
+- **Filtering happens at the input, never in the stored data.**
+  `channel_universe.model_calls(db, scope)` is the single gate: with
+  an `in_universe` column it returns in-universe calls and scopes by
+  channel; without one it keeps the old behaviour (every call, scoped
+  by `Variant_Classification`). The burden
+  (`count_mutation_burden`), the SBS96 matrices of both passes of
+  the two-pass decomposition (built from `mutation_db`, with their
+  own cache directories), gene presence and counts, variant
+  extraction and presence, `signature_effect_shares` and
+  `counts_by` all go through it. Every tumor keeps its column even
+  with no in-universe call.
+- **Caches** live in `DATA_DIR/channel_universe/`, keyed by a
+  fingerprint of the GTF, FASTA, BED, chain and `_BUILD_VERSION`.
+  Bump `_BUILD_VERSION` whenever a change alters the derived tables.
 
 ## Two-channel (syn/non-syn) covariate fit
 

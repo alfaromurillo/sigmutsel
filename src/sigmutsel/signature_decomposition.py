@@ -44,13 +44,25 @@ def build_sbs96_matrix_from_mutation_db(mutation_db, output_path):
     output_path : str or Path
         Where to write the matrix file.
 
+    With the channel universe (an ``in_universe`` column), only
+    in-universe calls are counted, but every tumor of `mutation_db`
+    keeps a column (all zeros if it has no in-universe call), so the
+    fit's tumors never fall out of step with the mutation table's.
+
     Returns
     -------
     Path
         `output_path`, for chaining.
     """
-    matrix = pd.crosstab(
-        mutation_db["type"], mutation_db["Tumor_Sample_Barcode"]
+    from .channel_universe import model_calls
+
+    calls = model_calls(mutation_db)
+    matrix = pd.crosstab(calls["type"], calls["Tumor_Sample_Barcode"])
+    matrix = matrix.reindex(
+        columns=sorted(
+            mutation_db["Tumor_Sample_Barcode"].dropna().unique()
+        ),
+        fill_value=0,
     )
     # Row order here doesn't match SigProfilerMatrixGenerator's own
     # output order (verified directly against a real

@@ -11,6 +11,8 @@ hgnc_complete_set.txt
 
 # Cached/derived files (regenerated from the downloaded files above)
 wes_target_gene_ids_gencode19.txt
+channel_universe/
+*.chain.gz
 
 # Keep small reference files
 !exclusion_signatures_matrix_by_cancer_type.txt

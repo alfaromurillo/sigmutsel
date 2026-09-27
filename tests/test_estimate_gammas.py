@@ -780,7 +780,12 @@ def _fake_posterior_result():
     """A minimal real InferenceData -- attrs must survive netCDF."""
     import arviz as az
 
-    return az.from_dict({"gamma": np.ones((2, 5))})
+    # arviz 1.x takes a dict of groups; 0.x takes the groups as
+    # keywords (and would read {"posterior": ...} as a variable).
+    posterior = {"gamma": np.ones((2, 5))}
+    if int(az.__version__.split(".")[0]) >= 1:
+        return az.from_dict({"posterior": posterior})
+    return az.from_dict(posterior=posterior)
 
 
 def _patch_fit(monkeypatch, result):

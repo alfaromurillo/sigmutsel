@@ -254,9 +254,9 @@ def test_compound_fit_uses_the_summed_rate_and_ored_presence(
 def test_compound_records_its_members_and_accounting(monkeypatch):
     import json
 
-    import arviz as az
+    from .test_estimate_gammas import _fake_posterior_result
 
-    result = az.from_dict({"gamma": np.ones((2, 5))})
+    result = _fake_posterior_result()
     monkeypatch.setattr(
         "sigmutsel.estimate_gammas.estimate_gamma_from_mus",
         lambda mus_yes, mus_no, **kwargs: result,

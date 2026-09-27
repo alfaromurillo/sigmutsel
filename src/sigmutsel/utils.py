@@ -4,6 +4,7 @@ This module contains general utility functions used across the
 package, including PCA operations and data transformations.
 """
 
+import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 
@@ -216,6 +217,10 @@ def run_pca_on_covariates(
           component.
         - ``components`` : ndarray of shape (k, n_features)
           Principal axes (loadings) in feature space.
+        - ``input_columns``, ``center``, ``scale``, ``pca_mean`` :
+          what :func:`project_onto_pca` needs to place a row that was
+          not in the fit -- one with missing values, say -- in the
+          same basis.
 
     Examples
     --------
@@ -258,8 +263,14 @@ def run_pca_on_covariates(
         )
 
     # standardize features if requested
+    center = (
+        X.mean() if standardize else pd.Series(0.0, index=X.columns)
+    )
+    scale = (
+        X.std() if standardize else pd.Series(1.0, index=X.columns)
+    )
     if standardize:
-        X = (X - X.mean()) / X.std()
+        X = (X - center) / scale
 
     # run PCA (seeded by default: svd_solver='randomized' draws from
     # an unseeded global RNG otherwise, breaking reproducibility)
@@ -277,5 +288,50 @@ def run_pca_on_covariates(
         pca.explained_variance_ratio_
     )
     result.attrs["components"] = pca.components_
+    result.attrs["input_columns"] = list(X.columns)
+    result.attrs["center"] = center
+    result.attrs["scale"] = scale
+    result.attrs["pca_mean"] = pca.mean_
 
     return result
+
+
+def project_onto_pca(rows: pd.DataFrame, pca_scores: pd.DataFrame):
+    """Place raw covariate rows in an existing PCA basis.
+
+    ``pca_scores`` is a :func:`run_pca_on_covariates` result. Each
+    row of ``rows`` is standardized with that fit's own centers and
+    scales, and a **missing value becomes 0 -- the fit's mean for
+    that column** -- so a gene's scores come from the columns it has
+    and a missing column contributes nothing. Only meaningful because
+    the columns are centered: on raw covariates a 0 would be an
+    arbitrary value, not the mean.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Rows × PCs, same columns as ``pca_scores``.
+    """
+    attrs = pca_scores.attrs
+    missing = [
+        k
+        for k in ("input_columns", "center", "scale")
+        if k not in attrs
+    ]
+    if missing:
+        raise ValueError(
+            f"pca_scores lacks {missing}: it was not produced by "
+            "run_pca_on_covariates (or lost its attrs), so there is no "
+            "basis to project onto."
+        )
+    columns = attrs["input_columns"]
+    z = (rows.reindex(columns=columns) - attrs["center"]) / attrs[
+        "scale"
+    ]
+    z = z.fillna(0.0).to_numpy(dtype=float) - np.asarray(
+        attrs["pca_mean"]
+    )
+    scores = z @ np.asarray(attrs["components"]).T
+    return pd.DataFrame(
+        scores, index=rows.index, columns=pca_scores.columns
+    )

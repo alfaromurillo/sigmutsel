@@ -549,10 +549,13 @@ def test_model_arm_zero_leaves_rates_at_the_baseline(tmp_path):
         separate_c=False,
     )
     np.testing.assert_array_equal(model.cov_effects, np.zeros(1))
+    # check_names: the rates keep the baseline's index name, the
+    # covariate matrix's index here has none.
     pd.testing.assert_frame_equal(
         model.compute_channel_mu_gs("nonsyn"),
         model.base_mus_nonsyn.loc[model.cov_matrix.index],
         check_exact=False,
+        check_names=False,
     )
 
 

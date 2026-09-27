@@ -2657,6 +2657,10 @@ class Model:
     _passenger_genes_r2_non_silent_counts: float = None
     _rg_theta: float = None
     _rg_statistics: dict = None
+    _rg_fallback_statistics: dict = None
+    _fallback_cov: pd.DataFrame = None
+    _fallback_indicators: pd.DataFrame = None
+    _fallback_shifts: pd.Series = None
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
     _rg_fit_rg: bool = True
@@ -2725,6 +2729,10 @@ class Model:
         self._passenger_genes_r2_non_silent_counts = None
         self._rg_theta = None
         self._rg_statistics = None
+        self._rg_fallback_statistics = None
+        self._fallback_cov = None
+        self._fallback_indicators = None
+        self._fallback_shifts = None
         self._rg_separate_c = False
         self._rg_delta_intercept = None
         self._rg_fit_rg = True
@@ -2895,6 +2903,231 @@ class Model:
     def has_covariates(self):
         """Check if model uses covariates (not a baseline model)."""
         return self.cov_matrix is not None
+
+    @property
+    def covariate_fallback_genes(self):
+        """Genes with a baseline rate but no complete covariate row.
+
+        Such a gene is not dropped. With a PCA-reduced covariate
+        matrix it is placed in the same PC basis from the covariates
+        it does have (a missing standardized value is 0, the mean),
+        and shifted by the fitted ``d_B`` of each covariate block it
+        is missing -- see :meth:`_fallback_eta`. Without PCA it falls
+        back to its baseline. Either way, everything downstream of the
+        covariate term -- the non-synonymous channel's
+        ``delta_intercept``, ``r_g`` and the gene-tumor dispersion --
+        applies to it exactly as to any other gene. Gammas resting on
+        such a gene carry a ``covariate_fallback`` attribute.
+
+        Empty for a model without covariates, where no gene is
+        covariate-corrected and so none falls back.
+        """
+        from .estimate_mus import covariate_complete_genes
+
+        if self.cov_matrix is None:
+            return pd.Index([])
+        base = next(
+            (
+                b
+                for b in (self._base_mus_nonsyn, self._base_mus)
+                if b is not None
+            ),
+            None,
+        )
+        if base is None:
+            raise ValueError(
+                "Baseline rates not computed. Call "
+                "compute_base_mus() first."
+            )
+        if isinstance(base, dict):
+            base = next(iter(base.values()))
+        return base.index.difference(
+            covariate_complete_genes(self.cov_matrix)
+        )
+
+    def _fallback_projection_usable(self):
+        """Whether fallback genes can be placed in the PC basis.
+
+        Needs the projection :meth:`assign_cov_matrix` stores for a
+        PCA-reduced matrix, a 1-D ``cov_effects``, and a ``cov_matrix``
+        whose columns are among the projected ones (the nested
+        ladder's zero-column matrix qualifies; an unrelated matrix
+        assigned by hand does not).
+        """
+        if (
+            self._fallback_cov is None
+            or self.cov_matrix is None
+            or self.cov_effects is None
+            or np.asarray(self.cov_effects).ndim != 1
+        ):
+            return False
+        if not set(self.cov_matrix.columns) <= set(
+            self._fallback_cov.columns
+        ):
+            logger.warning(
+                "cov_matrix has columns the fallback projection does "
+                "not: fallback genes get their baseline instead."
+            )
+            return False
+        return True
+
+    def _fallback_covariates(self, genes):
+        """Projected PC scores of ``genes``, aligned to cov_matrix."""
+        return self._fallback_cov.reindex(
+            index=genes, columns=self.cov_matrix.columns
+        ).fillna(0.0)
+
+    def _fallback_shift_terms(self, genes):
+        """``m_g . d`` for ``genes`` (0 before the shifts are fitted)."""
+        if (
+            self._fallback_shifts is None
+            or self._fallback_indicators is None
+        ):
+            return pd.Series(0.0, index=genes)
+        indicators = self._fallback_indicators.reindex(
+            index=genes, columns=self._fallback_shifts.index
+        ).fillna(0.0)
+        return pd.Series(
+            indicators.to_numpy() @ self._fallback_shifts.to_numpy(),
+            index=genes,
+        )
+
+    def _fallback_eta(self, shifts=True):
+        """Covariate log-scale of every covariate-fallback gene.
+
+        With a PCA-reduced matrix, a ``pd.Series`` over
+        :attr:`covariate_fallback_genes`:
+
+            eta_g = c_0 + c . x~_g + sum_B d_B m_gB
+
+        ``x~_g`` is the gene's projection onto the PC basis the
+        complete genes define, from the covariates it has (see
+        :func:`utils.project_onto_pca`), ``c`` is the fit on the
+        complete genes, unchanged, and ``m_gB = 1`` when the gene
+        misses (part of) block ``B``. ``d_B`` is fitted afterwards on
+        the fallback genes alone (:meth:`estimate_fallback_shifts`),
+        because the missingness is informative: across TCGA cohorts,
+        genes missing expression covariates run at a third of what
+        their observed covariates predict. So the complete genes'
+        rates, and everything fitted on them, are exactly what they
+        would be without any fallback.
+
+        Measured by gene cross-validation, this predicts held-out
+        fallback genes far better than their baseline or than a
+        single fitted intercept, in every cohort tested.
+
+        Without a projection (covariates not PCA-reduced -- zero is
+        the mean only for centered columns) it is ``0.0``: the
+        baseline, ``nu = mu_bar``.
+        """
+        if not self._fallback_projection_usable():
+            return 0.0
+        genes = self.covariate_fallback_genes
+        c = np.asarray(self.cov_effects, dtype=float)
+        eta = (
+            c[0] + self._fallback_covariates(genes).to_numpy() @ c[1:]
+        )
+        eta = pd.Series(eta, index=genes)
+        if shifts:
+            eta = eta + self._fallback_shift_terms(genes)
+        return eta
+
+    def _record_covariate_fallback(self, result, gene_ids):
+        """Mark a gamma whose rate rests on a covariate fallback.
+
+        Written into ``posterior.attrs`` beside the sample accounting:
+        ``covariate_fallback`` is 1 if any gene behind the gamma lacks
+        complete covariates (see :attr:`covariate_fallback_genes`),
+        else 0, and ``covariate_fallback_blocks`` names the blocks
+        they miss. A model without covariates writes nothing.
+        """
+        if (
+            not hasattr(result, "posterior")
+            or self.cov_matrix is None
+        ):
+            return result
+        fallback = self.covariate_fallback_genes
+        hit = [g for g in gene_ids if g in fallback]
+        result.posterior.attrs["covariate_fallback"] = int(bool(hit))
+        blocks = set()
+        if hit and self._fallback_indicators is not None:
+            rows = self._fallback_indicators.reindex(hit).fillna(0.0)
+            blocks = set(rows.columns[rows.to_numpy().any(axis=0)])
+        result.posterior.attrs["covariate_fallback_blocks"] = (
+            ",".join(sorted(blocks))
+        )
+        return result
+
+    @record_call
+    def estimate_fallback_shifts(self, min_genes=30, bound=2.0):
+        """Fit ``d_B`` for the covariate-fallback genes.
+
+        :meth:`estimate_channel_rg_cov_effects` calls this itself,
+        after ``c``, ``delta`` and ``theta``, which stay fixed: the
+        shifts are fitted on the fallback genes' own counts (silent,
+        and non-silent for passengers, exactly the data ``c`` uses
+        for the complete genes) and cannot move anything fitted on
+        the complete genes. See :func:`estimate_rg.fit_fallback_shifts`.
+
+        Parameters
+        ----------
+        min_genes : int, default 30
+            A block missing in fewer fallback genes gets no shift of
+            its own; its genes keep their projection and the shifts of
+            any other block they miss. Two blocks missing on exactly
+            the same genes share one shift.
+        bound : float, default 2.0
+            ``|d_B| <= bound``, as ``c`` is bounded.
+
+        Returns
+        -------
+        pd.Series or None
+            ``d`` by block, also stored; None when there is nothing to
+            fit (no projection, no fallback statistics, or no block
+            reaching ``min_genes``).
+        """
+        from .estimate_rg import fit_fallback_shifts
+
+        self._fallback_shifts = None
+        stats = self._rg_fallback_statistics
+        if (
+            stats is None
+            or self._fallback_indicators is None
+            or not self._fallback_projection_usable()
+        ):
+            return None
+        genes = stats["genes"]
+        indicators = self._fallback_indicators.reindex(genes).fillna(
+            0.0
+        )
+        indicators = indicators.loc[:, indicators.sum() >= min_genes]
+        indicators = indicators.T.drop_duplicates().T
+        if indicators.shape[1] == 0:
+            return None
+        eta = self._fallback_eta(shifts=False).reindex(genes)
+        d = fit_fallback_shifts(
+            counts_silent=stats["counts_silent"].to_numpy(),
+            counts_non_silent=stats["counts_non_silent"].to_numpy(),
+            baseline_silent=stats["baseline_silent"].to_numpy(),
+            baseline_non_silent=stats[
+                "baseline_non_silent"
+            ].to_numpy(),
+            eta=eta.to_numpy(),
+            indicators=indicators.to_numpy(),
+            delta=self._rg_delta_intercept,
+            theta=self._rg_theta if self._rg_fit_rg else None,
+            bound=bound,
+        )
+        self._fallback_shifts = pd.Series(d, index=indicators.columns)
+        logger.info(
+            "Covariate-fallback shifts over %d genes: %s",
+            len(genes),
+            ", ".join(
+                f"{k} x{np.exp(v):.2f}"
+                for k, v in self._fallback_shifts.items()
+            ),
+        )
+        return self._fallback_shifts
 
     @property
     def n_in_cov_effects_estimation(self):
@@ -3104,6 +3337,7 @@ class Model:
         pca_kwargs=None,
         dr_method=None,
         dr_kwargs=None,
+        missing_blocks=None,
     ):
         """Assign covariate matrix, restricting to dataset genes.
 
@@ -3154,6 +3388,11 @@ class Model:
             - n_neighbors : int, default 15
             - min_dist : float, default 0.1
             - metric : str, default 'euclidean'
+        missing_blocks : Mapping[str, str] or pd.Series or None
+            Column -> block name, for the covariate-fallback genes'
+            block indicators (see :meth:`_fallback_eta`). ``None``
+            makes every column one block. Columns absent from the
+            mapping form a block ``"other"``. Only used with PCA.
 
         Returns
         -------
@@ -3279,6 +3518,9 @@ class Model:
             self.cov_matrix = run_pca_on_covariates(
                 reindexed, **kwargs
             )
+            self._assign_fallback_projection(
+                reindexed, missing_blocks
+            )
         elif dr_method == "riemannian_stats":
             from .utils import run_riemannian_stats_on_covariates
 
@@ -3288,7 +3530,40 @@ class Model:
         else:
             self.cov_matrix = reindexed
 
+        if dr_method != "pca":
+            self._fallback_cov = None
+            self._fallback_indicators = None
+        self._fallback_shifts = None
         return self.cov_matrix
+
+    def _assign_fallback_projection(self, raw, missing_blocks):
+        """Project the incomplete rows of ``raw`` onto the new PC basis.
+
+        Stores their PC scores and 0/1 block-missing indicators; see
+        :meth:`_fallback_eta`. A gene absent from the covariate matrix
+        altogether projects to 0 (the mean) and misses every block.
+        """
+        from .utils import project_onto_pca
+
+        pcs = self.cov_matrix
+        columns = pcs.attrs.get("input_columns")
+        if columns is None:
+            self._fallback_cov = None
+            self._fallback_indicators = None
+            return
+        rows = raw.loc[raw.index.difference(pcs.index), columns]
+        self._fallback_cov = project_onto_pca(rows, pcs)
+        if missing_blocks is None:
+            blocks = pd.Series("covariates", index=columns)
+        else:
+            blocks = (
+                pd.Series(missing_blocks)
+                .reindex(columns)
+                .fillna("other")
+            )
+        self._fallback_indicators = (
+            rows.isna().T.groupby(blocks).any().T.astype(float)
+        )
 
     @property
     def base_mus(self):
@@ -3829,6 +4104,10 @@ class Model:
         self._record_sample_accounting(
             result, present_mask, absent_mask
         )
+        if self.cov_matrix is not None:
+            self._record_covariate_fallback(
+                result, [self._variant_gene_id(variant)]
+            )
 
         if store:
             self.gammas[variant] = result
@@ -4004,6 +4283,10 @@ class Model:
         self._record_sample_accounting(
             result, present_mask, absent_mask
         )
+        if self.cov_matrix is not None:
+            self._record_covariate_fallback(
+                result, [self._variant_gene_id(v) for v in variants]
+            )
 
         if store:
             self.gammas[name] = result
@@ -4161,6 +4444,7 @@ class Model:
         self._record_sample_accounting(
             result, present_mask, absent_mask
         )
+        self._record_covariate_fallback(result, [gene_id])
 
         if store:
             # Always store with ensembl_gene_id for consistency
@@ -5010,11 +5294,18 @@ class Model:
                 result[tau] = baseline_total
                 continue
 
+            # Genes without covariate coverage fall back to their
+            # baseline here, BEFORE the channel intercept below, so
+            # that their non-synonymous rate carries delta like every
+            # other gene's. (It used to be appended after it, which
+            # left every such gene's non-synonymous variants without
+            # delta.)
             scaled = compute_mus_per_gene_per_sample(
                 db=self.dataset.mutation_db,
                 base_mus=baseline_tau,
                 cov_effect=self.cov_effects,
                 cov_matrix=self.cov_matrix,
+                fallback_log_scale=self._fallback_eta(),
             )
 
             # A separate_c="intercept" fit puts the non-synonymous
@@ -5027,17 +5318,6 @@ class Model:
                 and self._rg_delta_intercept is not None
             ):
                 scaled = scaled * np.exp(self._rg_delta_intercept)
-
-            # Genes without covariate coverage keep their baseline
-            # rate, mirroring compute_mu_gs's
-            # assign_base_mus_to_rest behavior.
-            missing_genes = baseline_total.index.difference(
-                scaled.index
-            )
-            if missing_genes.any():
-                scaled = pd.concat(
-                    [scaled, baseline_total.loc[missing_genes]]
-                )
 
             result[tau] = scaled
 
@@ -5337,6 +5617,10 @@ class Model:
             files["cov_matrix"] = _save_dataframe(
                 self.cov_matrix, "cov_matrix.parquet"
             )
+        for key in ("fallback_cov", "fallback_indicators"):
+            frame = getattr(self, f"_{key}")
+            if frame is not None:
+                files[key] = _save_dataframe(frame, f"{key}.parquet")
 
         if self._mu_taus is not None:
             if isinstance(self._mu_taus, dict):
@@ -5475,8 +5759,15 @@ class Model:
                     self._channel_cov_effects,
                     "channel_cov_effects.npy",
                 )
-            if self._rg_statistics is not None:
-                stats = self._rg_statistics
+            for key, stats in (
+                ("rg_statistics", self._rg_statistics),
+                (
+                    "rg_fallback_statistics",
+                    self._rg_fallback_statistics,
+                ),
+            ):
+                if stats is None:
+                    continue
                 frame = pd.DataFrame(
                     {
                         "counts_silent": stats["counts_silent"],
@@ -5492,9 +5783,7 @@ class Model:
                 frame["in_non_silent"] = frame.index.isin(
                     stats["in_non_silent"]
                 )
-                files["rg_statistics"] = _save_dataframe(
-                    frame, "rg_statistics.parquet"
-                )
+                files[key] = _save_dataframe(frame, f"{key}.parquet")
 
         dataset_snapshot = getattr(
             self.dataset, "dataset_directory", None
@@ -5523,6 +5812,14 @@ class Model:
             "mu_taus_separate": isinstance(self._mu_taus, dict),
             "rg_theta": self._rg_theta,
             "rg_delta_intercept": self._rg_delta_intercept,
+            "fallback_shifts": (
+                None
+                if self._fallback_shifts is None
+                else {
+                    str(k): float(v)
+                    for k, v in self._fallback_shifts.items()
+                }
+            ),
             "rg_separate_c": self._rg_separate_c,
             "rg_fit_rg": self._rg_fit_rg,
             "rg_use_silent_channel": self._rg_use_silent_channel,
@@ -5591,6 +5888,9 @@ class Model:
 
         if "cov_matrix" in files:
             model.cov_matrix = _load_dataframe(files["cov_matrix"])
+        for key in ("fallback_cov", "fallback_indicators"):
+            if key in files:
+                setattr(model, f"_{key}", _load_dataframe(files[key]))
 
         if "mu_taus" in files:
             mu_info = files["mu_taus"]
@@ -5677,6 +5977,10 @@ class Model:
 
         model._rg_theta = manifest.get("rg_theta")
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
+        shifts = manifest.get("fallback_shifts")
+        model._fallback_shifts = (
+            None if shifts is None else pd.Series(shifts, dtype=float)
+        )
         model._rg_separate_c = manifest.get("rg_separate_c", False)
         model._rg_fit_rg = manifest.get("rg_fit_rg", True)
         model._rg_use_silent_channel = manifest.get(
@@ -5697,16 +6001,26 @@ class Model:
             model._channel_cov_effects = np.load(
                 directory / files["channel_cov_effects"]
             )
-        if "rg_statistics" in files:
-            frame = _load_dataframe(files["rg_statistics"])
-            model._rg_statistics = {
-                "genes": frame.index,
-                "counts_silent": frame["counts_silent"],
-                "counts_non_silent": frame["counts_non_silent"],
-                "baseline_silent": frame["baseline_silent"],
-                "baseline_non_silent": frame["baseline_non_silent"],
-                "in_non_silent": frame.index[frame["in_non_silent"]],
-            }
+        for key in ("rg_statistics", "rg_fallback_statistics"):
+            if key not in files:
+                continue
+            frame = _load_dataframe(files[key])
+            setattr(
+                model,
+                f"_{key}",
+                {
+                    "genes": frame.index,
+                    "counts_silent": frame["counts_silent"],
+                    "counts_non_silent": frame["counts_non_silent"],
+                    "baseline_silent": frame["baseline_silent"],
+                    "baseline_non_silent": frame[
+                        "baseline_non_silent"
+                    ],
+                    "in_non_silent": frame.index[
+                        frame["in_non_silent"]
+                    ],
+                },
+            )
 
         model._prob_g_tau_tau_independent = manifest.get(
             "prob_g_tau_tau_independent"
@@ -5782,13 +6096,16 @@ class Model:
                     "after loading contexts_by_gene."
                 )
 
-            # Also check against cov_matrix if present
+            # Genes without covariates are expected in mu_gs (they
+            # fall back to their baseline); covariate genes missing
+            # from it are not.
             if (
                 self.cov_matrix is not None
-                and not value.index.equals(self.cov_matrix.index)
+                and not self.cov_matrix.index.isin(value.index).all()
             ):
                 logger.warning(
-                    "mu_gs index does not match cov_matrix.index. "
+                    "mu_gs is missing genes that are in "
+                    "cov_matrix.index. "
                     "This may cause errors in downstream analysis. "
                     "To fix: call model.assign_cov_matrix() again "
                     "to reindex cov_matrix to match "
@@ -5952,6 +6269,10 @@ class Model:
         # Share large base results (memory efficient)
         new_model._base_mus = self._base_mus  # Share, don't copy
         new_model._mu_taus = self._mu_taus  # Share, don't copy
+        # The projection belongs with the covariate matrix; the fitted
+        # shifts are a result and are refitted like the rest.
+        new_model._fallback_cov = self._fallback_cov
+        new_model._fallback_indicators = self._fallback_indicators
         new_model._prob_g_tau_tau_independent = (
             self._prob_g_tau_tau_independent
         )
@@ -6428,6 +6749,11 @@ class Model:
         channel additionally carries that fit's own intercept
         (``exp(delta)``), which lives outside ``cov_effects``.
 
+        Every gene of the channel's baseline gets a rate: one without
+        a complete covariate row falls back to its baseline
+        (:attr:`covariate_fallback_genes`), and still takes
+        ``exp(delta)`` on the non-synonymous channel.
+
         Parameters
         ----------
         channel : {"syn", "nonsyn"}
@@ -6461,6 +6787,7 @@ class Model:
             base_mus=base,
             cov_effect=self.cov_effects,
             cov_matrix=self.cov_matrix,
+            fallback_log_scale=self._fallback_eta(),
         )
 
         # A `separate_c="intercept"` fit puts the non-synonymous
@@ -6496,8 +6823,9 @@ class Model:
         Parameters
         ----------
         assign_base_mus_to_rest : bool, default True
-            If True, assign baseline rates to any gene that did not
-            receive a covariate-adjusted rate so that ``mu_gs``
+            If True, any gene that did not receive a
+            covariate-adjusted rate falls back to its baseline (see
+            :attr:`covariate_fallback_genes`), so that ``mu_gs``
             always includes every gene present in ``base_mus``.
         **kwargs : dict
             Additional keyword arguments passed to
@@ -6634,11 +6962,19 @@ class Model:
             )
 
         # Compute per-gene, per-sample mutation rates
+        fallback = (
+            self._fallback_eta()
+            if assign_base_mus_to_rest
+            and self.cov_effects is not None
+            and not kwargs.get("separate_mus_per_model", False)
+            else None
+        )
         result = compute_mus_per_gene_per_sample(
             db=self.dataset.mutation_db,
             base_mus=self.base_mus,
             cov_effect=self.cov_effects,
             cov_matrix=self.cov_matrix,
+            fallback_log_scale=fallback,
             **kwargs,
         )
 
@@ -7578,6 +7914,7 @@ class Model:
         include_drivers=True,
         excluded_samples=None,
         train_genes=None,
+        gene_pool="complete",
     ):
         """Per-gene sufficient statistics for the ``r_g`` likelihood.
 
@@ -7602,6 +7939,12 @@ class Model:
             only their non-silent signal is withheld from fitting.
             Does not affect ``include_drivers``'s own driver-gene
             inclusion in ``silent_genes``.
+        gene_pool : {"complete", "fallback"}, default "complete"
+            ``"complete"``: the genes with a complete covariate row,
+            the only ones that can inform ``c`` and ``theta``.
+            ``"fallback"``: the rest (:attr:`covariate_fallback_genes`),
+            whose statistics give them an ``r_g`` and their block
+            shifts without entering the fit of ``c``.
 
         Returns
         -------
@@ -7613,21 +7956,26 @@ class Model:
             with zeros for genes outside the non-synonymous set), and
             ``in_non_silent`` (the passenger gene index).
         """
+        from .estimate_mus import covariate_complete_genes
         from .estimate_presence import filter_passenger_genes_ensembl
 
-        complete_genes = self.cov_matrix.index[
-            ~self.cov_matrix.isna().any(axis=1)
-        ]
+        if gene_pool == "complete":
+            pool = covariate_complete_genes(self.cov_matrix)
+        elif gene_pool == "fallback":
+            pool = self.covariate_fallback_genes
+        else:
+            raise ValueError(
+                "gene_pool must be 'complete' or 'fallback', got "
+                f"{gene_pool!r}"
+            )
         passenger_genes = pd.Index(
-            filter_passenger_genes_ensembl(complete_genes)
+            filter_passenger_genes_ensembl(pool)
         )
         if train_genes is not None:
             passenger_genes = passenger_genes.intersection(
                 pd.Index(train_genes)
             )
-        silent_genes = (
-            complete_genes if include_drivers else passenger_genes
-        )
+        silent_genes = pool if include_drivers else passenger_genes
 
         def _sums(frame, genes):
             frame = frame.reindex(
@@ -7890,6 +8238,18 @@ class Model:
         self._n_in_cov_effects_estimation = len(
             stats["in_non_silent"]
         )
+        # Covariate-less genes stay out of the fit -- they carry no
+        # x_g, and entering them at x_g = 0 would pull the intercept
+        # toward their own mean -- but they still get an r_g, which
+        # needs only their silent counts, their expected silent rate
+        # and theta. Gathered over the same samples as the fit's.
+        self._rg_fallback_statistics = None
+        if use_silent_channel:
+            self.compute_rg_fallback_statistics(
+                include_drivers=include_drivers,
+                excluded_samples=excluded_samples,
+                train_genes=train_genes,
+            )
 
         if use_silent_channel:
             logger.info(
@@ -8052,6 +8412,13 @@ class Model:
                 mode_desc=mode_desc,
             )
 
+        # The fallback genes' block shifts, with c, delta and theta
+        # now fixed -- before the recomputation below, which uses them.
+        if separate_c is not True:
+            self.estimate_fallback_shifts()
+        else:
+            self._fallback_shifts = None
+
         if separate_c is True:
             # A single mu_gs is not defined by one `c` here, so the
             # usual recomputation would be meaningless. Move the
@@ -8192,8 +8559,43 @@ class Model:
             )
         return self._rg_theta
 
-    def _rg_expectations(self):
-        """Covariate-scaled per-gene expectations for both channels."""
+    def compute_rg_fallback_statistics(
+        self,
+        include_drivers=True,
+        excluded_samples=None,
+        train_genes=None,
+    ):
+        """Gather the ``r_g`` statistics of the covariate-less genes.
+
+        :meth:`estimate_channel_rg_cov_effects` calls this itself.
+        Call it directly only for a model fitted before these
+        statistics existed, with the **same** ``include_drivers`` and
+        ``excluded_samples`` as its fit -- they are sums over the
+        kept samples, and the saved fit does not record which those
+        were.
+
+        Returns
+        -------
+        dict
+            As :meth:`_channel_gene_statistics`, over
+            :attr:`covariate_fallback_genes`; also stored.
+        """
+        self._rg_fallback_statistics = self._channel_gene_statistics(
+            include_drivers=include_drivers,
+            excluded_samples=excluded_samples,
+            train_genes=train_genes,
+            gene_pool="fallback",
+        )
+        return self._rg_fallback_statistics
+
+    def _rg_expectations(self, include_fallback=False):
+        """Covariate-scaled per-gene expectations for both channels.
+
+        Over the fit's own genes by default, aligned with
+        ``_rg_statistics``. ``include_fallback=True`` appends the
+        covariate-less genes, whose expectation is their baseline
+        scaled by :meth:`_fallback_eta` instead of ``e^{c.x_g}``.
+        """
         if self._rg_statistics is None or self._rg_theta is None:
             raise ValueError(
                 "No r_g fit available. Call "
@@ -8207,10 +8609,49 @@ class Model:
             index=stats["genes"],
         )
         scale = np.exp(eta)
-        return (
-            stats["baseline_silent"] * scale,
-            stats["baseline_non_silent"] * scale,
-        )
+        expected_silent = stats["baseline_silent"] * scale
+        expected_non_silent = stats["baseline_non_silent"] * scale
+        fallback = self._rg_fallback_statistics
+        if include_fallback and fallback is not None:
+            eta = self._fallback_eta()
+            factor = (
+                np.exp(eta.reindex(fallback["genes"]).fillna(0.0))
+                if isinstance(eta, pd.Series)
+                else float(np.exp(eta))
+            )
+            expected_silent = pd.concat(
+                [
+                    expected_silent,
+                    fallback["baseline_silent"] * factor,
+                ]
+            )
+            expected_non_silent = pd.concat(
+                [
+                    expected_non_silent,
+                    fallback["baseline_non_silent"] * factor,
+                ]
+            )
+        return expected_silent, expected_non_silent
+
+    def _rg_statistics_with_fallback(self):
+        """``_rg_statistics`` with the covariate-less genes appended.
+
+        What every per-gene ``r_g`` is computed from. The fit's own
+        statistics stay separate, since the fitted likelihood (e.g.
+        :meth:`channel_rg_log_likelihood_at_fit`) is over them alone.
+        """
+        stats = self._rg_statistics
+        fallback = self._rg_fallback_statistics
+        if fallback is None:
+            return stats
+        return {
+            key: (
+                stats[key].append(fallback[key])
+                if isinstance(stats[key], pd.Index)
+                else pd.concat([stats[key], fallback[key]])
+            )
+            for key in stats
+        }
 
     def compute_r_g_production(self):
         """Per-gene ``r_g`` from **both** channels -- the paper number.
@@ -8221,12 +8662,13 @@ class Model:
         """
         from .estimate_rg import r_g_production
 
-        expected_silent, expected_non_silent = self._rg_expectations()
+        expected_silent, expected_non_silent = self._rg_expectations(
+            include_fallback=True
+        )
+        stats = self._rg_statistics_with_fallback()
         return r_g_production(
-            counts_silent=self._rg_statistics["counts_silent"],
-            counts_non_silent=self._rg_statistics[
-                "counts_non_silent"
-            ],
+            counts_silent=stats["counts_silent"],
+            counts_non_silent=stats["counts_non_silent"],
             expected_silent=expected_silent,
             expected_non_silent=expected_non_silent,
             theta=self.rg_theta,
@@ -8239,12 +8681,19 @@ class Model:
         which has no argument through which non-silent data could
         reach it. Scale ``μ^(nonsyn)`` by this before scoring against
         non-silent counts, and the score is honest by construction.
+
+        Covers the covariate-less genes too (see
+        :attr:`covariate_fallback_genes`), with the same ``theta``.
         """
         from .estimate_rg import r_g_silent_only_for_evaluation
 
-        expected_silent, _ = self._rg_expectations()
+        expected_silent, _ = self._rg_expectations(
+            include_fallback=True
+        )
         return r_g_silent_only_for_evaluation(
-            counts_silent=self._rg_statistics["counts_silent"],
+            counts_silent=self._rg_statistics_with_fallback()[
+                "counts_silent"
+            ],
             expected_silent=expected_silent,
             theta=self.rg_theta,
         )
@@ -8357,11 +8806,6 @@ class Model:
             raise ValueError(
                 f"Gene ID {gene_id!r} not found in base_mus_nonsyn."
             )
-        if gene_id not in self.cov_matrix.index:
-            raise ValueError(
-                f"Gene ID {gene_id!r} not found in the covariate "
-                "matrix."
-            )
 
         scale, n_draws = self._covariate_scale_draws(
             gene_id, n_draws=n_draws, rng=rng
@@ -8402,13 +8846,13 @@ class Model:
 
         ``include_delta=False`` drops the non-synonymous channel's
         ``delta_intercept``, for a rate on the synonymous channel.
-        """
-        if gene_id not in self.cov_matrix.index:
-            raise ValueError(
-                f"Gene ID {gene_id!r} not found in the covariate "
-                "matrix."
-            )
 
+        A gene without a complete covariate row
+        (:attr:`covariate_fallback_genes`) has no ``c . x_g`` to draw:
+        its term is :meth:`_fallback_eta`'s, with ``c`` drawn and the
+        block shifts at their fitted values, and the
+        ``delta_intercept`` draws apply to it as to any gene.
+        """
         import arviz as az
 
         c_draws = az.extract(
@@ -8440,8 +8884,25 @@ class Model:
         )
         c_sel = c_draws[:, draw_idx]
 
-        cov_row = self.cov_matrix.loc[gene_id].to_numpy(dtype=float)
-        eta = c_sel[0] + cov_row @ c_sel[1:]
+        cov_row = (
+            self.cov_matrix.loc[gene_id].to_numpy(dtype=float)
+            if gene_id in self.cov_matrix.index
+            else None
+        )
+        if cov_row is not None and np.isfinite(cov_row).all():
+            eta = c_sel[0] + cov_row @ c_sel[1:]
+        else:
+            if self._fallback_projection_usable():
+                x = self._fallback_covariates([gene_id]).to_numpy()[0]
+                eta = (
+                    c_sel[0]
+                    + x @ c_sel[1:]
+                    + float(
+                        self._fallback_shift_terms([gene_id]).iloc[0]
+                    )
+                )
+            else:
+                eta = np.zeros(n_draws)
         if include_delta and self._rg_delta_intercept is not None:
             # See compute_channel_mu_gs's docstring: a
             # separate_c="intercept" fit puts the non-synonymous
@@ -8476,13 +8937,24 @@ class Model:
                 "No r_g fit available. Call "
                 "estimate_channel_rg_cov_effects() first."
             )
-        if gene_id not in self._rg_statistics["genes"]:
+        stats = self._rg_statistics_with_fallback()
+        if gene_id not in stats["genes"]:
+            hint = (
+                " It has no covariates, and this model has no "
+                "fallback r_g statistics -- it was fitted before they "
+                "existed; call compute_rg_fallback_statistics() with "
+                "the fit's excluded_samples."
+                if self._rg_fallback_statistics is None
+                and gene_id in self.covariate_fallback_genes
+                else ""
+            )
             raise ValueError(
                 f"Gene ID {gene_id!r} was not part of the r_g "
-                "fit's gene set."
+                f"fit's gene set.{hint}"
             )
-        stats = self._rg_statistics
-        expected_silent, expected_non_silent = self._rg_expectations()
+        expected_silent, expected_non_silent = self._rg_expectations(
+            include_fallback=True
+        )
         if r_g_variant == "production":
             r_g_draws = r_g_draws_production(
                 counts_silent=stats["counts_silent"].loc[[gene_id]],

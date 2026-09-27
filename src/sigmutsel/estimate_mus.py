@@ -22,6 +22,37 @@ from .estimate_presence import filter_passenger_genes_ensembl
 logger = logging.getLogger(__name__)
 
 
+def covariate_complete_genes(cov_matrix):
+    """Genes whose covariate row is complete (no NaN).
+
+    Only these can be covariate-scaled. Everything else in a baseline
+    falls back -- see :func:`compute_mus_per_gene_per_sample`'s
+    ``fallback_log_scale``.
+    """
+    return cov_matrix.index[cov_matrix.notna().all(axis=1)]
+
+
+def _with_fallback(scaled, baseline, ids_all, fallback_log_scale):
+    """Add the genes of ``ids_all`` missing from ``scaled`` at their
+    fallback rate, ``baseline * exp(fallback_log_scale)``, and return
+    the rows in ``ids_all``'s order. ``fallback_log_scale`` is one
+    number, or a per-gene ``pd.Series`` (a gene it lacks gets 0).
+    """
+    missing = ids_all.difference(scaled.index)
+    if len(missing):
+        rows = baseline.loc[missing]
+        if isinstance(fallback_log_scale, pd.Series):
+            factor = np.exp(
+                fallback_log_scale.reindex(missing).fillna(0.0)
+            ).astype(np.asarray(rows.values).dtype)
+            rows = rows.mul(factor, axis=0)
+        else:
+            # A Python float, so a float32 baseline stays float32.
+            rows = rows * float(np.exp(fallback_log_scale))
+        scaled = pd.concat([scaled, rows])
+    return scaled.loc[ids_all]
+
+
 def compute_mu_tau_per_tumor(
     db,
     location_signature_matrix,
@@ -597,6 +628,7 @@ def compute_mus_per_gene_per_sample(
     cov_matrix: pd.DataFrame | None = None,
     restrict_to_passenger: bool = False,
     separate_mus_per_model: bool = False,
+    fallback_log_scale: float | pd.Series | None = None,
 ) -> pd.DataFrame | dict[tuple[str, ...], pd.DataFrame]:
     """Return per-gene, per-sample mutation rates.
 
@@ -663,6 +695,17 @@ def compute_mus_per_gene_per_sample(
         model for which all required covariates are present
         (non-NaN). Genes with no applicable model keep their
         `base_mus`.
+    fallback_log_scale : float, pd.Series or None, default None
+        What a gene without a complete covariate row gets. ``None``
+        drops it from the output (the historical behaviour, kept for
+        callers that want the covariate-scaled genes only). A number,
+        or a per-gene Series of log-scales, keeps it, at
+        ``base_mus * exp(fallback_log_scale)``, so that
+        every gene of `base_mus` (after `restrict_to_passenger`) has a
+        rate. Applies to the single-model paths and to the combined
+        multi-model path (genes no model covers); a
+        ``separate_mus_per_model`` dict is per model by definition
+        and ignores it.
 
     Returns
     -------
@@ -830,15 +873,19 @@ def compute_mus_per_gene_per_sample(
         else:
             ids_pass = pd.Index(first_df.index)
 
-        ids = first_df.index.intersection(ids_pass).intersection(
-            cov_matrix.index
-        )
+        ids_all = first_df.index.intersection(ids_pass)
+        ids = ids_all.intersection(cov_matrix.index)
+        if fallback_log_scale is not None:
+            ids = ids.intersection(
+                covariate_complete_genes(cov_matrix)
+            )
 
         # Ensure all signatures have same genes
         for sigma, df in base_mus.items():
             ids = ids.intersection(df.index)
+            ids_all = ids_all.intersection(df.index)
 
-        if len(ids) == 0:
+        if len(ids) == 0 and fallback_log_scale is None:
             raise ValueError(
                 "No overlapping genes between base_mus signatures, "
                 "cov_matrix, and passenger set"
@@ -877,6 +924,13 @@ def compute_mus_per_gene_per_sample(
             else:
                 mus_full = mus_full + mus_scaled
 
+        if fallback_log_scale is not None:
+            mus_full = _with_fallback(
+                mus_full,
+                sum(df.loc[ids_all] for df in base_mus.values()),
+                ids_all,
+                fallback_log_scale,
+            )
         return mus_full
 
     # ──────── Signature independent mode (original logic) ────────
@@ -901,11 +955,19 @@ def compute_mus_per_gene_per_sample(
             "cov_matrix must be provided when cov_effect is not None."
         )
 
+    ids_all = ids
     ids = ids.intersection(cov_matrix.index)
-    if len(ids) == 0:
+    if len(ids) == 0 and fallback_log_scale is None:
         raise ValueError(
             "No overlapping genes between "
             "base_mus, cov_matrix, and passenger set."
+        )
+
+    def _finish(scaled):
+        if fallback_log_scale is None:
+            return scaled
+        return _with_fallback(
+            scaled, base_mus, ids_all, fallback_log_scale
         )
 
     mus = base_mus.loc[ids]
@@ -921,6 +983,12 @@ def compute_mus_per_gene_per_sample(
         else:
             c = np.asarray(cov_effect, dtype=np.float32)
 
+        if fallback_log_scale is not None:
+            # An incomplete row cannot be scaled (its eta would be
+            # NaN); it falls back instead.
+            complete = cov_df.notna().all(axis=1)
+            mus, cov_df = mus.loc[complete], cov_df.loc[complete]
+
         X_cov = cov_df.to_numpy(dtype=np.float32)
         ones = np.ones((X_cov.shape[0], 1), dtype=np.float32)
         X = np.concatenate([ones, X_cov], axis=1)
@@ -934,7 +1002,7 @@ def compute_mus_per_gene_per_sample(
         eta = X @ c
         scale = np.exp(eta).astype(np.float32)
         mus_full = mus.mul(scale, axis=0)
-        return mus_full
+        return _finish(mus_full)
 
     # ---------- multi-model path ----------
     # Normalize models and validate coefficients
@@ -956,7 +1024,10 @@ def compute_mus_per_gene_per_sample(
         models.append((covs, coef))
 
     if not models:
-        # No usable models: return baseline mus unchanged
+        # No usable models: return baseline mus unchanged -- or, when
+        # a fallback is given, every gene takes it.
+        if fallback_log_scale is not None:
+            return _finish(mus.iloc[:0])
         return mus.copy()
 
     # Prefer larger models; tie-break lexicographically for determinism
@@ -997,8 +1068,11 @@ def compute_mus_per_gene_per_sample(
             mus_full.loc[elig] = mus_full.loc[elig].mul(scale, axis=0)
             assigned.loc[elig] = True
 
-        # Unassigned genes keep baseline mus
-        return mus_full
+        # Unassigned genes keep baseline mus -- or, when a fallback is
+        # given, take it like a gene absent from cov_matrix does.
+        if fallback_log_scale is not None and (~assigned).any():
+            mus_full = mus_full.loc[assigned]
+        return _finish(mus_full)
 
 
 def variant_site_denominators(

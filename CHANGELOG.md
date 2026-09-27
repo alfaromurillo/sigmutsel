@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Genes with incomplete covariates get a rate instead of being
+  dropped. With a PCA-reduced covariate matrix, such a gene is
+  projected onto the complete genes' components from the covariates
+  it has (`utils.project_onto_pca`; a missing standardized value is
+  the column mean) and shifted by one fitted factor per covariate
+  block it misses (`Model.estimate_fallback_shifts`,
+  `estimate_rg.fit_fallback_shifts`), fitted after, and without
+  changing, the complete genes' coefficients. `assign_cov_matrix`
+  takes the column-to-block map as `missing_blocks`; the affected
+  genes are `Model.covariate_fallback_genes`, and their `r_g`, the
+  channel offset and the mu-posterior draws all apply. Gamma fits
+  record `covariate_fallback` and `covariate_fallback_blocks` in
+  `posterior.attrs`. Without PCA the fallback is the baseline rate.
 - `MutationDataset.counts_by` cross-tabulates per-variant or
   per-gene tumor counts against a caller-supplied grouping of the
   tumors, in counts or in per-group prevalence.
@@ -44,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`) when `base_mus` isn't signature-separated -- it's a
   type check, not a value check. Callers catching `ValueError`
   specifically from this method should catch `TypeError` instead.
+
+### Fixed
+- Per-type rates for a gene without covariates (the basis of its
+  variant rates) omitted the non-synonymous channel's `delta`
+  offset.
 
 ## [0.1.1] - 2025-12-24
 

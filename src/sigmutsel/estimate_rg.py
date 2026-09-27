@@ -268,6 +268,96 @@ def _r_g_gamma_draws(counts, expected, theta, n_draws, rng):
     return pd.DataFrame(draws, columns=counts.index)
 
 
+def fit_fallback_shifts(
+    counts_silent,
+    counts_non_silent,
+    baseline_silent,
+    baseline_non_silent,
+    eta,
+    indicators,
+    delta=None,
+    theta=None,
+    bound=2.0,
+):
+    """Block shifts ``d`` for genes whose covariates are incomplete.
+
+    Such a gene's log rate is its projected covariate term ``eta_g``
+    (``c_0 + c . x~_g``, with ``c`` already fitted on the complete
+    genes and held fixed here) plus ``m_g . d``: ``m_gB = 1`` when the
+    gene is missing (part of) covariate block ``B``. ``d_B`` is how far
+    genes missing ``B`` sit from what their observed covariates
+    predict -- the missingness itself carrying information, which
+    filling the missing values with their mean cannot express.
+
+    The likelihood is the channel model's own (see
+    :func:`channel_rg_log_likelihood`) with ``c``, ``delta`` and
+    ``theta`` fixed: silent and non-silent counts share ``r_g``, which
+    is integrated out when ``theta`` is given, and the plain Poisson
+    when it is None. Only the per-gene totals matter, because every
+    ``d`` moves both channels of a gene by the same factor.
+
+    Parameters
+    ----------
+    counts_silent, counts_non_silent, baseline_silent, baseline_non_silent
+        Per-gene totals, aligned (non-silent zero outside the
+        passenger set, as for the main fit).
+    eta : array, shape (n_genes,)
+        The fixed covariate term of each gene.
+    indicators : array, shape (n_genes, n_blocks)
+        0/1 block-missing indicators.
+    delta : float or None
+        The non-synonymous channel's intercept offset.
+    theta : float or None
+        The fitted ``r_g`` Gamma shape; None for the Poisson model.
+    bound : float, default 2.0
+        ``|d_B| <= bound``, the same Uniform bound ``c`` carries: a
+        block missing in few genes with no mutations would otherwise
+        run to minus infinity.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``d``, shape (n_blocks,).
+    """
+    from scipy.optimize import minimize
+
+    M = np.asarray(indicators, dtype=float)
+    n_total = np.asarray(counts_silent, float) + np.asarray(
+        counts_non_silent, float
+    )
+    eta = np.asarray(eta, float)
+    offset = 0.0 if delta is None else float(delta)
+    base = np.asarray(baseline_silent, float) * np.exp(
+        eta
+    ) + np.asarray(baseline_non_silent, float) * np.exp(eta + offset)
+
+    def objective(d):
+        lin = M @ d
+        mu = base * np.exp(lin)
+        if theta is None:
+            ll = np.sum(n_total * lin - mu)
+            grad = M.T @ (n_total - mu)
+        else:
+            ll = np.sum(
+                n_total * lin - (theta + n_total) * np.log(theta + mu)
+            )
+            grad = M.T @ (
+                n_total - (theta + n_total) * mu / (theta + mu)
+            )
+        return -ll, -grad
+
+    if M.shape[1] == 0:
+        return np.zeros(0)
+    result = minimize(
+        objective,
+        np.zeros(M.shape[1]),
+        jac=True,
+        method="L-BFGS-B",
+        bounds=[(-bound, bound)] * M.shape[1],
+    )
+    return result.x
+
+
 def channel_rg_log_likelihood(
     eta_silent,
     theta,

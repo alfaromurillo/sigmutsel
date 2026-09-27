@@ -131,7 +131,8 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   our scaffolding can.
 - **Every fit stamps its own sample accounting** into
   `posterior.attrs`: `n_tumors_with`, `n_tumors_without`,
-  `n_tumors_included`, `n_tumors_excluded`, `n_tumors_held_out`,
+  `n_tumors_informative`, `n_tumors_included`, `n_tumors_excluded`,
+  `n_tumors_held_out`,
   tabulated across a model by `Model.gamma_sample_accounting()`. A
   gamma is a claim about its denominator, and `excluded_samples`
   moves that denominator leaving no trace in the posterior itself,
@@ -139,11 +140,23 @@ pytest tests/test_smoke_imports.py  # import sanity only — no deep
   dropped is indistinguishable from one that shifted for any other
   reason. `attrs` is the right home because it survives the netCDF
   round trip that `save_model` puts gammas through.
-  `n_tumors_held_out` is a real zero, reserved for a same-gene
-  hold-out rule that does not exist yet; there is deliberately no
-  `uncovered` count, since this package has one fixed
+  `n_tumors_without` is the absent set handed to the fit, *before*
+  the fit drops absent tumors with zero rate
+  (`n_zero_rate_absent_dropped`); `n_tumors_informative` is the
+  difference, the absent tumors that entered the likelihood. There is
+  deliberately no `uncovered` count, since this package has one fixed
   capture-target gene universe for every sample rather than
   per-sample coverage intervals.
+- **Same-gene hold-out** (`hold_out_same_gene_samples`, default True
+  for a single variant, False for a compound, as in
+  cancereffectsizeR): a tumor carrying a *different* non-silent
+  mutation in the variant's gene (`genes_present_non_silent`) is
+  removed from the absent set rather than counted as evidence
+  against selection -- under mutual exclusivity it may have met the
+  same pressure by another hit. The present set is untouched; the
+  count is `n_tumors_held_out`, and a tumor already excluded by
+  `excluded_samples` is not counted again. Gene gammas pool the
+  gene's variants, so the question does not arise there.
 - `constants.random_seed` controls reproducibility; default is
   `None` (stochastic). Callers override at runtime via
   `import sigmutsel.constants; sigmutsel.constants.random_seed = 777`

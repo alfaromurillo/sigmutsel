@@ -150,6 +150,16 @@ def _model_for_gamma_variant():
         index=["VAR1"],
         columns=["T1", "T2", "T3", "T4"],
     )
+    # VAR1's gene is mutated only where VAR1 is, so the same-gene
+    # hold-out removes nobody unless a test adds another hit.
+    dataset._variant_db = pd.DataFrame(
+        {"ensembl_gene_id": ["GENE1"]}, index=["VAR1"]
+    )
+    dataset.genes_present_non_silent = pd.DataFrame(
+        [[1, 0, 1, 0]],
+        index=["GENE1"],
+        columns=["T1", "T2", "T3", "T4"],
+    )
     model.dataset = dataset
     model.gammas = {}
     return model
@@ -859,6 +869,64 @@ def test_accounting_survives_the_netcdf_round_trip(
 
     assert reloaded.posterior.attrs["n_tumors_with"] == 1
     assert reloaded.posterior.attrs["n_tumors_excluded"] == 1
+
+
+def test_same_gene_hold_out_shrinks_only_the_absent_set(monkeypatch):
+    """CES item 5: T4 carries another hit in VAR1's gene, so it is
+    held out of the absent set; the present set is untouched."""
+    captured = {}
+
+    def fake_fit(mus_yes, mus_no, **kwargs):
+        captured["yes"] = list(mus_yes.index)
+        captured["no"] = list(mus_no.index)
+        return _fake_posterior_result()
+
+    monkeypatch.setattr(
+        "sigmutsel.estimate_gammas.estimate_gamma_from_mus", fake_fit
+    )
+    model = _model_for_gamma_variant()
+    model.dataset.genes_present_non_silent.loc["GENE1", "T4"] = 1
+
+    result = model._estimate_gamma_variant("VAR1", store=False)
+    assert captured == {"yes": ["T1", "T3"], "no": ["T2"]}
+    attrs = result.posterior.attrs
+    assert attrs["n_tumors_held_out"] == 1
+    assert attrs["n_tumors_without"] == 1
+    assert attrs["n_tumors_excluded"] == 0
+
+    model._estimate_gamma_variant(
+        "VAR1", store=False, hold_out_same_gene_samples=False
+    )
+    assert captured["no"] == ["T2", "T4"]
+
+
+def test_hold_out_and_exclusion_do_not_double_count(monkeypatch):
+    result = _fake_posterior_result()
+    _patch_fit(monkeypatch, result)
+    model = _model_for_gamma_variant()
+    model.dataset.genes_present_non_silent.loc["GENE1", "T4"] = 1
+
+    model._estimate_gamma_variant(
+        "VAR1", store=False, excluded_samples=["T4", "T2"]
+    )
+    attrs = result.posterior.attrs
+    # T4 is excluded first, so it is not also counted as held out.
+    assert attrs["n_tumors_held_out"] == 0
+    assert attrs["n_tumors_excluded"] == 2
+    assert attrs["n_tumors_without"] == 0
+
+
+def test_informative_count_nets_out_zero_rate_absent_tumors(
+    monkeypatch,
+):
+    result = _fake_posterior_result()
+    result.posterior.attrs["n_zero_rate_absent_dropped"] = 1
+    _patch_fit(monkeypatch, result)
+    model = _model_for_gamma_variant()
+    model._estimate_gamma_variant("VAR1", store=False)
+    attrs = result.posterior.attrs
+    assert attrs["n_tumors_without"] == 2
+    assert attrs["n_tumors_informative"] == 1
 
 
 def test_gamma_sample_accounting_shows_a_gamma_with_no_counts(

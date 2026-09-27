@@ -731,11 +731,14 @@ def test_estimate_gamma_variant_use_mu_posterior_masks_2d_draws(
         fake_estimate_gamma_from_mus
     )
     try:
+        # This checks draw/mask alignment; the fixture's gene is also
+        # mutated in T3, which the same-gene hold-out would remove.
         model._estimate_gamma_variant(
             "VAR1",
             store=False,
             use_mu_posterior=True,
             r_g_variant="none",
+            hold_out_same_gene_samples=False,
         )
     finally:
         estimate_gammas_mod.estimate_gamma_from_mus = original

@@ -4132,6 +4132,7 @@ class Model:
         use_mu_posterior=False,
         r_g_variant="none",
         gene_tumor_dispersion=None,
+        hold_out_same_gene_samples=True,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -4196,6 +4197,14 @@ class Model:
             ``phi_gene * p_gene,j`` with ``p`` the gene's allocation of
             rate across tumors and ``phi_gene`` taken at the gene's own
             mutation count.
+        hold_out_same_gene_samples : bool, default True
+            Variants only (ignored for a gene). Leave out of the
+            "without" set every tumor that carries a *different*
+            non-silent mutation in the variant's gene, rather than
+            counting it as evidence against selection: under mutual
+            exclusivity such a tumor may have met the same selective
+            pressure by another hit. The "with" set is untouched. See
+            :meth:`_estimate_gamma_variant`.
 
         Returns
         -------
@@ -4231,6 +4240,7 @@ class Model:
                 use_mu_posterior=use_mu_posterior,
                 r_g_variant=r_g_variant,
                 gene_tumor_dispersion=gene_tumor_dispersion,
+                hold_out_same_gene_samples=hold_out_same_gene_samples,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -4340,6 +4350,7 @@ class Model:
         use_mu_posterior=False,
         r_g_variant="none",
         gene_tumor_dispersion=None,
+        hold_out_same_gene_samples=True,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -4368,6 +4379,13 @@ class Model:
             ``use_mu_posterior=True``; ignored otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
             The variant's gene's ``phi`` (see :meth:`estimate_gamma`).
+        hold_out_same_gene_samples : bool, default True
+            Drop from the absent set every tumor that carries another
+            non-silent mutation in the variant's gene
+            (``genes_present_non_silent``: in-universe ``mis``,
+            ``non`` or ``spl`` calls with the channel universe),
+            cancereffectsizeR's default for a single variant. The
+            count is recorded as ``n_tumors_held_out``.
 
         Returns
         -------
@@ -4391,6 +4409,14 @@ class Model:
             not_excluded = ~present_mask.index.isin(excluded_samples)
             present_mask &= not_excluded
             absent_mask &= not_excluded
+        held_out = 0
+        if hold_out_same_gene_samples:
+            same_gene = self._same_gene_mutated(
+                variant, absent_mask.index
+            )
+            hold = absent_mask & same_gene
+            held_out = int(hold.sum())
+            absent_mask &= ~hold
 
         extra = (
             {}
@@ -4436,7 +4462,7 @@ class Model:
                 phi
             )
         self._record_sample_accounting(
-            result, present_mask, absent_mask
+            result, present_mask, absent_mask, held_out=held_out
         )
         if self.cov_matrix is not None:
             self._record_covariate_fallback(
@@ -4447,6 +4473,22 @@ class Model:
             self.gammas[variant] = result
 
         return result
+
+    def _same_gene_mutated(self, variant, tumors):
+        """Whether each tumor has a non-silent mutation in the variant's gene.
+
+        Read from ``genes_present_non_silent``; a gene absent from it
+        (no non-silent call anywhere) gives all False.
+        """
+        gene_id = self._variant_gene_id(variant)
+        presence = self.dataset.genes_present_non_silent
+        if gene_id not in presence.index:
+            return pd.Series(False, index=tumors)
+        return (
+            presence.loc[gene_id]
+            .reindex(tumors, fill_value=0)
+            .astype(bool)
+        )
 
     @record_call
     def estimate_gamma_compound(
@@ -4459,6 +4501,7 @@ class Model:
         use_mu_posterior=False,
         r_g_variant="none",
         gene_tumor_dispersion=None,
+        hold_out_same_gene_samples=False,
     ):
         """Estimate one gamma shared by several variants.
 
@@ -4488,6 +4531,12 @@ class Model:
             every member to sit in the **same gene**: `phi` is a
             per-gene quantity, and a compound spanning genes has no
             single one to inherit. Pass a number to override.
+        hold_out_same_gene_samples : bool, default False
+            As in :meth:`estimate_gamma`, over the union of the
+            members' genes. Off by default, as in cancereffectsizeR:
+            a compound usually *is* the gene's interchangeable hits,
+            so a tumor with another hit in the gene is exactly what
+            it should count.
 
         Returns
         -------
@@ -4538,6 +4587,16 @@ class Model:
             not_excluded = ~present_mask.index.isin(excluded_samples)
             present_mask &= not_excluded
             absent_mask &= not_excluded
+        held_out = 0
+        if hold_out_same_gene_samples:
+            same_gene = pd.Series(False, index=absent_mask.index)
+            for member in variants:
+                same_gene |= self._same_gene_mutated(
+                    member, absent_mask.index
+                )
+            hold = absent_mask & same_gene
+            held_out = int(hold.sum())
+            absent_mask &= ~hold
 
         extra = (
             {}
@@ -4615,7 +4674,7 @@ class Model:
                 variants
             )
         self._record_sample_accounting(
-            result, present_mask, absent_mask
+            result, present_mask, absent_mask, held_out=held_out
         )
         if self.cov_matrix is not None:
             self._record_covariate_fallback(
@@ -4807,19 +4866,35 @@ class Model:
         cancereffectsizeR's: it has per-sample coverage intervals
         and this package has one fixed capture-target gene universe
         applied to every sample, so the number would always be a
-        fabricated zero. ``n_tumors_held_out`` is a real zero --
-        the slot for a same-gene hold-out rule, which does not
-        exist yet.
+        fabricated zero. ``n_tumors_held_out`` counts the tumors the
+        same-gene hold-out removed from the absent set
+        (``hold_out_same_gene_samples``); they are in neither
+        ``n_tumors_without`` nor ``n_tumors_excluded``.
+
+        ``n_tumors_without`` is the absent set handed to the fit.
+        The fit then drops absent tumors whose rate is zero (they
+        carry no information) and stamps that count as
+        ``n_zero_rate_absent_dropped``; ``n_tumors_informative`` is
+        the absent tumors that actually entered the likelihood,
+        ``n_tumors_without - n_zero_rate_absent_dropped``, so no
+        reader has to remember which convention the other count
+        follows.
         """
         if not hasattr(result, "posterior"):
             return result
 
         n_with = int(present_mask.sum())
         n_without = int(absent_mask.sum())
+        dropped = int(
+            result.posterior.attrs.get(
+                "n_zero_rate_absent_dropped", 0
+            )
+        )
         result.posterior.attrs.update(
             {
                 "n_tumors_with": n_with,
                 "n_tumors_without": n_without,
+                "n_tumors_informative": n_without - dropped,
                 "n_tumors_included": n_with + n_without,
                 "n_tumors_excluded": int(
                     len(present_mask) - n_with - n_without - held_out
@@ -4850,6 +4925,7 @@ class Model:
         columns = [
             "n_tumors_with",
             "n_tumors_without",
+            "n_tumors_informative",
             "n_tumors_included",
             "n_tumors_excluded",
             "n_tumors_held_out",

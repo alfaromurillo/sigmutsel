@@ -662,6 +662,69 @@ class MutationDataset:
         return (self._channel_universe or {}).get("germline_mask_af")
 
     @property
+    def site_weights(self):
+        """The opportunity's site weights (:mod:`site_weights`), or None."""
+        from .site_weights import SiteWeights
+
+        return SiteWeights.from_dict(
+            (self._channel_universe or {}).get("site_weights")
+        )
+
+    @record_call
+    def set_site_weights(self, site_weights):
+        """Set (or clear, with None) site weights on the opportunity.
+
+        Like :meth:`set_germline_mask`: no call changes; the
+        opportunity tables are rebuilt with the weights, and each
+        variant of :attr:`variant_db` gets the weights of its routes
+        (``route_weights``, aligned with ``mut_types``), which
+        :func:`estimate_mus.compute_mu_m_per_tumor` multiplies in.
+        """
+        if not self.has_channel_universe():
+            raise ValueError(
+                "Site weights need the channel universe; this dataset "
+                "was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        params["site_weights"] = (
+            None if site_weights is None else site_weights.to_dict()
+        )
+        self._channel_universe = params
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+        if self._variant_db is not None:
+            self._variant_db = self._variant_db.drop(
+                columns=["route_weights"], errors="ignore"
+            )
+            if site_weights is not None:
+                from .channel_universe import (
+                    load_or_build_transcript_models,
+                    territory_masks,
+                )
+                from .site_weights import variant_route_weights
+
+                models = load_or_build_transcript_models()
+                coding_in, _ = territory_masks(
+                    models,
+                    splice_padding=params.get("splice_padding", 0),
+                )
+                weights = variant_route_weights(
+                    self.model_db, models, coding_in, site_weights
+                )
+                key = (
+                    self._variant_db["variant"]
+                    if "variant" in self._variant_db.columns
+                    else self._variant_db.index.to_series()
+                )
+                self._variant_db["route_weights"] = key.map(
+                    weights
+                ).to_numpy()
+
+    @property
     def type_opportunity(self):
         """Genes x 96 opportunity of each type over all channels.
 
@@ -672,8 +735,12 @@ class MutationDataset:
         denominator from this table; without one, None keeps them on
         ``contexts_by_gene`` exactly as before.
         """
+        params = self._channel_universe or {}
         if (
-            self.germline_mask_af is None
+            (
+                self.germline_mask_af is None
+                and params.get("site_weights") is None
+            )
             or self._contexts_by_gene_syn is None
             or self._contexts_by_gene_nonsyn is None
         ):
@@ -2654,12 +2721,17 @@ class MutationDataset:
         }
         models = load_or_build_transcript_models(fasta_paths=fastas)
         mask_af = params.get("germline_mask_af")
+        from .site_weights import SiteWeights
+
         tables = channel_opportunity(
             keep_ids=resolve_keep_ids_for_universe(keep_ids),
             territory=params["territory"],
             splice_padding=params["splice_padding"],
             models=models,
             germline_mask_af=mask_af,
+            site_weights=SiteWeights.from_dict(
+                params.get("site_weights")
+            ),
         )
         self._contexts_by_gene = tables["contexts"]
         self._contexts_by_gene_syn = tables["syn"]
@@ -3093,6 +3165,7 @@ class Model:
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
     _baseline_germline_mask_af: float = None
+    _baseline_site_weights: dict = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
     _rg_map_diagnostics: dict = None
@@ -3166,6 +3239,7 @@ class Model:
         self._rg_separate_c = False
         self._rg_delta_intercept = None
         self._baseline_germline_mask_af = None
+        self._baseline_site_weights = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
         self._rg_map_diagnostics = None
@@ -4038,6 +4112,136 @@ class Model:
         saved before masks existed).
         """
         return self._baseline_germline_mask_af
+
+    @property
+    def baseline_site_weights(self):
+        """Site weights (as a dict) the baselines were built on, or None."""
+        return self._baseline_site_weights
+
+    @record_call
+    def estimate_site_weights(
+        self, pseudo_count=50.0, excluded_samples=None
+    ):
+        """Fit per-cohort site weights and put them on the opportunity.
+
+        Distance-to-junction and strand factors (:mod:`site_weights`)
+        are fitted on the passenger genes' in-universe coding calls of
+        both channels, against the expectation of the per-tumor type
+        rates alone (``sum_j mu_{j,tau} / D_tau`` per substitution,
+        observability included), so the covariates -- which act per
+        gene -- play no part. Then :meth:`MutationDataset.set_site_weights`
+        rebuilds the opportunity. Call it after :meth:`compute_mu_taus`
+        and **before** :meth:`compute_base_mus`: baselines built earlier
+        are on the old opportunity.
+
+        Returns
+        -------
+        site_weights.SiteWeights
+        """
+        from .channel_universe import (
+            _coding_site_table,
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+        from .constants import canonical_types_order
+        from .estimate_presence import filter_passenger_genes_ensembl
+        from .germline_mask import allele_keys, load_germline_mask
+        from .site_weights import fit_site_weights, position_bins
+
+        if self._mu_taus is None or isinstance(self._mu_taus, dict):
+            raise ValueError(
+                "estimate_site_weights needs aggregate mu_taus (tumors x "
+                "96); call compute_mu_taus() first."
+            )
+        ds = self.dataset
+        params = ds.channel_universe or {}
+        models = load_or_build_transcript_models()
+        coding_in, _ = territory_masks(
+            models, splice_padding=params.get("splice_padding", 0)
+        )
+        gene, types, _cons, idx, _ = _coding_site_table(
+            models, coding_in
+        )
+        dbin_all, orient_all = position_bins(models)
+        dbin, orient = dbin_all[idx], orient_all[idx]
+        ref = models.codes[idx].astype(np.int64)
+        minus = (models.selection["strand"].to_numpy() == "-")[gene]
+        alts = np.stack([(ref + k) % 4 for k in (1, 2, 3)], axis=1)
+        alive = np.ones(types.shape)
+        if ds.germline_mask_af is not None:
+            g_alt = np.where(minus[:, None], 3 - alts, alts)
+            key = allele_keys(
+                models.chrom_of[idx], models.gpos[idx], 0
+            )
+            alive = 1.0 - np.isin(
+                key[:, None] + g_alt,
+                load_germline_mask(ds.germline_mask_af),
+            ).astype(float)
+
+        mt = self._mu_taus[list(canonical_types_order)]
+        if excluded_samples is not None:
+            mt = mt.loc[
+                mt.index.difference(pd.Index(excluded_samples))
+            ]
+        D = np.bincount(
+            types.ravel(), weights=alive.ravel(), minlength=96
+        )
+        rate = np.divide(
+            mt.sum(axis=0).to_numpy(float),
+            D,
+            out=np.zeros(96),
+            where=D > 0,
+        )
+        gene_ids = pd.Index(models.gene_ids)
+        passengers = pd.Index(
+            filter_passenger_genes_ensembl(ds.contexts_by_gene.index)
+        )
+        is_pas = gene_ids.isin(passengers)[gene]
+        expected = rate[types] * alive * is_pas[:, None]
+
+        db = ds.model_db
+        db = db[db["channel"].isin(["syn", "mis", "non"])]
+        if excluded_samples is not None:
+            db = db[
+                ~db["Tumor_Sample_Barcode"].isin(excluded_samples)
+            ]
+        db = db[db["ensembl_gene_id"].isin(passengers)]
+        g_call = gene_ids.get_indexer(db["ensembl_gene_id"])
+        ckey = g_call.astype(np.int64) * (1 << 31) + db[
+            "Start_Position"
+        ].to_numpy(np.int64)
+        skey = gene.astype(np.int64) * (1 << 31) + models.gpos[idx]
+        order = np.argsort(skey)
+        where = np.clip(
+            np.searchsorted(skey[order], ckey), 0, len(order) - 1
+        )
+        found = (skey[order][where] == ckey) & (g_call >= 0)
+        rows = order[where]
+        code = {"A": 0, "C": 1, "G": 2, "T": 3}
+        g_alt = db["Tumor_Seq_Allele2"].map(code).to_numpy()
+        ok = found & ~pd.isna(g_alt)
+        rows = rows[ok]
+        c_alt = g_alt[ok].astype(np.int64)
+        c_alt = np.where(minus[rows], 3 - c_alt, c_alt)
+        k = (c_alt - ref[rows]) % 4 - 1
+        good = k >= 0
+        sw = fit_site_weights(
+            dbin,
+            orient,
+            types,
+            expected,
+            rows[good],
+            k[good],
+            pseudo_count=pseudo_count,
+        )
+        ds.set_site_weights(sw)
+        logger.info(
+            "Site weights from %d passenger calls: distance %s; strand %s",
+            sw.n_calls,
+            np.round(sw.distance, 3).tolist(),
+            np.round(sw.strand, 3).tolist(),
+        )
+        return sw
 
     def has_channel_base_mus(self):
         """Whether both consequence channels' baselines exist."""
@@ -6348,6 +6552,7 @@ class Model:
             "rg_theta": self._rg_theta,
             "rg_delta_intercept": self._rg_delta_intercept,
             "baseline_germline_mask_af": self._baseline_germline_mask_af,
+            "baseline_site_weights": self._baseline_site_weights,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -6515,6 +6720,9 @@ class Model:
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
         model._baseline_germline_mask_af = manifest.get(
             "baseline_germline_mask_af"
+        )
+        model._baseline_site_weights = manifest.get(
+            "baseline_site_weights"
         )
         shifts = manifest.get("fallback_shifts")
         model._fallback_shifts = (
@@ -7192,6 +7400,9 @@ class Model:
         self._baseline_germline_mask_af = getattr(
             self.dataset, "germline_mask_af", None
         )
+        self._baseline_site_weights = (
+            getattr(self.dataset, "channel_universe", None) or {}
+        ).get("site_weights")
         return self._base_mus
 
     @record_call
@@ -7284,6 +7495,9 @@ class Model:
         self._baseline_germline_mask_af = getattr(
             self.dataset, "germline_mask_af", None
         )
+        self._baseline_site_weights = (
+            getattr(self.dataset, "channel_universe", None) or {}
+        ).get("site_weights")
 
         return self._base_mus_syn, self._base_mus_nonsyn
 

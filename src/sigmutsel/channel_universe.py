@@ -965,7 +965,11 @@ def _splice_site_weights(models, splice_in=None, masked_keys=None):
 
 
 def compute_channel_opportunity(
-    models, coding_in=None, splice_in=None, masked_keys=None
+    models,
+    coding_in=None,
+    splice_in=None,
+    masked_keys=None,
+    site_weights=None,
 ):
     """Per-gene, per-type site counts of the four channels.
 
@@ -980,12 +984,17 @@ def compute_channel_opportunity(
         Each masked (site, alternate base) is removed from its channel:
         a call there was filtered out, so it is not an opportunity.
 
+    site_weights : site_weights.SiteWeights, optional
+        Weight every coding (site, alternate base) by its distance and
+        strand factors (:mod:`site_weights`); splice sites keep weight
+        1. The ``"contexts"`` position counts are never weighted.
+
     Returns
     -------
     dict
         ``"syn"``, ``"mis"``, ``"non"``, ``"spl"``: genes x 96 types
         (float; splice sites carry fractional contexts), after the
-        mask; ``"contexts"``: genes x 32 contexts, the site count
+        mask and the weights; ``"contexts"``: genes x 32 contexts, the site count
         (positions, before any mask); ``"n_undetermined"``: coding
         positions whose codon could not be read (counted as ``mis``);
         ``"masked"``: opportunity removed per channel (0 without a
@@ -1010,6 +1019,17 @@ def compute_channel_opportunity(
         + types.astype(np.int64)
     ).ravel()
     counts = np.bincount(flat, minlength=size).astype(float)
+    alt_w = None
+    if site_weights is not None:
+        from .site_weights import position_bins, weights_at
+
+        dbin, orient = position_bins(models)
+        alt_w = weights_at(
+            dbin[idx], orient[idx], types, site_weights
+        )
+        counts_w = np.bincount(
+            flat, weights=alt_w.ravel(), minlength=size
+        ).astype(float)
 
     sg, st, sw = _splice_site_weights(models, splice_in)
     splice_flat = (
@@ -1028,8 +1048,9 @@ def compute_channel_opportunity(
         genomic_alt = np.where(minus[:, None], 3 - alts, alts)
         site = allele_keys(models.chrom_of[idx], models.gpos[idx], 0)
         hit = np.isin(site[:, None] + genomic_alt, masked_keys)
+        hit_w = hit.astype(float) if alt_w is None else hit * alt_w
         masked += np.bincount(
-            flat, weights=hit.ravel().astype(float), minlength=size
+            flat, weights=hit_w.ravel(), minlength=size
         )
         mg, mt, mw = _splice_site_weights(
             models, splice_in, masked_keys=masked_keys
@@ -1058,6 +1079,15 @@ def compute_channel_opportunity(
 
     out = frames(counts)
     out["contexts"] = contexts_from_channels(out)
+    if alt_w is not None:
+        # Splice sites (not weighted) carry over from the unweighted
+        # counts; coding sites take their weighted counts.
+        splice_part = np.zeros(size)
+        if len(sg):
+            splice_part = np.bincount(
+                splice_flat, weights=sw, minlength=size
+            )
+        counts = counts_w + splice_part
     out.update(frames(counts - masked))
     masked = masked.reshape(n_genes, 4, 96)
     out["masked"] = {
@@ -1106,6 +1136,7 @@ def channel_opportunity(
     force=False,
     models=None,
     germline_mask_af=None,
+    site_weights=None,
 ):
     """Cached channel opportunity tables, optionally subset to genes.
 
@@ -1130,6 +1161,8 @@ def channel_opportunity(
         exomes with overall allele frequency above this value
         (:mod:`germline_mask`), for calls filtered on germline
         alleles (GDC's masked MAFs). None applies no mask.
+    site_weights : site_weights.SiteWeights, optional
+        Per-cohort distance and strand factors of the opportunity.
 
     Returns
     -------
@@ -1158,6 +1191,8 @@ def channel_opportunity(
         from .germline_mask import mask_label
 
         tag += f"_{mask_label(germline_mask_af)}"
+    if site_weights is not None:
+        tag += f"_sw-{site_weights.label()}"
     directory = cache_dir / f"opportunity_{tag}"
     names = list(CHANNELS) + ["contexts"]
     if (directory / "report.json").exists() and not force:
@@ -1179,7 +1214,11 @@ def channel_opportunity(
 
             masked_keys = load_germline_mask(germline_mask_af)
         built = compute_channel_opportunity(
-            models, coding_in, splice_in, masked_keys=masked_keys
+            models,
+            coding_in,
+            splice_in,
+            masked_keys=masked_keys,
+            site_weights=site_weights,
         )
         tables = {name: built[name] for name in names}
         report = {
@@ -1242,7 +1281,9 @@ def _lookup(keys_sorted, order, query):
     return np.where(hit, order[j], -1)
 
 
-def _routes(models, codon_start, target, channel, coding_in):
+def _routes(
+    models, codon_start, target, channel, coding_in, with_sites=False
+):
     """Every single-nucleotide route to a protein change, as types.
 
     ``codon_start`` is the flat index of the codon's first base.
@@ -1263,6 +1304,7 @@ def _routes(models, codon_start, target, channel, coding_in):
     residue = _CODONS.get(codon)
     nb_left, nb_right, _ = models.neighbours()
     routes = []
+    sites = []
     for q in range(3):
         i = codon_start + q
         if i - 1 < lo or i + 1 >= hi:
@@ -1286,7 +1328,8 @@ def _routes(models, codon_start, target, channel, coding_in):
                         _TYPE_TABLE[left, ref, right, alt]
                     ]
                 )
-    return routes
+                sites.append((i, alt))
+    return (routes, sites) if with_sites else routes
 
 
 def classify_calls(db, models, coding_in=None, splice_in=None):

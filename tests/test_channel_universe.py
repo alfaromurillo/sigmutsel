@@ -800,3 +800,169 @@ def test_junction_neighbours_come_from_the_genome(models, tmp_path):
     inner[[oa + 8, oa + 9, ob + 8, ob + 9]] = False
     np.testing.assert_array_equal(left_c[inner], left_g[inner])
     np.testing.assert_array_equal(right_c[inner], right_g[inner])
+
+
+# ---------------------------------------------------------------------
+# Site weights
+# ---------------------------------------------------------------------
+
+
+def _planted():
+    from sigmutsel.site_weights import SiteWeights
+
+    return SiteWeights(
+        distance=np.array([0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]),
+        strand=np.array(
+            [
+                1.2,
+                0.8,
+                1.1,
+                0.9,
+                1.3,
+                0.7,
+                1.0,
+                1.0,
+                0.6,
+                1.4,
+                1.05,
+                0.95,
+            ]
+        ),
+    )
+
+
+def test_unit_site_weights_change_nothing(models):
+    from sigmutsel.site_weights import SiteWeights
+
+    plain = compute_channel_opportunity(models)
+    unit = compute_channel_opportunity(
+        models, site_weights=SiteWeights()
+    )
+    for ch in CHANNELS:
+        pd.testing.assert_frame_equal(plain[ch], unit[ch])
+    pd.testing.assert_frame_equal(plain["contexts"], unit["contexts"])
+
+
+def test_weighted_opportunity_is_the_sum_of_site_weights(models):
+    from sigmutsel.channel_universe import _coding_site_table
+    from sigmutsel.site_weights import position_bins, weights_at
+
+    sw = _planted()
+    weighted = compute_channel_opportunity(models, site_weights=sw)
+    plain = compute_channel_opportunity(models)
+    _gene, types, cons, idx, _ = _coding_site_table(models)
+    dbin, orient = position_bins(models)
+    w = weights_at(dbin[idx], orient[idx], types, sw)
+    for h, ch in enumerate(("syn", "mis", "non")):
+        expected = w[cons == h].sum()
+        assert weighted[ch].to_numpy().sum() == pytest.approx(
+            expected
+        )
+    # splice sites are not weighted; positions are never weighted
+    pd.testing.assert_frame_equal(weighted["spl"], plain["spl"])
+    pd.testing.assert_frame_equal(
+        weighted["contexts"], plain["contexts"]
+    )
+
+
+def test_fit_recovers_planted_site_weights():
+    from sigmutsel.site_weights import CLASS_OF, fit_site_weights
+
+    rng = np.random.default_rng(3)
+    n = 300000
+    dbin = rng.integers(0, 8, n)
+    orient = rng.integers(0, 2, n)
+    types = rng.integers(0, 96, (n, 3))
+    expected = np.full((n, 3), 0.2)
+    true = _planted()
+    # normalise the planted factors the way the fit does
+    cls_or = CLASS_OF[types] * 2 + orient[:, None]
+    w = true.distance[dbin][:, None] * true.strand[cls_or]
+    counts = rng.poisson(expected * w)
+    rows, alts = np.nonzero(counts)
+    rows = np.repeat(rows, counts[rows, alts])
+    alts = np.repeat(alts, counts[np.nonzero(counts)])
+    fit = fit_site_weights(
+        dbin, orient, types, expected, rows, alts, pseudo_count=0.0
+    )
+    ratio_u = fit.distance / true.distance
+    np.testing.assert_allclose(
+        ratio_u / ratio_u.mean(), 1.0, atol=0.03
+    )
+    for k in range(6):
+        pair = [2 * k, 2 * k + 1]
+        got = fit.strand[pair[0]] / fit.strand[pair[1]]
+        want = true.strand[pair[0]] / true.strand[pair[1]]
+        assert got == pytest.approx(want, rel=0.05)
+
+
+def test_route_weights_line_up_with_routes(models):
+    from sigmutsel.channel_universe import _routes
+    from sigmutsel.site_weights import (
+        position_bins,
+        variant_route_weights,
+        weights_at,
+    )
+
+    sw = _planted()
+    db = pd.DataFrame(
+        {
+            "in_universe": [True],
+            "channel": ["mis"],
+            "variant": ["GA p.F2L"],
+            "ensembl_gene_id": ["ENSGA"],
+            "Start_Position": [104],
+            "Tumor_Seq_Allele2": ["C"],
+        }
+    )
+    got = variant_route_weights(db, models, None, sw)["GA p.F2L"]
+    start = models.offsets[models.gene_index["ENSGA"]] + 3
+    types, sites = _routes(
+        models, start, "L", "mis", None, with_sites=True
+    )
+    assert len(got) == len(types) == 3
+    dbin, orient = position_bins(models)
+    t_idx = np.array([canonical_types_order.index(t) for t in types])
+    s_idx = np.array([i for i, _ in sites])
+    want = weights_at(dbin[s_idx], orient[s_idx], t_idx[:, None], sw)[
+        :, 0
+    ]
+    np.testing.assert_allclose(got, want)
+
+
+def test_route_weights_scale_variant_rates(models):
+    from sigmutsel.estimate_mus import compute_mu_m_per_tumor
+
+    tables = compute_channel_opportunity(models)
+    contexts = tables["contexts"]
+    nonsyn = tables["mis"] + tables["non"] + tables["spl"]
+    mu_taus = pd.DataFrame(
+        np.random.default_rng(4).gamma(2.0, 1.0, size=(2, 96)),
+        index=["t1", "t2"],
+        columns=canonical_types_order,
+    )
+    gene_rates = compute_mu_g_channel_per_tumor(
+        mu_taus, nonsyn, contexts, separate_per_tau=True
+    )
+    routes = ["G[T>C]T", "T[T>A]C", "T[T>A]C"]
+
+    def rate(weights):
+        variants = pd.DataFrame(
+            {
+                "ensembl_gene_id": ["ENSGA"],
+                "gene": ["GA"],
+                "mut_types": [routes],
+                **({"route_weights": [weights]} if weights else {}),
+            },
+            index=["GA p.F2L"],
+        )
+        return compute_mu_m_per_tumor(
+            variants, gene_rates, contexts, opportunity_by_type=nonsyn
+        ).loc["GA p.F2L"]
+
+    base = rate(None)
+    np.testing.assert_allclose(rate([1.0, 1.0, 1.0]), base)
+    single = rate([1.0, 0.0, 0.0])
+    np.testing.assert_allclose(
+        rate([2.0, 0.5, 0.5]), 2 * single + 0.5 * (base - single)
+    )

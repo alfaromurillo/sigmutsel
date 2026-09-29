@@ -1339,6 +1339,16 @@ def compute_mu_m_per_tumor(
     # at the site rate. Vectorised per type, so a cohort where most
     # variants have several routes costs no more than one where
     # almost none do.
+    # Site weights (site_weights.py): one weight per route, aligned
+    # with mut_types; 1 where there are none.
+    has_w = "route_weights" in variants.columns
+
+    def _weights(types, w):
+        n = 1 if isinstance(types, str) else len(types)
+        if isinstance(w, (list, tuple, np.ndarray)) and len(w) == n:
+            return list(w)
+        return [1.0] * n
+
     routes = pd.DataFrame(
         {
             "row": np.arange(len(variants)),
@@ -1348,7 +1358,20 @@ def compute_mu_m_per_tumor(
     )
     routes = routes[
         routes["mut_types"].map(lambda x: isinstance(x, (str, list)))
-    ].explode("mut_types")
+    ]
+    routes["mut_types"] = routes["mut_types"].map(
+        lambda x: [x] if isinstance(x, str) else list(x)
+    )
+    wcol = (
+        variants["route_weights"].to_numpy()[routes["row"].to_numpy()]
+        if has_w
+        else [None] * len(routes)
+    )
+    routes["route_weight"] = [
+        _weights(t, w) for t, w in zip(routes["mut_types"], wcol)
+    ]
+    routes = routes.explode(["mut_types", "route_weight"])
+    routes["route_weight"] = routes["route_weight"].astype(float)
 
     for tau, group in routes.groupby("mut_types"):
         if tau not in mu_g_tau_j:
@@ -1373,6 +1396,7 @@ def compute_mu_m_per_tumor(
             .to_numpy(dtype=float)
         )
         term = rates / n_sites[valid][:, None]
+        term = term * group["route_weight"].to_numpy()[valid][:, None]
         rows = group["row"].to_numpy()[valid]
         np.add.at(mu_m_j, rows, np.nan_to_num(term))
         any_term[rows] = True

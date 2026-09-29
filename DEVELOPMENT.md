@@ -441,6 +441,34 @@ makes that true by construction: both halves read the same objects.
   fingerprint of the GTF, FASTA, BED, chain and `_BUILD_VERSION`.
   Bump `_BUILD_VERSION` whenever a change alters the derived tables.
 
+### Site weights (`site_weights.py`) -- experimental
+
+The opportunity is a sum of weights over (site, alternate base) pairs,
+`n^h_{g tau} = sum w_{s,a}`; the territory and the germline mask are
+0/1 weights. Site weights make them `w = u[distance-to-junction bin] *
+v[substitution class, strand]`, fitted once per cohort
+(`Model.estimate_site_weights`, after `compute_mu_taus` and before
+`compute_base_mus`) on passenger calls of both channels against the
+per-type rates alone, by raking the two margins with a pseudo-count
+that pulls every factor toward 1. `v` has mean 1 within each class
+(asymmetry only). They enter in two places and nowhere else:
+
+- the opportunity tables (`compute_channel_opportunity(...,
+  site_weights=)`; splice sites keep weight 1; `contexts` is never
+  weighted), so per-type denominators become `type_opportunity`;
+- each variant's routes: `variant_route_weights` regenerates a
+  variant's routes with their sites (`_routes(..., with_sites=True)`,
+  the order `classify_calls` wrote them) and
+  `compute_mu_m_per_tumor` multiplies route `r` by `route_weights[r]`.
+
+The dataset records the weights in `channel_universe["site_weights"]`,
+the model the ones its baselines used (`baseline_site_weights`).
+Junction contexts: `TranscriptModels.neighbours()` gives each coding
+position its genomic neighbours (the intron's base across a junction,
+not the next exon's) from SigProfilerMatrixGenerator's installed
+GRCh38; without it, the CDS neighbours. Tests never read an installed
+genome (`tests/conftest.py`).
+
 ### Germline mask (`germline_mask.py`)
 
 Somatic call sets are often filtered on known germline alleles (GDC's

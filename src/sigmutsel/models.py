@@ -3092,6 +3092,7 @@ class Model:
     _fallback_shifts: pd.Series = None
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
+    _baseline_germline_mask_af: float = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
     _rg_map_diagnostics: dict = None
@@ -3164,6 +3165,7 @@ class Model:
         self._fallback_shifts = None
         self._rg_separate_c = False
         self._rg_delta_intercept = None
+        self._baseline_germline_mask_af = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
         self._rg_map_diagnostics = None
@@ -4023,6 +4025,19 @@ class Model:
                 "Call compute_channel_base_mus() first."
             )
         return self._base_mus_nonsyn
+
+    @property
+    def baseline_germline_mask_af(self):
+        """Germline mask of the opportunity the baselines were built on.
+
+        Recorded when :meth:`compute_base_mus` or
+        :meth:`compute_channel_base_mus` runs and saved with the model,
+        so a model whose dataset was later moved onto another mask can
+        be told apart: its dataset reports the new mask, the baselines
+        still carry this one. None for no mask (and for every model
+        saved before masks existed).
+        """
+        return self._baseline_germline_mask_af
 
     def has_channel_base_mus(self):
         """Whether both consequence channels' baselines exist."""
@@ -6332,6 +6347,7 @@ class Model:
             "mu_taus_separate": isinstance(self._mu_taus, dict),
             "rg_theta": self._rg_theta,
             "rg_delta_intercept": self._rg_delta_intercept,
+            "baseline_germline_mask_af": self._baseline_germline_mask_af,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -6497,6 +6513,9 @@ class Model:
 
         model._rg_theta = manifest.get("rg_theta")
         model._rg_delta_intercept = manifest.get("rg_delta_intercept")
+        model._baseline_germline_mask_af = manifest.get(
+            "baseline_germline_mask_af"
+        )
         shifts = manifest.get("fallback_shifts")
         model._fallback_shifts = (
             None if shifts is None else pd.Series(shifts, dtype=float)
@@ -7170,6 +7189,9 @@ class Model:
         )
 
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
+        self._baseline_germline_mask_af = getattr(
+            self.dataset, "germline_mask_af", None
+        )
         return self._base_mus
 
     @record_call
@@ -7259,6 +7281,9 @@ class Model:
 
         self._base_mus_syn = channels["syn"]
         self._base_mus_nonsyn = channels["nonsyn"]
+        self._baseline_germline_mask_af = getattr(
+            self.dataset, "germline_mask_af", None
+        )
 
         return self._base_mus_syn, self._base_mus_nonsyn
 

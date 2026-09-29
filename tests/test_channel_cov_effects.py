@@ -626,3 +626,38 @@ def test_save_dataset_overwrite_does_not_prompt(
     monkeypatch.setattr("builtins.input", _explode)
     dataset.save_dataset(out, overwrite=True)
     assert (out / "dataset_manifest.json").exists()
+
+
+@pytest.mark.parametrize("tau_independent", [False, True])
+def test_channels_sum_to_merged_under_a_germline_mask(
+    tmp_path, tau_independent
+):
+    """A mask removes single alternate bases, so a type's opportunity
+    drops below its context's position count. Both baselines then
+    take it from the channel tables, and still add up."""
+    contexts, syn, nonsyn = _synthetic_opportunities()
+    syn = syn.copy()
+    masked = syn.columns[:5]
+    syn[masked] = syn[masked] * 0.5
+    db = _mutation_db()
+    dataset = MutationDataset(location_maf_files=tmp_path)
+    dataset._mutation_db = db
+    dataset._contexts_by_gene = contexts
+    dataset._contexts_by_gene_syn = syn
+    dataset._contexts_by_gene_nonsyn = nonsyn
+    dataset._channel_universe = {"germline_mask_af": 0.001}
+    model = Model(dataset, None)
+    model._mu_taus = _synthetic_mu_taus()
+    model.compute_base_mus(prob_g_tau_tau_independent=tau_independent)
+    model.compute_channel_base_mus()
+    pd.testing.assert_frame_equal(
+        model.base_mus_syn + model.base_mus_nonsyn,
+        model.base_mus,
+        check_exact=False,
+    )
+    assert model.baseline_germline_mask_af == 0.001
+
+
+def test_baseline_mask_is_none_without_a_mask(tmp_path):
+    model = _model_with_channels(tmp_path)
+    assert model.baseline_germline_mask_af is None

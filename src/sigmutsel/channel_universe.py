@@ -121,7 +121,7 @@ ACCEPTOR_MINUS3_COMPOSITION = {
 
 # Bumped whenever a change here alters the derived tables, so a cache
 # written by older code is never served.
-_BUILD_VERSION = 4
+_BUILD_VERSION = 5
 
 _BASES = "ACGT"
 _CODE = np.full(256, 4, dtype=np.int8)
@@ -588,6 +588,82 @@ class TranscriptModels:
         models.directory = directory
         return models
 
+    def neighbours(self, genome_dir="default"):
+        """Coding-strand left and right neighbour of every position.
+
+        Within an exon the neighbour is the adjacent base of the CDS.
+        Across an exon-exon junction the CDS joins exons, so its
+        neighbour is the next exon's base; the genome's is the
+        intron's (the donor's G, the acceptor's G). With a genome in
+        SigProfilerMatrixGenerator's ``tsb`` format (default: the
+        installed GRCh38, :func:`sigprofiler_genome_dir`), the two
+        positions next to each junction get the intronic base, so
+        their trinucleotide -- and the type of every substitution
+        there -- is the one a call's genomic context gives. Without a
+        genome the CDS neighbours are kept.
+
+        Returns ``(left, right, source)``, ``source`` being
+        ``"genome"`` or ``"cds"``; cached per genome.
+        """
+        if genome_dir == "default":
+            genome_dir = sigprofiler_genome_dir()
+        key = str(genome_dir)
+        cache = getattr(self, "_neighbour_cache", {})
+        if key in cache:
+            return cache[key]
+        codes = self.codes
+        n = len(codes)
+        left = np.full(n, 4, dtype=np.int8)
+        right = np.full(n, 4, dtype=np.int8)
+        left[1:] = codes[:-1]
+        right[:-1] = codes[1:]
+        source = "cds"
+        if genome_dir is not None:
+            gp, g_of = self.gpos, self.gene_of
+            junc = np.flatnonzero(
+                (g_of[1:] == g_of[:-1])
+                & (gp[1:] >= 0)
+                & (gp[:-1] >= 0)
+                & (np.abs(gp[1:] - gp[:-1]) != 1)
+            )
+            minus_gene = self.selection["strand"].to_numpy() == "-"
+            for side, at_flat in (
+                ("before", junc),
+                ("after", junc + 1),
+            ):
+                g_minus = minus_gene[g_of[at_flat]]
+                step = np.where(g_minus, -1, 1) * (
+                    1 if side == "before" else -1
+                )
+                at = gp[at_flat] + step
+                base = np.full(len(at_flat), 4, dtype=np.int8)
+                chroms = self.chrom_of[at_flat]
+                for chrom in pd.unique(chroms):
+                    path = Path(genome_dir) / (
+                        f"{str(chrom).removeprefix('chr')}.txt"
+                    )
+                    if not path.exists():
+                        continue
+                    genome = np.memmap(path, dtype=np.uint8, mode="r")
+                    sel = np.flatnonzero(chroms == chrom)
+                    a = at[sel]
+                    ok = (a >= 1) & (a <= len(genome))
+                    raw = np.full(len(sel), 16, dtype=np.uint8)
+                    raw[ok] = genome[a[ok] - 1]
+                    base[sel] = np.where(raw < 16, raw % 4, 4)
+                base = np.where(
+                    g_minus & (base < 4), _COMPLEMENT_CODE[base], base
+                )
+                good = base < 4
+                if side == "before":
+                    right[at_flat[good]] = base[good]
+                else:
+                    left[at_flat[good]] = base[good]
+            source = "genome"
+        cache[key] = (left, right, source)
+        self._neighbour_cache = cache
+        return cache[key]
+
 
 def _fingerprint(*paths, extra=""):
     """Short hash of input file names and sizes, plus the build version."""
@@ -750,9 +826,10 @@ def _coding_site_table(models, coding_in=None):
     length = models.lengths[models.gene_of]
     centre = (local >= 1) & (local <= length - 2)
     idx = np.flatnonzero(centre)
-    left = codes[idx - 1]
+    nb_left, nb_right, _ = models.neighbours()
+    left = nb_left[idx]
     ref = codes[idx]
-    right = codes[idx + 1]
+    right = nb_right[idx]
     ok = (left < 4) & (ref < 4) & (right < 4)
     if coding_in is not None:
         ok &= coding_in[idx]
@@ -1076,6 +1153,7 @@ def channel_opportunity(
         f"{len(models.selection)}_{_BUILD_VERSION}_"
         f"{int(models.lengths.sum())}"
     )
+    tag += f"_nb-{models.neighbours()[2]}"
     if germline_mask_af is not None:
         from .germline_mask import mask_label
 
@@ -1183,12 +1261,13 @@ def _routes(models, codon_start, target, channel, coding_in):
         for c in codes[codon_start : codon_start + 3]
     )
     residue = _CODONS.get(codon)
+    nb_left, nb_right, _ = models.neighbours()
     routes = []
     for q in range(3):
         i = codon_start + q
         if i - 1 < lo or i + 1 >= hi:
             continue
-        left, ref, right = codes[i - 1], codes[i], codes[i + 1]
+        left, ref, right = nb_left[i], codes[i], nb_right[i]
         if max(left, ref, right) >= 4:
             continue
         if coding_in is not None and not coding_in[i]:

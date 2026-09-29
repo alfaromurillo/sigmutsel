@@ -768,3 +768,35 @@ def test_distributed_download_checks_its_checksum(
     with pytest.raises(ValueError, match="Checksum mismatch"):
         gm.download_germline_mask_table()
     assert not (tmp_path / "t.tsv.gz").exists()
+
+
+def test_junction_neighbours_come_from_the_genome(models, tmp_path):
+    """Across a junction the CDS gives the next exon's base; a genome
+    gives the intron's. Bases chosen to differ from the CDS ones."""
+    genome = tmp_path / "tsb"
+    genome.mkdir()
+    for chrom, size in (("1", 400), ("2", 1300)):
+        (genome / f"{chrom}.txt").write_bytes(bytes(size))  # all A
+    g1 = bytearray((genome / "1.txt").read_bytes())
+    g1[110 - 1] = 3  # T after GA's first exon (donor +1)
+    g1[199 - 1] = 1  # C before GA's second exon (acceptor -1)
+    (genome / "1.txt").write_bytes(bytes(g1))
+    g2 = bytearray((genome / "2.txt").read_bytes())
+    g2[1099 - 1] = 0  # A below GB's first exon: coding-strand T
+    (genome / "2.txt").write_bytes(bytes(g2))
+
+    a, b = models.gene_index["ENSGA"], models.gene_index["ENSGB"]
+    oa, ob = models.offsets[a], models.offsets[b]
+    left_c, right_c, src_c = models.neighbours(genome_dir=None)
+    left_g, right_g, src_g = models.neighbours(genome_dir=genome)
+    assert (src_c, src_g) == ("cds", "genome")
+    # GA: position 109 (flat oa+8) and 200 (oa+9)
+    assert right_c[oa + 8] == 2 and right_g[oa + 8] == 3
+    assert left_c[oa + 9] == 0 and left_g[oa + 9] == 1
+    # GB (minus strand): 1100 (ob+8) is followed by intron base 1099
+    assert right_g[ob + 8] == 3
+    # Away from junctions nothing changes.
+    inner = np.ones(len(models.codes), dtype=bool)
+    inner[[oa + 8, oa + 9, ob + 8, ob + 9]] = False
+    np.testing.assert_array_equal(left_c[inner], left_g[inner])
+    np.testing.assert_array_equal(right_c[inner], right_g[inner])

@@ -6,10 +6,17 @@ on:
 
 jobs:
   deploy:
+    # Only package releases (tags v*): data-only releases such as
+    # data-germline-mask must not try to publish.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        # Full history and tags: setuptools-scm derives the version
+        # from the latest v* tag, and a shallow clone builds 0.0.postN.
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v5

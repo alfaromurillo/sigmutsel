@@ -90,6 +90,7 @@ outside. Splice sites may be tested against a padded BED
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -558,15 +559,20 @@ class TranscriptModels:
     def save(self, directory):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
+        # models.npz goes last and atomically: a reader that finds it
+        # (the cache test in load_or_build_transcript_models) finds the
+        # other two complete, even with several processes building.
         self.selection.to_csv(directory / "transcripts.csv")
+        self.splice.to_parquet(directory / "splice_sites.parquet")
+        tmp = directory / f".models.{os.getpid()}.npz"
         np.savez_compressed(
-            directory / "models.npz",
+            tmp,
             offsets=self.offsets,
             lengths=self.lengths,
             codes=self.codes,
             gpos=self.gpos,
         )
-        self.splice.to_parquet(directory / "splice_sites.parquet")
+        os.replace(tmp, directory / "models.npz")
         self.directory = directory
 
     @classmethod
@@ -796,9 +802,11 @@ def territory_masks(
         merged_bed_intervals(bed, splice_padding), chrom19, pos19
     )
     if cache is not None:
+        tmp = cache.with_name(f".{cache.stem}.{os.getpid()}.npz")
         np.savez_compressed(
-            cache, coding_in=coding_in, splice_in=splice_in
+            tmp, coding_in=coding_in, splice_in=splice_in
         )
+        os.replace(tmp, cache)
     return coding_in, splice_in
 
 

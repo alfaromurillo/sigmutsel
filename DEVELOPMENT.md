@@ -441,6 +441,41 @@ makes that true by construction: both halves read the same objects.
   fingerprint of the GTF, FASTA, BED, chain and `_BUILD_VERSION`.
   Bump `_BUILD_VERSION` whenever a change alters the derived tables.
 
+### Germline mask (`germline_mask.py`)
+
+Somatic call sets are often filtered on known germline alleles (GDC's
+masked MAFs drop a call with a dbSNP id unless MC3 or COSMIC rescues
+it). Those alleles are then unobservable, and because germline alleles
+concentrate at synonymous sites, an opportunity that still counts them
+inflates the synonymous channel more than the non-synonymous one --
+the non-syn/syn offset absorbs it (dN/dS is biased upward; see
+Martincorena et al. 2017, STAR Methods).
+
+- `build_gnomad_snv_table()` streams gnomAD v2.1.1 exomes (GRCh38
+  liftover, the release VEP annotates GDC MAFs with) once, about
+  92 GB, and keeps every SNV with its overall AF in
+  `DATA_DIR/germline_mask/` (about 16 million rows). Nothing else is
+  stored, and a threshold can be changed without streaming again.
+- `load_germline_mask(af)` returns sorted `int64` allele keys
+  (`allele_keys`: chromosome, GRCh38 position, plus-strand
+  alternate base), cached per threshold.
+- `compute_channel_opportunity(..., masked_keys=)` removes each masked
+  (site, alternate base) from its channel, splice sites included;
+  `contexts` stays the position count. `channel_opportunity(...,
+  germline_mask_af=)` caches the masked tables under their own tag.
+- The dataset records the threshold in `channel_universe`
+  (`classify_mutation_db(germline_mask_af=)`, or `set_germline_mask()`
+  on an existing dataset, which rebuilds only the opportunity: no call
+  changes). Calls a pipeline rescued onto a masked allele stay in the
+  universe; the build logs how many.
+- **The identity changes under a mask**: `Σ_h n^h[g,τ] <=
+  contexts[g, c(τ)]`, so a type's opportunity is no longer its
+  context's position count. Every rate builder then takes
+  `type_opportunity` (`MutationDataset.type_opportunity`, the sum of
+  the channel tables) for both the numerator and the denominator of
+  `p(g | τ)`, and variant divisors use it for the merged rate. Without
+  a mask `type_opportunity` is None and every path is unchanged.
+
 ## Two-channel (syn/non-syn) covariate fit
 
 Built on the opportunity tables above; the merged single-channel path

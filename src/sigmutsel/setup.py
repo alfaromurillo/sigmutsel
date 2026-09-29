@@ -616,6 +616,25 @@ def download_all(
         raise
 
 
+def build_germline_mask(force: bool = False) -> Path:
+    """Build the gnomAD SNV table behind the germline mask.
+
+    Not part of :func:`download_all`: it streams about 92 GB (nothing
+    but a ~16-million-row table is kept). See
+    :mod:`sigmutsel.germline_mask`.
+    """
+    from sigmutsel.germline_mask import (
+        build_gnomad_snv_table,
+        default_table_path,
+    )
+
+    path = default_table_path()
+    if path.exists() and not force:
+        logger.info(f"gnomAD SNV table already exists at {path}")
+        return path
+    return build_gnomad_snv_table(path)
+
+
 def main():
     """Main entry point for command-line usage."""
     import argparse
@@ -656,6 +675,14 @@ Examples:
         help="Decompress GTF files (default: keep compressed)",
     )
     parser.add_argument(
+        "--germline-mask",
+        action="store_true",
+        help=(
+            "Also build the gnomAD SNV table for the germline mask "
+            "(streams about 92 GB)"
+        ),
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         help="Custom data directory (default: package data dir)",
@@ -681,6 +708,8 @@ Examples:
             decompress_fasta=not args.keep_fasta_compressed,
             keep_gtf_compressed=not args.decompress_gtf,
         )
+        if args.germline_mask:
+            build_germline_mask(force=args.force)
     # Top-level CLI handler: print a clean error and a non-zero exit
     # code instead of a raw traceback, regardless of failure cause.
     except Exception as e:  # noqa: BLE001

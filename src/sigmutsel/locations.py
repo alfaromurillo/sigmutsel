@@ -69,6 +69,10 @@ location_liftover_chain_hg38_to_hg19 = (
 # opportunity counts), regenerated from the files above.
 location_channel_universe_dir = DATA_DIR / "channel_universe"
 
+# gnomAD SNV table and the allele keys of each germline mask built
+# from it (sigmutsel.germline_mask).
+location_germline_mask_dir = DATA_DIR / "germline_mask"
+
 location_wes_target_gene_ids = (
     DATA_DIR / "wes_target_gene_ids_gencode19.txt"
 )
@@ -150,6 +154,10 @@ def list_data_files() -> dict[str, bool]:
         "wes_target_gene_ids": location_wes_target_gene_ids,
         "liftover_chain_hg38_to_hg19": (
             location_liftover_chain_hg38_to_hg19
+        ),
+        "germline_mask_gnomad_table": (
+            location_germline_mask_dir
+            / "gnomad_v2.1.1_exomes_grch38_snv_af.tsv.gz"
         ),
     }
     return {name: path.exists() for name, path in files.items()}

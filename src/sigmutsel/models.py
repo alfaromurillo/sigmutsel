@@ -121,7 +121,8 @@ class MutationDataset:
         types): the synonymous and non-synonymous share of the same
         opportunities `contexts_by_gene` counts, so that
         ``syn[τ] + nonsyn[τ] == contexts_by_gene[context(τ)]`` for
-        every type τ. SBS-only (see
+        every type τ -- unless a germline mask is set, when the left
+        side is smaller and is :attr:`type_opportunity`. SBS-only (see
         generate_consequence_contexts_by_gene()) and lazy-loaded --
         nothing in the default pipeline populates or consumes them
         yet.
@@ -656,6 +657,61 @@ class MutationDataset:
         return self._channel_universe
 
     @property
+    def germline_mask_af(self):
+        """The germline mask's allele-frequency threshold, or None."""
+        return (self._channel_universe or {}).get("germline_mask_af")
+
+    @property
+    def type_opportunity(self):
+        """Genes x 96 opportunity of each type over all channels.
+
+        ``contexts_by_gene_syn + contexts_by_gene_nonsyn`` when a
+        germline mask is set, None otherwise. Under a mask a type's
+        opportunity is no longer its context's position count, so the
+        rate builders take their ``p(g | tau)`` numerator and
+        denominator from this table; without one, None keeps them on
+        ``contexts_by_gene`` exactly as before.
+        """
+        if (
+            self.germline_mask_af is None
+            or self._contexts_by_gene_syn is None
+            or self._contexts_by_gene_nonsyn is None
+        ):
+            return None
+        return self._contexts_by_gene_syn.add(
+            self._contexts_by_gene_nonsyn, fill_value=0.0
+        )
+
+    @record_call
+    def set_germline_mask(self, germline_mask_af):
+        """Set (or clear, with None) the germline mask of the opportunity.
+
+        The calls do not change -- the mask is an opportunity
+        correction -- so this only records the threshold and rebuilds
+        the opportunity tables over the same gene universe. Use it to
+        move an existing dataset onto a mask without regenerating the
+        mutation table.
+        """
+        if not self.has_channel_universe():
+            raise ValueError(
+                "A germline mask needs the channel universe; this "
+                "dataset was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        params["germline_mask_af"] = (
+            None
+            if germline_mask_af is None
+            else float(germline_mask_af)
+        )
+        self._channel_universe = params
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+
+    @property
     def gene_transcripts(self):
         """Per-gene transcript record of the channel universe.
 
@@ -1136,6 +1192,7 @@ class MutationDataset:
         channel_universe=True,
         territory="mc3",
         splice_padding=0,
+        germline_mask_af=None,
         **kwargs,
     ):
         """Generate mutation database from MAF files.
@@ -1161,7 +1218,7 @@ class MutationDataset:
             Classify the calls into the channel universe (SBS only).
             False keeps the pre-universe behaviour, where every call
             is modelled and consequence comes from the MAF.
-        territory, splice_padding
+        territory, splice_padding, germline_mask_af
             Forwarded to :meth:`classify_mutation_db`.
         **kwargs : dict
             Additional arguments passed to
@@ -1236,11 +1293,15 @@ class MutationDataset:
         self._channel_universe = None
         if channel_universe and self.signature_class == "SBS":
             self.classify_mutation_db(
-                territory=territory, splice_padding=splice_padding
+                territory=territory,
+                splice_padding=splice_padding,
+                germline_mask_af=germline_mask_af,
             )
 
     @record_call
-    def classify_mutation_db(self, territory="mc3", splice_padding=0):
+    def classify_mutation_db(
+        self, territory="mc3", splice_padding=0, germline_mask_af=None
+    ):
         """Place every call in the channel universe.
 
         Adds to :attr:`mutation_db` the columns of
@@ -1261,6 +1322,14 @@ class MutationDataset:
             territory; None keeps calls anywhere on the transcript.
         splice_padding : int, default 0
             Bases of BED padding for essential splice sites.
+        germline_mask_af : float or None, default None
+            The germline mask the calls were filtered with, recorded
+            with the territory so the opportunity removes the same
+            alleles (:func:`channel_universe.channel_opportunity`).
+            For GDC's masked MAFs, gnomAD v2.1.1 exomes above an
+            allele frequency. It does not reclassify any call: calls a
+            pipeline rescued onto a masked allele stay in the
+            universe. See also :meth:`set_germline_mask`.
 
         Returns
         -------
@@ -1323,6 +1392,11 @@ class MutationDataset:
             "splice_padding": int(splice_padding),
             "build_version": _BUILD_VERSION,
             "n_genes_with_transcript": len(models.selection),
+            "germline_mask_af": (
+                None
+                if germline_mask_af is None
+                else float(germline_mask_af)
+            ),
         }
 
         reasons = db["universe_reason"].value_counts()
@@ -2579,11 +2653,13 @@ class MutationDataset:
             "splice_padding": 0,
         }
         models = load_or_build_transcript_models(fasta_paths=fastas)
+        mask_af = params.get("germline_mask_af")
         tables = channel_opportunity(
             keep_ids=resolve_keep_ids_for_universe(keep_ids),
             territory=params["territory"],
             splice_padding=params["splice_padding"],
             models=models,
+            germline_mask_af=mask_af,
         )
         self._contexts_by_gene = tables["contexts"]
         self._contexts_by_gene_syn = tables["syn"]
@@ -2599,6 +2675,25 @@ class MutationDataset:
             len(self._contexts_by_gene),
             tables["transcripts"]["rule"].value_counts().to_dict(),
         )
+        if mask_af is not None:
+            from .germline_mask import (
+                calls_on_masked_alleles,
+                load_germline_mask,
+                mask_label,
+            )
+
+            on = calls_on_masked_alleles(
+                self.model_db, load_germline_mask(mask_af)
+            )
+            logger.info(
+                "Germline mask %s: opportunity removed per channel %s; "
+                "%d of %d model calls sit on a masked allele (kept: a "
+                "pipeline rescued them)",
+                mask_label(mask_af),
+                tables["report"].get("masked_opportunity"),
+                int(on.sum()),
+                len(on),
+            )
 
     def _resolve_gene_universe(self, gene_universe):
         """Turn a gene_universe name into a `restrict_to_db` argument.
@@ -5672,6 +5767,9 @@ class Model:
         # and sample counts, so each tau's baseline is built,
         # covariate-scaled, and freed before moving to the next.
         result = {}
+        type_opportunity = getattr(
+            self.dataset, "type_opportunity", None
+        )
         for tau in canonical_types_order if taus is None else taus:
             if is_channel:
                 base_g_tau = compute_mu_g_channel_per_tumor(
@@ -5682,6 +5780,7 @@ class Model:
                         self.prob_g_tau_tau_independent
                     ),
                     separate_per_tau=[tau],
+                    type_opportunity=type_opportunity,
                 )
             else:
                 base_g_tau = compute_mu_g_per_tumor(
@@ -5691,6 +5790,7 @@ class Model:
                         self.prob_g_tau_tau_independent
                     ),
                     separate_per_tau=[tau],
+                    type_opportunity=type_opportunity,
                 )
 
             if signature_separated:
@@ -5812,10 +5912,15 @@ class Model:
             **kwargs,
         )
         if not self.has_channel_base_mus():
+            # Under a germline mask the merged rate's numerator is the
+            # masked opportunity, so its divisor must be too.
             self.mu_ms = compute_mu_m_per_tumor(
                 variants_df=variants,
                 mu_g_tau_j=self._compute_mu_g_taus(
                     use_cov_effects=use_cov_effects
+                ),
+                opportunity_by_type=getattr(
+                    self.dataset, "type_opportunity", None
                 ),
                 **common,
             )
@@ -7059,6 +7164,9 @@ class Model:
             mu_taus=self._mu_taus,
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+            type_opportunity=getattr(
+                self.dataset, "type_opportunity", None
+            ),
         )
 
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
@@ -7144,6 +7252,9 @@ class Model:
                 channel_contexts_by_gene=channel_contexts,
                 contexts_by_gene=contexts,
                 prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+                type_opportunity=getattr(
+                    self.dataset, "type_opportunity", None
+                ),
             )
 
         self._base_mus_syn = channels["syn"]
@@ -9544,6 +9655,9 @@ class Model:
                     self.prob_g_tau_tau_independent
                 ),
                 separate_per_tau=[tau],
+                type_opportunity=getattr(
+                    self.dataset, "type_opportunity", None
+                ),
             )[tau].loc[gene_id]
 
             contribution = scale[:, None] * (

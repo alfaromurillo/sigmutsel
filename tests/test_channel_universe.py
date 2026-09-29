@@ -370,6 +370,7 @@ def test_dataset_round_trip_keeps_channel(tmp_path):
     dataset._channel_universe = {
         "territory": "mc3",
         "splice_padding": 0,
+        "germline_mask_af": 0.001,
     }
     dataset.save_dataset(tmp_path / "ds", overwrite=True)
     loaded = MutationDataset.load_dataset(tmp_path / "ds")
@@ -379,7 +380,25 @@ def test_dataset_round_trip_keeps_channel(tmp_path):
     assert loaded.mutation_db["in_universe"].dtype == bool
     assert loaded.has_channel_universe()
     assert loaded.channel_universe["territory"] == "mc3"
+    assert loaded.germline_mask_af == 0.001
     assert len(loaded.model_db) == 2
+
+
+def test_type_opportunity_only_under_a_mask():
+    from sigmutsel.models import MutationDataset
+
+    dataset = MutationDataset("unused")
+    syn = pd.DataFrame(
+        1.0, index=["g1", "g2"], columns=canonical_types_order
+    )
+    dataset._contexts_by_gene_syn = syn
+    dataset._contexts_by_gene_nonsyn = 2 * syn
+    dataset._channel_universe = {"territory": "mc3"}
+    assert dataset.type_opportunity is None
+    dataset._channel_universe["germline_mask_af"] = 0.001
+    np.testing.assert_allclose(
+        dataset.type_opportunity.to_numpy(), 3.0
+    )
 
 
 def test_point_liftover_and_membership(tmp_path):
@@ -519,3 +538,166 @@ def test_splice_flank_composition_reads_both_strands(
         "G": 0.0,
         "T": 0.5,
     }
+
+
+# ---------------------------------------------------------------------
+# Germline mask
+# ---------------------------------------------------------------------
+
+
+def _masked_keys(entries):
+    from sigmutsel.germline_mask import allele_keys
+
+    chrom, pos, alt = zip(*entries)
+    codes = ["ACGT".index(a) for a in alt]
+    return np.unique(allele_keys(list(chrom), list(pos), codes))
+
+
+# GA (+ strand) position 105 is the middle T of TTT: genomic T>C is
+# coding T>C (Phe -> Ser). GB (- strand) position 1104 is the middle C
+# of CCC on the coding strand, G on the genome: genomic G>A is coding
+# C>T (Pro -> Leu). GA's donor +1 at 110 is a coding G; genomic G>A
+# there is coding G>A after the exon's last base A.
+MASK = [("chr1", 105, "C"), ("chr2", 1104, "A"), ("chr1", 110, "A")]
+
+
+def test_germline_mask_removes_exactly_the_masked_alleles(models):
+    plain = compute_channel_opportunity(models)
+    masked = compute_channel_opportunity(
+        models, masked_keys=_masked_keys(MASK)
+    )
+    assert masked["masked"] == {
+        "syn": 0.0,
+        "mis": 2.0,
+        "non": 0.0,
+        "spl": 1.0,
+    }
+    expected = {
+        ("mis", "ENSGA", "T[T>C]T"): 1,
+        ("mis", "ENSGB", "C[C>T]C"): 1,
+        ("spl", "ENSGA", "A[C>T]T"): 1,
+    }
+    for channel in CHANNELS:
+        diff = plain[channel] - masked[channel]
+        for (c, gene, tau), n in expected.items():
+            if c == channel:
+                assert diff.at[gene, tau] == pytest.approx(n)
+                diff.at[gene, tau] = 0.0
+        np.testing.assert_allclose(diff.to_numpy(), 0.0)
+    # Positions are untouched: contexts count sites, not alleles.
+    pd.testing.assert_frame_equal(
+        plain["contexts"], masked["contexts"]
+    )
+
+
+def test_germline_mask_keeps_one_site_rate_per_type(models):
+    tables = compute_channel_opportunity(
+        models, masked_keys=_masked_keys(MASK)
+    )
+    contexts = tables["contexts"]
+    type_opportunity = sum(tables[c] for c in CHANNELS)
+    rng = np.random.default_rng(1)
+    mu_taus = pd.DataFrame(
+        rng.gamma(2.0, 1.0, size=(2, 96)),
+        index=["t1", "t2"],
+        columns=canonical_types_order,
+    )
+    denominators = type_opportunity.sum(axis=0)
+    for channel in CHANNELS:
+        rates = compute_mu_g_channel_per_tumor(
+            mu_taus,
+            tables[channel],
+            contexts,
+            separate_per_tau=True,
+            type_opportunity=type_opportunity,
+        )
+        n = variant_site_denominators(
+            contexts, opportunity_by_type=tables[channel]
+        )
+        for tau in canonical_types_order:
+            expected = mu_taus[tau] / denominators[tau]
+            for gene in rates[tau].index:
+                if tables[channel].at[gene, tau] > 0:
+                    np.testing.assert_allclose(
+                        (
+                            rates[tau].loc[gene] / n.at[gene, tau]
+                        ).to_numpy(),
+                        expected.to_numpy(),
+                    )
+
+
+def test_type_opportunity_without_a_mask_changes_nothing(models):
+    from sigmutsel.estimate_mus import compute_mu_g_per_tumor
+
+    tables = compute_channel_opportunity(models)
+    contexts = tables["contexts"]
+    type_opportunity = sum(tables[c] for c in CHANNELS)
+    mu_taus = pd.DataFrame(
+        np.random.default_rng(2).gamma(2.0, 1.0, size=(2, 96)),
+        index=["t1", "t2"],
+        columns=canonical_types_order,
+    )
+    for independent in (False, True):
+        a = compute_mu_g_per_tumor(
+            mu_taus, contexts, prob_g_tau_tau_independent=independent
+        )
+        b = compute_mu_g_per_tumor(
+            mu_taus,
+            contexts,
+            prob_g_tau_tau_independent=independent,
+            type_opportunity=type_opportunity,
+        )
+        pd.testing.assert_frame_equal(a, b, check_exact=False)
+        for channel in ("syn", "mis"):
+            a = compute_mu_g_channel_per_tumor(
+                mu_taus,
+                tables[channel],
+                contexts,
+                prob_g_tau_tau_independent=independent,
+            )
+            b = compute_mu_g_channel_per_tumor(
+                mu_taus,
+                tables[channel],
+                contexts,
+                prob_g_tau_tau_independent=independent,
+                type_opportunity=type_opportunity,
+            )
+            pd.testing.assert_frame_equal(a, b, check_exact=False)
+
+
+def test_germline_mask_table_and_calls(tmp_path):
+    import gzip
+
+    from sigmutsel.germline_mask import (
+        _parse_af,
+        calls_on_masked_alleles,
+        load_germline_mask,
+    )
+
+    assert _parse_af(b"AC=3;AN=10;AF=1.5e-03;AF_afr=0") == 1.5e-3
+    assert _parse_af(b"AF=0.25;AC=1") == 0.25
+    assert _parse_af(b"AC=0;AN=0") is None
+
+    table = tmp_path / "snv.tsv.gz"
+    with gzip.open(table, "wt") as out:
+        out.write("chrom\tpos\tref\talt\taf\tfilter\n")
+        out.write("chr1\t105\tT\tC\t0.01\tPASS\n")
+        out.write("chr1\t106\tT\tG\t0.0005\tPASS\n")
+        out.write("chrX\t7\tA\tG\t0.2\tRF\n")
+    keys = load_germline_mask(0.001, path=table)
+    assert len(keys) == 2
+    assert len(load_germline_mask(0.0, path=table)) == 3
+
+    db = pd.DataFrame(
+        {
+            "Chromosome": ["chr1", "chr1", "chr1", "chrX"],
+            "Start_Position": [105, 105, 106, 7],
+            "Tumor_Seq_Allele2": ["C", "A", "G", "G"],
+        }
+    )
+    assert calls_on_masked_alleles(db, keys).tolist() == [
+        True,
+        False,
+        False,
+        True,
+    ]

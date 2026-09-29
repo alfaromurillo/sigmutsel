@@ -795,20 +795,35 @@ def _normalised(composition):
     return [composition[b] / total for b in _BASES]
 
 
-def _splice_site_weights(models, splice_in=None):
+def _splice_site_weights(models, splice_in=None, masked_keys=None):
     """Per splice site: (gene, type index, weight) triples, flat arrays.
 
     Each site contributes weight 1 per alternate base (3 per site),
-    spread over contexts for donor +2 and acceptor -2.
+    spread over contexts for donor +2 and acceptor -2. With
+    ``masked_keys`` (:func:`germline_mask.allele_keys`), only the
+    masked alternate bases keep their weight: the result is then the
+    masked part of the splice opportunity.
     """
     sp = models.splice
     if splice_in is not None:
         sp = sp[splice_in]
     A, G, T = 0, 2, 3
+    # Coding-strand reference base of each kind of essential site.
+    kind_ref = {"d1": G, "d2": T, "a2": A, "a1": G}
+    minus_gene = models.selection["strand"].to_numpy() == "-"
     genes, types, weights = [], [], []
     for kind, group in sp.groupby("kind"):
         g = group["gene"].to_numpy()
         exon = group["exon_base"].to_numpy()
+        if masked_keys is not None:
+            from .germline_mask import allele_keys
+
+            site = allele_keys(
+                models.selection["chrom"].to_numpy()[g],
+                group["gpos"].to_numpy(),
+                0,
+            )
+            minus = minus_gene[g]
         if kind in ("d1", "a1"):
             contexts = [
                 (
@@ -846,12 +861,19 @@ def _splice_site_weights(models, splice_in=None):
                 for b in range(4)
             ]
             ctx_weights = _normalised(ACCEPTOR_MINUS3_COMPOSITION)
-        for (left, ref, right), w in zip(contexts, ctx_weights):
-            for k in (1, 2, 3):
+        for k in (1, 2, 3):
+            hit = np.ones(len(g))
+            if masked_keys is not None:
+                alt_code = (kind_ref[kind] + k) % 4
+                genomic_alt = np.where(minus, 3 - alt_code, alt_code)
+                hit = np.isin(site + genomic_alt, masked_keys).astype(
+                    float
+                )
+            for (left, ref, right), w in zip(contexts, ctx_weights):
                 alt = (ref + k) % 4
                 genes.append(g)
                 types.append(_TYPE_TABLE[left, ref, right, alt])
-                weights.append(np.full(len(g), w))
+                weights.append(w * hit)
     if not genes:
         return (
             np.array([], int),
@@ -866,7 +888,7 @@ def _splice_site_weights(models, splice_in=None):
 
 
 def compute_channel_opportunity(
-    models, coding_in=None, splice_in=None
+    models, coding_in=None, splice_in=None, masked_keys=None
 ):
     """Per-gene, per-type site counts of the four channels.
 
@@ -876,19 +898,33 @@ def compute_channel_opportunity(
     coding_in, splice_in : numpy.ndarray of bool, optional
         Territory masks from :func:`territory_masks`; ``None`` counts
         every site.
+    masked_keys : numpy.ndarray of int64, optional
+        Germline-masked alleles (:func:`germline_mask.load_germline_mask`).
+        Each masked (site, alternate base) is removed from its channel:
+        a call there was filtered out, so it is not an opportunity.
 
     Returns
     -------
     dict
         ``"syn"``, ``"mis"``, ``"non"``, ``"spl"``: genes x 96 types
-        (float; splice sites carry fractional contexts);
-        ``"contexts"``: genes x 32 contexts, the site count behind the
-        common denominator; ``"n_undetermined"``: coding positions
-        whose codon could not be read (counted as ``mis``).
+        (float; splice sites carry fractional contexts), after the
+        mask; ``"contexts"``: genes x 32 contexts, the site count
+        (positions, before any mask); ``"n_undetermined"``: coding
+        positions whose codon could not be read (counted as ``mis``);
+        ``"masked"``: opportunity removed per channel (0 without a
+        mask).
+
+    Notes
+    -----
+    Once a mask removes one alternate base of a site but not the
+    others, a type's opportunity is no longer its context's position
+    count, so rate denominators must then come from the channel
+    tables (:attr:`models.MutationDataset.type_opportunity`), never
+    from ``"contexts"``.
     """
     n_genes = len(models.selection)
-    counts = np.zeros(n_genes * 4 * 96)
-    gene, types, cons, _, n_undetermined = _coding_site_table(
+    size = n_genes * 4 * 96
+    gene, types, cons, idx, n_undetermined = _coding_site_table(
         models, coding_in
     )
     flat = (
@@ -896,28 +932,61 @@ def compute_channel_opportunity(
         + cons.astype(np.int64) * 96
         + types.astype(np.int64)
     ).ravel()
-    counts += np.bincount(flat, minlength=len(counts))
+    counts = np.bincount(flat, minlength=size).astype(float)
 
     sg, st, sw = _splice_site_weights(models, splice_in)
+    splice_flat = (
+        sg.astype(np.int64) * 4 * 96 + 3 * 96 + st.astype(np.int64)
+    )
     if len(sg):
-        flat = (
-            sg.astype(np.int64) * 4 * 96
-            + 3 * 96
-            + st.astype(np.int64)
-        )
-        counts += np.bincount(flat, weights=sw, minlength=len(counts))
+        counts += np.bincount(splice_flat, weights=sw, minlength=size)
 
-    counts = counts.reshape(n_genes, 4, 96)
-    out = {}
-    for h, channel in enumerate(CHANNELS):
-        frame = pd.DataFrame(
-            counts[:, h, :],
-            index=models.gene_ids,
-            columns=canonical_types_order,
+    masked = np.zeros(size)
+    if masked_keys is not None:
+        from .germline_mask import allele_keys
+
+        ref = models.codes[idx].astype(np.int64)
+        minus = (models.selection["strand"].to_numpy() == "-")[gene]
+        alts = np.stack([(ref + k) % 4 for k in (1, 2, 3)], axis=1)
+        genomic_alt = np.where(minus[:, None], 3 - alts, alts)
+        site = allele_keys(models.chrom_of[idx], models.gpos[idx], 0)
+        hit = np.isin(site[:, None] + genomic_alt, masked_keys)
+        masked += np.bincount(
+            flat, weights=hit.ravel().astype(float), minlength=size
         )
-        frame.index.name = "ensembl_gene_id"
-        out[channel] = frame
+        mg, mt, mw = _splice_site_weights(
+            models, splice_in, masked_keys=masked_keys
+        )
+        if len(mg):
+            masked += np.bincount(
+                mg.astype(np.int64) * 4 * 96
+                + 3 * 96
+                + mt.astype(np.int64),
+                weights=mw,
+                minlength=size,
+            )
+
+    def frames(array):
+        array = array.reshape(n_genes, 4, 96)
+        out = {}
+        for h, channel in enumerate(CHANNELS):
+            frame = pd.DataFrame(
+                array[:, h, :],
+                index=models.gene_ids,
+                columns=canonical_types_order,
+            )
+            frame.index.name = "ensembl_gene_id"
+            out[channel] = frame
+        return out
+
+    out = frames(counts)
     out["contexts"] = contexts_from_channels(out)
+    out.update(frames(counts - masked))
+    masked = masked.reshape(n_genes, 4, 96)
+    out["masked"] = {
+        channel: float(masked[:, h, :].sum())
+        for h, channel in enumerate(CHANNELS)
+    }
     out["n_undetermined"] = int(n_undetermined)
     return out
 
@@ -959,6 +1028,7 @@ def channel_opportunity(
     cache_dir=None,
     force=False,
     models=None,
+    germline_mask_af=None,
 ):
     """Cached channel opportunity tables, optionally subset to genes.
 
@@ -978,13 +1048,19 @@ def channel_opportunity(
         Cache location and a switch to rebuild.
     models : TranscriptModels, optional
         Reuse already-loaded models.
+    germline_mask_af : float or None
+        Remove from the opportunity every allele of gnomAD v2.1.1
+        exomes with overall allele frequency above this value
+        (:mod:`germline_mask`), for calls filtered on germline
+        alleles (GDC's masked MAFs). None applies no mask.
 
     Returns
     -------
     dict
         The tables of :func:`compute_channel_opportunity`, plus
         ``"transcripts"`` (the per-gene selection record) and
-        ``"report"`` (site counts inside/outside the territory).
+        ``"report"`` (site counts inside/outside the territory, and
+        the masked opportunity per channel).
     """
     from .locations import location_channel_universe_dir
 
@@ -1000,6 +1076,10 @@ def channel_opportunity(
         f"{len(models.selection)}_{_BUILD_VERSION}_"
         f"{int(models.lengths.sum())}"
     )
+    if germline_mask_af is not None:
+        from .germline_mask import mask_label
+
+        tag += f"_{mask_label(germline_mask_af)}"
     directory = cache_dir / f"opportunity_{tag}"
     names = list(CHANNELS) + ["contexts"]
     if (directory / "report.json").exists() and not force:
@@ -1015,13 +1095,20 @@ def channel_opportunity(
             )
         else:
             coding_in = splice_in = None
+        masked_keys = None
+        if germline_mask_af is not None:
+            from .germline_mask import load_germline_mask
+
+            masked_keys = load_germline_mask(germline_mask_af)
         built = compute_channel_opportunity(
-            models, coding_in, splice_in
+            models, coding_in, splice_in, masked_keys=masked_keys
         )
         tables = {name: built[name] for name in names}
         report = {
             "n_undetermined": built["n_undetermined"],
             "n_genes": len(models.selection),
+            "germline_mask_af": germline_mask_af,
+            "masked_opportunity": built["masked"],
         }
         if territory == "mc3":
             coding = models.gpos >= 0

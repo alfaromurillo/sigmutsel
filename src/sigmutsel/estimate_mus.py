@@ -203,6 +203,7 @@ def compute_mu_g_per_tumor(
     contexts_by_gene,
     prob_g_tau_tau_independent=False,
     separate_per_tau=False,
+    type_opportunity=None,
 ) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
     """Compute baseline per-gene expected mutation rate per tumor.
 
@@ -278,6 +279,15 @@ def compute_mu_g_per_tumor(
         ``constants.canonical_types_order`` (e.g. a single τ) to
         compute just those types and bound memory --- the intended
         use is to loop over types one (or a few) at a time.
+    type_opportunity : pandas.DataFrame or None, default None
+        Genes x 96 canonical types: every opportunity of each type,
+        all channels together (the sum of the channel tables). Needed
+        once a germline mask has removed single alternate bases, when
+        a type's opportunity is no longer its context's position
+        count; it then replaces ``contexts_by_gene`` in both the
+        numerator and the denominator of ``p(g | tau)``. None keeps
+        the context-based form, which is identical when nothing is
+        masked.
 
     Returns
     -------
@@ -337,6 +347,7 @@ def compute_mu_g_per_tumor(
                 contexts_by_gene=contexts_by_gene,
                 prob_g_tau_tau_independent=prob_g_tau_tau_independent,
                 separate_per_tau=separate_per_tau,
+                type_opportunity=type_opportunity,
             )
             for sigma, mu_tau_sigma in mu_taus.items()
         }
@@ -349,11 +360,22 @@ def compute_mu_g_per_tumor(
         else list(separate_per_tau) if separate_per_tau else None
     )
 
+    if type_opportunity is not None:
+        type_opportunity = type_opportunity.reindex(
+            index=contexts_by_gene.index,
+            columns=canonical_types_order,
+        ).fillna(0.0)
+
     # Original single-DataFrame logic
     if prob_g_tau_tau_independent:
-        probs_g = contexts_by_gene.sum(axis=1) / np.sum(
-            contexts_by_gene.values
-        )
+        if type_opportunity is not None:
+            probs_g = type_opportunity.sum(axis=1) / np.sum(
+                type_opportunity.values
+            )
+        else:
+            probs_g = contexts_by_gene.sum(axis=1) / np.sum(
+                contexts_by_gene.values
+            )
 
         if tau_list is not None:
             out = {
@@ -367,14 +389,18 @@ def compute_mu_g_per_tumor(
             out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
 
     else:
-        probs_g_context = contexts_by_gene / contexts_by_gene.sum(
-            axis=0
-        )
-
-        probs_g_tau = probs_g_context[
-            [extract_context(x) for x in canonical_types_order]
-        ]
-        probs_g_tau.columns = canonical_types_order
+        if type_opportunity is not None:
+            probs_g_tau = type_opportunity / type_opportunity.sum(
+                axis=0
+            )
+        else:
+            probs_g_context = contexts_by_gene / contexts_by_gene.sum(
+                axis=0
+            )
+            probs_g_tau = probs_g_context[
+                [extract_context(x) for x in canonical_types_order]
+            ]
+            probs_g_tau.columns = canonical_types_order
 
         if tau_list is not None:
             out = {
@@ -401,6 +427,7 @@ def compute_mu_g_channel_per_tumor(
     contexts_by_gene: pd.DataFrame,
     prob_g_tau_tau_independent: bool = False,
     separate_per_tau: bool = False,
+    type_opportunity: pd.DataFrame | None = None,
 ) -> pd.DataFrame | dict[int | str, pd.DataFrame]:
     """Per-gene rate for one consequence channel (syn or non-syn).
 
@@ -457,6 +484,10 @@ def compute_mu_g_channel_per_tumor(
         a τ-independent merged baseline.
     separate_per_tau : bool | Sequence[str], default False
         As in :func:`compute_mu_g_per_tumor`.
+    type_opportunity : pandas.DataFrame or None, default None
+        As in :func:`compute_mu_g_per_tumor`: when given, the
+        denominator of ``p_gtau`` is its column sum, the masked
+        opportunity of each type, instead of the position count.
 
     Returns
     -------
@@ -486,6 +517,7 @@ def compute_mu_g_channel_per_tumor(
                 contexts_by_gene=contexts_by_gene,
                 prob_g_tau_tau_independent=prob_g_tau_tau_independent,
                 separate_per_tau=separate_per_tau,
+                type_opportunity=type_opportunity,
             )
             for sigma, mu_tau_sigma in mu_taus.items()
         }
@@ -510,12 +542,22 @@ def compute_mu_g_channel_per_tumor(
         else list(separate_per_tau) if separate_per_tau else None
     )
 
+    if type_opportunity is not None:
+        type_opportunity = type_opportunity.reindex(
+            index=contexts_by_gene.index,
+            columns=canonical_types_order,
+        ).fillna(0.0)
+
     if prob_g_tau_tau_independent:
         # 3 opportunities per position; contexts_by_gene counts
-        # positions, channel counts opportunities.
-        probs_g = channel.sum(axis=1) / (
-            3 * np.sum(contexts_by_gene.values)
+        # positions, channel counts opportunities. Under a germline
+        # mask the total is the masked opportunity itself.
+        total = (
+            np.sum(type_opportunity.values)
+            if type_opportunity is not None
+            else 3 * np.sum(contexts_by_gene.values)
         )
+        probs_g = channel.sum(axis=1) / total
 
         if tau_list is not None:
             out = {
@@ -529,10 +571,13 @@ def compute_mu_g_channel_per_tumor(
             out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
 
     else:
-        denominators = contexts_by_gene.sum(axis=0)[
-            [extract_context(x) for x in canonical_types_order]
-        ]
-        denominators.index = canonical_types_order
+        if type_opportunity is not None:
+            denominators = type_opportunity.sum(axis=0)
+        else:
+            denominators = contexts_by_gene.sum(axis=0)[
+                [extract_context(x) for x in canonical_types_order]
+            ]
+            denominators.index = canonical_types_order
 
         probs_g_tau = channel[canonical_types_order] / denominators
 

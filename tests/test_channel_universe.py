@@ -701,3 +701,70 @@ def test_germline_mask_table_and_calls(tmp_path):
         False,
         True,
     ]
+
+
+def test_germline_table_resolution(tmp_path, monkeypatch):
+    """Full table first; else the distributed one down to its floor;
+    below the floor only an explicit full build."""
+    import gzip
+
+    from sigmutsel import germline_mask as gm
+
+    full = tmp_path / "full.tsv.gz"
+    dist = tmp_path / gm.DISTRIBUTED_NAME
+    monkeypatch.setattr(gm, "default_table_path", lambda: full)
+    monkeypatch.setattr(gm, "distributed_table_path", lambda: dist)
+
+    rows = "chrom\tpos\tref\talt\taf\tfilter\n" + "".join(
+        f"chr1\t{100 + i}\tA\tG\t{af}\tPASS\n"
+        for i, af in enumerate([1e-6, 2e-5, 6e-5, 2e-4, 0.01])
+    )
+
+    def fake_download(force=False, url=None):
+        with gzip.GzipFile(dist, "wb", mtime=0) as out:
+            out.write(
+                "".join(
+                    line + "\n"
+                    for line in rows.splitlines()
+                    if line.startswith("chrom")
+                    or float(line.split("\t")[4])
+                    > gm.DISTRIBUTED_FLOOR
+                ).encode()
+            )
+        return dist
+
+    monkeypatch.setattr(
+        gm, "download_germline_mask_table", fake_download
+    )
+    assert gm.resolve_table(1.5e-4) == dist
+    assert len(gm.load_germline_mask(1.5e-4)) == 2
+    with pytest.raises(FileNotFoundError):
+        gm.resolve_table(1e-5)
+    with gzip.open(full, "wt") as out:
+        out.write(rows)
+    assert gm.resolve_table(1e-5) == full
+    assert len(gm.load_germline_mask(1e-5)) == 4
+    # The distributed cut of the full table is what was downloaded.
+    cut = gm.write_distributed_table(full, tmp_path / "cut.tsv.gz")
+    with gzip.open(cut) as a, gzip.open(dist) as b:
+        assert a.read() == b.read()
+
+
+def test_distributed_download_checks_its_checksum(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from sigmutsel import germline_mask as gm
+
+    monkeypatch.setattr(
+        gm, "distributed_table_path", lambda: tmp_path / "t.tsv.gz"
+    )
+    monkeypatch.setattr(
+        gm.urllib.request,
+        "urlretrieve",
+        lambda url, dest: Path(dest).write_bytes(b"not the table"),
+    )
+    with pytest.raises(ValueError, match="Checksum mismatch"):
+        gm.download_germline_mask_table()
+    assert not (tmp_path / "t.tsv.gz").exists()

@@ -157,7 +157,7 @@ def list_data_files() -> dict[str, bool]:
         ),
         "germline_mask_gnomad_table": (
             location_germline_mask_dir
-            / "gnomad_v2.1.1_exomes_grch38_snv_af.tsv.gz"
+            / "gnomad_v2.1.1_exomes_grch38_snv_af_gt5e-05.tsv.gz"
         ),
     }
     return {name: path.exists() for name, path in files.items()}

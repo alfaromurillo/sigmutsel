@@ -451,11 +451,20 @@ inflates the synonymous channel more than the non-synonymous one --
 the non-syn/syn offset absorbs it (dN/dS is biased upward; see
 Martincorena et al. 2017, STAR Methods).
 
-- `build_gnomad_snv_table()` streams gnomAD v2.1.1 exomes (GRCh38
-  liftover, the release VEP annotates GDC MAFs with) once, about
-  92 GB, and keeps every SNV with its overall AF in
-  `DATA_DIR/germline_mask/` (about 16 million rows). Nothing else is
-  stored, and a threshold can be changed without streaming again.
+- **Two tables, one format.** The default is the *distributed* table:
+  every SNV with AF > 5e-5 (1.8 million, 15 MB), downloaded from the
+  `data-germline-mask` GitHub release (a tag with no digits, so
+  setuptools-scm never reads it as a package version) and checked against a
+  pinned SHA-256 (`download_germline_mask_table`, also step 7 of
+  `download_all`). It serves any threshold >= 5e-5, which is where a
+  frequency filter acts. The *full* table (every AF > 0, 14.6 million)
+  is `build_gnomad_snv_table()`: it streams gnomAD v2.1.1 exomes (GRCh38
+  liftover, the release VEP annotates GDC MAFs with) once, about 92 GB,
+  and is needed only below 5e-5 or to measure call survival by
+  frequency (`sigmutsel-setup --germline-mask-full`). When it exists it
+  is used. `write_distributed_table()` cuts the distributed file out of
+  it deterministically (gzip `mtime=0`), so a rebuild reproduces the
+  checksum. gnomAD data are CC0; cite Karczewski et al. 2020.
 - `load_germline_mask(af)` returns sorted `int64` allele keys
   (`allele_keys`: chromosome, GRCh38 position, plus-strand
   alternate base), cached per threshold.

@@ -16,11 +16,22 @@ The fix is the one used for the capture territory: remove the masked
 
 The mask is built from gnomAD v2.1.1 exomes (GRCh38 liftover), the
 release VEP annotates GDC MAFs with (their ``gnomAD_AF`` ...
-``gnomAD_SAS_AF`` columns). :func:`build_gnomad_snv_table` streams the
-per-chromosome sites VCFs once (about 92 GB compressed; nothing but
-the resulting table is stored) and keeps every SNV with its overall
-allele frequency, so the frequency threshold can be chosen later
-without downloading again. :func:`load_germline_mask` turns the table
+``gnomAD_SAS_AF`` columns). Two tables, one format (chrom, pos, ref,
+alt, af, filter):
+
+- **The distributed table** (default): every SNV with overall AF above
+  ``DISTRIBUTED_FLOOR`` (5e-5; 1.8 million SNVs, 15 MB), downloaded
+  from a sigmutsel GitHub release and checked against its SHA-256. It
+  serves any threshold at or above the floor, which covers where a
+  frequency filter acts (GDC's removes nothing below 1e-4).
+- **The full table**: every SNV with AF > 0 (14.6 million), built by
+  :func:`build_gnomad_snv_table`, which streams the per-chromosome
+  sites VCFs once -- about 92 GB. Only needed for thresholds below the
+  floor, or to measure call survival by frequency bin. Used whenever
+  it exists.
+
+gnomAD data are CC0; the project asks for attribution (Karczewski et
+al. 2020, *Nature* 581:434). :func:`load_germline_mask` turns a table
 into the sorted allele keys every other function takes.
 
 Keys encode ``(chromosome, GRCh38 position, alternate base)`` of the
@@ -53,14 +64,123 @@ _CHROM_CODE = {
 }
 
 
+DISTRIBUTED_FLOOR = 5e-5
+DISTRIBUTED_NAME = "gnomad_v2.1.1_exomes_grch38_snv_af_gt5e-05.tsv.gz"
+DISTRIBUTED_URL = (
+    "https://github.com/alfaromurillo/sigmutsel/releases/download/"
+    "data-germline-mask/" + DISTRIBUTED_NAME
+)
+DISTRIBUTED_SHA256 = (
+    "53f3220cc609301280a5f55a19aec3683bec94fc683b1bcc0fd6b36210bd236d"
+)
+
+
 def default_table_path():
-    """Where the gnomAD SNV table is cached (under the data dir)."""
+    """Where the full gnomAD SNV table is cached (under the data dir)."""
     from .locations import location_germline_mask_dir
 
     return (
         Path(location_germline_mask_dir)
         / "gnomad_v2.1.1_exomes_grch38_snv_af.tsv.gz"
     )
+
+
+def distributed_table_path():
+    """Where the distributed (AF > 5e-5) table is cached."""
+    from .locations import location_germline_mask_dir
+
+    return Path(location_germline_mask_dir) / DISTRIBUTED_NAME
+
+
+def _sha256(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download_germline_mask_table(force=False, url=DISTRIBUTED_URL):
+    """Download the distributed table (15 MB) and check its SHA-256.
+
+    Returns
+    -------
+    pathlib.Path
+    """
+    dest = distributed_table_path()
+    if dest.exists() and not force:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    logger.info("Downloading the germline-mask table from %s", url)
+    urllib.request.urlretrieve(url, tmp)
+    digest = _sha256(tmp)
+    if digest != DISTRIBUTED_SHA256:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(
+            f"Checksum mismatch for {url}: got {digest}, expected "
+            f"{DISTRIBUTED_SHA256}."
+        )
+    tmp.replace(dest)
+    return dest
+
+
+def write_distributed_table(
+    full_path=None, out_path=None, floor=DISTRIBUTED_FLOOR
+):
+    """Cut the distributed table out of a full one (for maintainers).
+
+    Deterministic (gzip ``mtime=0``), so the same full table always
+    gives the same file and checksum.
+    """
+    full_path = Path(full_path or default_table_path())
+    out_path = Path(out_path or distributed_table_path())
+    n = 0
+    with (
+        gzip.open(full_path, "rt") as fin,
+        gzip.GzipFile(
+            out_path, "wb", compresslevel=9, mtime=0
+        ) as fout,
+    ):
+        fout.write(fin.readline().encode())
+        for line in fin:
+            if float(line.split("\t", 5)[4]) > floor:
+                fout.write(line.encode())
+                n += 1
+    logger.info("Distributed table: %d SNVs -> %s", n, out_path)
+    return out_path
+
+
+def resolve_table(af_threshold, path=None, build_full=False):
+    """The table that serves ``af_threshold``, fetched if need be.
+
+    ``path`` wins; then the full table if it exists; then the
+    distributed one (downloaded), if the threshold is at or above its
+    floor. Below the floor the full table is required: it is built
+    only when ``build_full`` is True, because that streams ~92 GB.
+    """
+    if path is not None:
+        return Path(path)
+    full = default_table_path()
+    if full.exists():
+        return full
+    if af_threshold >= DISTRIBUTED_FLOOR:
+        return download_germline_mask_table()
+    if not build_full:
+        raise FileNotFoundError(
+            f"A germline mask at AF > {af_threshold:g} needs the full "
+            f"gnomAD SNV table (the distributed one starts at "
+            f"{DISTRIBUTED_FLOOR:g}). Build it with "
+            "build_gnomad_snv_table() -- it streams about 92 GB -- or "
+            "pass build_full=True."
+        )
+    logger.warning(
+        "Building the full gnomAD SNV table: this streams about 92 GB "
+        "(15-40 minutes on a fast link, hours on a slow one)."
+    )
+    return build_gnomad_snv_table(full)
 
 
 def mask_label(af_threshold):
@@ -218,45 +338,40 @@ def build_gnomad_snv_table(
     return path
 
 
-def load_germline_mask(
-    af_threshold, path=None, build_if_missing=True
-):
+def load_germline_mask(af_threshold, path=None, build_full=False):
     """Sorted allele keys of the gnomAD SNVs with ``AF > af_threshold``.
 
-    The keys are cached next to the table, one file per threshold.
+    The keys are cached next to the table, one file per threshold; a
+    threshold at or above the distributed floor gives the same keys
+    from either table.
 
     Parameters
     ----------
     af_threshold : float
         Overall allele frequency above which an allele is masked.
     path : path-like, optional
-        The table of :func:`build_gnomad_snv_table`.
-    build_if_missing : bool
-        Build the table when it does not exist yet (a long stream;
-        see :func:`build_gnomad_snv_table`).
+        A table in :func:`build_gnomad_snv_table`'s format; default
+        :func:`resolve_table`.
+    build_full : bool
+        Allow building the full table (a ~92 GB stream) when the
+        threshold is below the distributed floor and it is missing.
 
     Returns
     -------
     numpy.ndarray of int64
     """
-    path = Path(path or default_table_path())
+    if path is None:
+        cache_dir = default_table_path().parent
+        cache = cache_dir / f"{mask_label(af_threshold)}.keys.npy"
+        if cache.exists():
+            return np.load(cache)
+    path = resolve_table(af_threshold, path, build_full=build_full)
     cache = path.parent / f"{mask_label(af_threshold)}.keys.npy"
-    if cache.exists() and (
-        not path.exists()
-        or cache.stat().st_mtime >= path.stat().st_mtime
+    if (
+        cache.exists()
+        and cache.stat().st_mtime >= path.stat().st_mtime
     ):
         return np.load(cache)
-    if not path.exists():
-        if not build_if_missing:
-            raise FileNotFoundError(
-                f"{path} does not exist; run "
-                "sigmutsel.germline_mask.build_gnomad_snv_table()."
-            )
-        logger.warning(
-            "The gnomAD SNV table is missing; building it now "
-            "(streams about 92 GB, once)."
-        )
-        build_gnomad_snv_table(path)
     table = pd.read_csv(
         path,
         sep="\t",

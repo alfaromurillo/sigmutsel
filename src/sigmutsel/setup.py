@@ -601,6 +601,12 @@ def download_all(
             force=force
         )
 
+        # Germline-mask table (gnomAD v2.1.1 exomes, AF > 5e-5)
+        logger.info("\n7. Germline-mask table (gnomAD v2.1.1, 15 MB)")
+        downloaded["germline_mask"] = download_germline_mask(
+            force=force
+        )
+
         logger.info("\n" + "=" * 60)
         logger.info("All reference files downloaded successfully!")
         logger.info("=" * 60)
@@ -616,11 +622,23 @@ def download_all(
         raise
 
 
-def build_germline_mask(force: bool = False) -> Path:
-    """Build the gnomAD SNV table behind the germline mask.
+def download_germline_mask(force: bool = False) -> Path:
+    """Download the germline-mask table (15 MB, gnomAD AF > 5e-5).
+
+    See :mod:`sigmutsel.germline_mask`; enough for any mask threshold
+    at or above 5e-5.
+    """
+    from sigmutsel.germline_mask import download_germline_mask_table
+
+    return download_germline_mask_table(force=force)
+
+
+def build_full_germline_table(force: bool = False) -> Path:
+    """Build the full gnomAD SNV table (every AF > 0).
 
     Not part of :func:`download_all`: it streams about 92 GB (nothing
-    but a ~16-million-row table is kept). See
+    but a 14.6-million-row table is kept). Only needed for a mask
+    below AF 5e-5, or to measure call survival by frequency. See
     :mod:`sigmutsel.germline_mask`.
     """
     from sigmutsel.germline_mask import (
@@ -675,11 +693,11 @@ Examples:
         help="Decompress GTF files (default: keep compressed)",
     )
     parser.add_argument(
-        "--germline-mask",
+        "--germline-mask-full",
         action="store_true",
         help=(
-            "Also build the gnomAD SNV table for the germline mask "
-            "(streams about 92 GB)"
+            "Also build the full gnomAD SNV table (every AF > 0), "
+            "for masks below AF 5e-5; WARNING: streams about 92 GB"
         ),
     )
     parser.add_argument(
@@ -708,8 +726,11 @@ Examples:
             decompress_fasta=not args.keep_fasta_compressed,
             keep_gtf_compressed=not args.decompress_gtf,
         )
-        if args.germline_mask:
-            build_germline_mask(force=args.force)
+        if args.germline_mask_full:
+            logger.warning(
+                "Building the full gnomAD SNV table streams about 92 GB."
+            )
+            build_full_germline_table(force=args.force)
     # Top-level CLI handler: print a clean error and a non-zero exit
     # code instead of a raw traceback, regardless of failure cause.
     except Exception as e:  # noqa: BLE001

@@ -21,6 +21,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `gene_tumor_dispersion.py` | Gene-tumor dispersion `phi` of a gene's mutations across tumors, fitted as a trend in the gene's mutation count |
 | `consequence_contexts_by_gene.py` | The same opportunities split into synonymous/non-synonymous channels, per SBS type |
 | `channel_universe.py` | One transcript per gene (MANE Select first), the four channels `syn`/`mis`/`non`/`spl`, the capture territory, and the classification of every call on that same transcript |
+| `site_rates.py` | Any variant's per-tumor rate on demand, from the channel model's factored store (site table, type rates, gene multipliers) |
 | `liftover.py` | Dependency-free point liftover through a UCSC chain, and BED membership |
 | `load_maf_files.py` | MAF validation and compact DB loading |
 | `download_tcga_data.py` | `gdc-client`-based MAF download/unpack |
@@ -512,6 +513,69 @@ Martincorena et al. 2017, STAR Methods).
   the channel tables) for both the numerator and the denominator of
   `p(g | τ)`, and variant divisors use it for the merged rate. Without
   a mask `type_opportunity` is None and every path is unchanged.
+
+### Site rates (`site_rates.py`)
+
+The rate of any single-nucleotide variant in any tumor, observed or
+not, without a variants x tumors table. Under tau-dependent `p_gτ`
+the gene's channel opportunity cancels out of a variant's rate, so an
+element `o` (coding position and alternate base, or splice site and
+alternate base) of type `τ` in gene `g` has
+
+    mu^j_o = (mu_bar^j_τ / D_τ) * upsilon_o * e^{c·x_g + δ[non-syn]} * r_g
+
+`SiteRates` stores the three factors: the **site table** (`SiteTable`:
+every element of the gene universe, enumerated by
+`_coding_site_table` and `_splice_site_weights`, with its type,
+consequence, distance bin, strand orientation and mask flag; site
+weights are recomputed on demand), the **type rates**
+`mu_bar^j_τ / D_τ` (tumors x 96, one table for every channel;
+`tumor_type_rates`, with `D_τ` from `estimate_mus.type_denominators`,
+the same function the channel gene rates use), and one **gene
+multiplier** per gene and channel. `SiteRates.from_model(model,
+r_g=...)` derives them from a fitted channel model: the covariate
+scale through `compute_mus_per_gene_per_sample` on a baseline of 1
+(so fallback genes and the float32 scale are exactly the ones
+`compute_mu_ms` applies), `e^δ` on the non-synonymous channels, and
+`r_g="evaluation"` (what gamma uses) or `"none"` (reproduces
+`mu_ms`). The production `r_g` is not offered: its non-silent
+expectation omits `e^δ`. With `verify=True` (default) it checks that
+the site table rebuilds the dataset's four channel tables.
+
+- **Queries.** `snv_rates(chrom, pos, alt)` (plus-strand alleles,
+  vectorised; a position coding in two genes gives two rows),
+  `variant_rates(labels)` (`p.G12D`, `p.R213*`, `p.T1493=`, `p.M1I`,
+  `c.559+1G>T`, `c.123A>G`, as `classify_calls` names them; every
+  route, in `_routes` order), and `aggregate_rates(labels, by_gene=)`
+  / `opportunity(...)` for sums over any grouping of the elements,
+  per tumor or over tumors, computed as grouped type counts times the
+  type rates.
+- **Masked alleles** keep their mutation rate (`rate`) and have
+  observable rate 0 (`observable_rate`). Compare with calls through
+  the observable rate; simulate mutations with the mutation rate.
+  `compute_mu_m_per_tumor` gives every route its unmasked weight
+  (it is the mutation rate), so the two differ exactly for variants
+  with a masked route.
+- **Splice contexts.** Aggregates spread donor +2 / acceptor -2 sites
+  over the four contexts by composition, as the opportunity does; a
+  single splice query reads the site's trinucleotide from a genome
+  when there is one (`context == "genome"`), else uses the mixture.
+- **CDS ends.** A position with no context window in the CDS (a
+  transcript's first or last base, next to an N) is not an element;
+  a call there is still in the universe, and `mu_ms` gives it the
+  call's own type at weight 1 (`annotate_variants_with_types`' route
+  fallback). A query does the same with the type read from the genome
+  (`context == "edge"`), taking every such route; `mu_ms` takes only
+  the observed type, so a change with two routes at a CDS end (e.g.
+  `p.M1L`: A>T or A>C) is higher here.
+- **Cost** on a real cohort: ~33 million coding positions (98 million
+  elements) and 5 million splice triples, a 0.6 GB table, about a
+  minute to build and 4-5 GB peak memory, independent of the number
+  of tumors; 2,000 variants take about 10 s.
+- Tests (`tests/test_site_rates.py`) enumerate every possible SNV of
+  the toy annotation under a mask and site weights and require the
+  opportunity, the gene rates and every variant's routes and rate to
+  match the model's path (rtol 1e-9), also through `from_model`.
 
 ## Two-channel (syn/non-syn) covariate fit
 

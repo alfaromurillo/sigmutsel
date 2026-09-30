@@ -341,7 +341,10 @@ def test_cds_ends_use_the_genomic_type(models, tmp_path):
     assert info.at["GB p.M1V", "context"] == "edge"
     assert info.at["GB p.M1V", "routes"] == "A[T>C]G"
     tau = canonical_types_order.index("A[T>C]G")
-    expected = exact.M.to_numpy()[:, tau] * MULT.at["ENSGB", "nonsyn"]
+    expected = (
+        exact.type_rates.to_numpy()[:, tau]
+        * MULT.at["ENSGB", "nonsyn"]
+    )
     np.testing.assert_allclose(
         got.to_numpy()[0], expected, rtol=1e-12
     )
@@ -366,7 +369,10 @@ def test_splice_context_from_a_genome(models, tmp_path):
     info, got, _ = exact.variant_rates(["GA c.9+2T>A"])
     assert info.at["GA c.9+2T>A", "context"] == "genome"
     tau = canonical_types_order.index("G[T>A]C")
-    expected = exact.M.to_numpy()[:, tau] * MULT.at["ENSGA", "nonsyn"]
+    expected = (
+        exact.type_rates.to_numpy()[:, tau]
+        * MULT.at["ENSGA", "nonsyn"]
+    )
     np.testing.assert_allclose(
         got.to_numpy()[0], expected, rtol=1e-12
     )

@@ -5,24 +5,25 @@ A channel model's variant rate factorises. For an opportunity element
 splice site with one) of type ``tau`` in gene ``g``, channel ``h`` and
 tumor ``j``,
 
-    mu^j_o = M[j, tau] * upsilon_o * m_{g,h},
-    M[j, tau] = mu_bar^j_tau / D_tau,
+    mu^j_o = (mu_bar^j_tau / D_tau) * upsilon_o
+             * e^{c.x_g + delta [h non-synonymous]} * r_g,
 
 with ``mu_bar^j_tau`` the tumor's type rate, ``D_tau`` the weighted
 opportunity of the type over the gene universe
 (:func:`estimate_mus.type_denominators`), ``upsilon_o`` the element's
-site weight (:mod:`site_weights`; 1 at splice sites) and ``m_{g,h}``
-the gene multiplier: the covariate scale ``e^{c.x_g}`` (a fallback
-gene's projected scale and block shifts included), ``e^delta`` on the
-non-synonymous channels (``mis``, ``non``, ``spl``), and optionally
-``r_g``. The gene's channel opportunity ``n^h_{g tau}`` cancels: the
-model spreads its type rate evenly over the weighted elements it was
-built from, so ``M`` is one tumors x 96 matrix shared by every channel
-and gene. A protein change's rate sums its routes' rates (``R(m)``,
-:func:`channel_universe._routes`).
+site weight (:mod:`site_weights`; 1 at splice sites), and the **gene
+multiplier** ``e^{c.x_g + delta} r_g``: the covariate scale (a
+fallback gene's projected scale and block shifts included),
+``e^delta`` on the non-synonymous channels (``mis``, ``non``,
+``spl``), and optionally ``r_g``. The gene's channel opportunity
+``n^h_{g tau}`` cancels: the model spreads its type rate evenly over
+the weighted elements it was built from, so the **type rates**
+``mu_bar^j_tau / D_tau`` are one tumors x 96 table shared by every
+channel and gene (:attr:`SiteRates.type_rates`). A protein change's
+rate sums its routes' rates (``R(m)``, :func:`channel_universe._routes`).
 
 Nothing here is a variants x tumors table (that would be ~400 GB for a
-large cohort): :class:`SiteRates` keeps the site table, ``M`` and one
+large cohort): :class:`SiteRates` keeps the site table, the type rates and one
 multiplier per gene and channel, and computes rates for whatever is
 asked, per tumor or summed over tumors, including aggregates over any
 grouping of the elements.
@@ -331,7 +332,7 @@ def _genome_bases(genome_dir, chrom, gpos):
 
 
 def tumor_type_rates(mu_taus, denominators):
-    """``M = mu_bar^j_tau / D_tau``, tumors x 96.
+    """The type rates ``mu_bar^j_tau / D_tau``, tumors x 96.
 
     A type with ``D_tau = 0`` has no element anywhere in the universe,
     so no site ever reads its column; it is 0 rather than a 0/0.
@@ -354,9 +355,10 @@ class SiteRates:
     ----------
     table : SiteTable
     tumor_type_rates : pandas.DataFrame
-        ``M``: tumors x 96, ``mu_bar^j_tau / D_tau``.
+        Type rates: tumors x 96, ``mu_bar^j_tau / D_tau``.
     multipliers : pandas.DataFrame
-        Genes (``table.genes``) x ``["syn", "nonsyn"]``: ``m_{g,h}``.
+        Genes (``table.genes``) x ``["syn", "nonsyn"]``: the gene
+        multiplier of each channel.
     genome_dir : path-like or None
         A ``tsb`` genome for splice-query contexts (None: composition).
     description : dict
@@ -375,9 +377,11 @@ class SiteRates:
         description=None,
     ):
         self.table = table
-        self.M = tumor_type_rates.loc[:, canonical_types_order]
-        self.tumors = self.M.index
-        self._M = self.M.to_numpy(dtype=float)
+        self.type_rates = tumor_type_rates.loc[
+            :, canonical_types_order
+        ]
+        self.tumors = self.type_rates.index
+        self._M = self.type_rates.to_numpy(dtype=float)
         self._M_total = self._M.sum(axis=0)
         mult = multipliers.reindex(table.genes)
         self.multipliers = mult
@@ -691,7 +695,7 @@ class SiteRates:
         """Summed rates per (gene, channel, label), without sites x tumors.
 
         ``sum_o mu^j_o`` over each group: the group's weighted type
-        counts times ``M``, times the gene multiplier. ``per_tumor``
+        counts times the type rates, times the gene multiplier. ``per_tumor``
         gives groups x tumors, else the sum over tumors.
         """
         if by_gene:
@@ -1282,7 +1286,9 @@ class SiteRates:
             "context": "coding",
         }
 
-    def variant_rates(self, variants, genes=None, per_tumor=True):
+    def variant_rates(
+        self, variants, genes=None, per_tumor=True, chunk=50_000
+    ):
         """Rates of protein (or splice) changes, summed over routes.
 
         Parameters
@@ -1305,9 +1311,14 @@ class SiteRates:
             mutation rates and observable rates.
         """
         variants = list(variants)
+        type_index = {
+            x: k for k, x in enumerate(canonical_types_order)
+        }
         infos = []
-        rates = np.zeros((len(variants), len(self.tumors)))
-        obs = np.zeros_like(rates)
+        failed = np.zeros(len(variants), dtype=bool)
+        r_var, r_gene, r_nonsyn, r_tau, r_w, r_seen = (
+            [] for _ in range(6)
+        )
         for i, v in enumerate(variants):
             if genes is not None:
                 gene, change = genes[i], v.split(" ")[-1]
@@ -1317,24 +1328,16 @@ class SiteRates:
                 rec = self.variant_routes(gene, change)
             except (KeyError, ValueError) as err:
                 infos.append({"variant": v, "error": str(err)})
-                rates[i] = obs[i] = np.nan
+                failed[i] = True
                 continue
             g_row = self.table.gene_row[self._gene_model_index(gene)]
-            nonsyn = rec["channel"] != "syn"
-            for tau_name, w, seen in zip(
-                rec["types"], rec["weights"], rec["observable"]
-            ):
-                tau = canonical_types_order.index(tau_name)
-                r = self._element_rates(
-                    np.array([g_row]),
-                    np.array([nonsyn]),
-                    [tau],
-                    w,
-                    True,
-                )[0]
-                rates[i] += r
-                if seen:
-                    obs[i] += r
+            n = len(rec["types"])
+            r_var += [i] * n
+            r_gene += [g_row] * n
+            r_nonsyn += [rec["channel"] != "syn"] * n
+            r_tau += [type_index[x] for x in rec["types"]]
+            r_w += list(rec["weights"])
+            r_seen += list(rec["observable"])
             infos.append(
                 {
                     "variant": v,
@@ -1344,10 +1347,9 @@ class SiteRates:
                         else None
                     ),
                     "channel": rec["channel"],
-                    "n_routes": len(rec["types"]),
+                    "n_routes": n,
                     "n_masked_routes": int(
-                        len(rec["observable"])
-                        - sum(rec["observable"])
+                        n - sum(rec["observable"])
                     ),
                     "routes": ";".join(rec["types"]),
                     "route_weights": rec["weights"],
@@ -1355,9 +1357,40 @@ class SiteRates:
                     "error": None,
                 }
             )
+        r_var = np.asarray(r_var, dtype=np.int64)
+        r_tau = np.asarray(r_tau, dtype=np.int64)
+        r_seen = np.asarray(r_seen, dtype=bool)
+        r_gene = np.asarray(r_gene, dtype=np.int64)
+        factor = np.asarray(r_w, dtype=float) * np.where(
+            r_gene >= 0,
+            self._mult[
+                np.maximum(r_gene, 0),
+                np.asarray(r_nonsyn, dtype=np.int64),
+            ],
+            np.nan,
+        )
+        V = len(variants)
+        total = self._M_total[r_tau] * factor
+        rate_total = np.bincount(r_var, weights=total, minlength=V)
+        obs_total = np.bincount(
+            r_var, weights=total * r_seen, minlength=V
+        )
+        rate_total = rate_total.astype(float)
+        obs_total = obs_total.astype(float)
+        rate_total[failed] = obs_total[failed] = np.nan
+        rates = obs = None
+        if per_tumor:
+            rates = np.zeros((V, len(self.tumors)))
+            obs = np.zeros_like(rates)
+            for s in range(0, len(r_var), chunk):
+                sl = slice(s, s + chunk)
+                contrib = self._M[:, r_tau[sl]].T * factor[sl, None]
+                np.add.at(rates, r_var[sl], contrib)
+                np.add.at(obs, r_var[sl], contrib * r_seen[sl, None])
+            rates[failed] = obs[failed] = np.nan
         info = pd.DataFrame(infos).set_index("variant")
-        info["rate_total"] = rates.sum(axis=1)
-        info["observable_rate_total"] = obs.sum(axis=1)
+        info["rate_total"] = rate_total
+        info["observable_rate_total"] = obs_total
         if not per_tumor:
             return info, None, None
         return (

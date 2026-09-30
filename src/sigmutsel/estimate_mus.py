@@ -421,6 +421,38 @@ def compute_mu_g_per_tumor(
     return out
 
 
+def type_denominators(contexts_by_gene, type_opportunity=None):
+    """``D_tau``: the per-type opportunity over the gene universe.
+
+    The denominator of ``p_{g tau}`` in the tau-dependent channel rates
+    (:func:`compute_mu_g_channel_per_tumor`): the column sums of
+    ``type_opportunity`` (genes x 96, all channels, after any germline
+    mask and site weights) over ``contexts_by_gene``'s genes, or, when
+    it is None, each type's context position count.
+
+    Returns
+    -------
+    pandas.Series
+        Indexed by ``constants.canonical_types_order``.
+    """
+    from .constants import canonical_types_order, extract_context
+
+    if type_opportunity is not None:
+        return (
+            type_opportunity.reindex(
+                index=contexts_by_gene.index,
+                columns=canonical_types_order,
+            )
+            .fillna(0.0)
+            .sum(axis=0)
+        )
+    out = contexts_by_gene.sum(axis=0)[
+        [extract_context(x) for x in canonical_types_order]
+    ]
+    out.index = canonical_types_order
+    return out
+
+
 def compute_mu_g_channel_per_tumor(
     mu_taus: pd.DataFrame | dict[int | str, pd.DataFrame],
     channel_contexts_by_gene: pd.DataFrame,
@@ -522,7 +554,7 @@ def compute_mu_g_channel_per_tumor(
             for sigma, mu_tau_sigma in mu_taus.items()
         }
 
-    from .constants import canonical_types_order, extract_context
+    from .constants import canonical_types_order
 
     if set(channel_contexts_by_gene.index) != set(
         contexts_by_gene.index
@@ -571,13 +603,9 @@ def compute_mu_g_channel_per_tumor(
             out = probs_g.to_frame(0).dot(mu_tumor.to_frame(0).T)
 
     else:
-        if type_opportunity is not None:
-            denominators = type_opportunity.sum(axis=0)
-        else:
-            denominators = contexts_by_gene.sum(axis=0)[
-                [extract_context(x) for x in canonical_types_order]
-            ]
-            denominators.index = canonical_types_order
+        denominators = type_denominators(
+            contexts_by_gene, type_opportunity
+        )
 
         probs_g_tau = channel[canonical_types_order] / denominators
 

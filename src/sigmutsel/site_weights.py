@@ -286,6 +286,10 @@ def variant_route_weights(db, models, coding_in, sw):
             _BASES[c] if c < 4 else "N"
             for c in models.codes[start : start + 3]
         )
+        if "N" in codon or len(codon) < 3:
+            # classify_calls gives such a call no routes either; the
+            # variant keeps weight 1.
+            continue
         pos = models.local[i] % 3
         mutated = codon[:pos] + _BASES[alt] + codon[pos + 1 :]
         target = (

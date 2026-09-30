@@ -1208,6 +1208,26 @@ def variant_site_denominators(
     return out
 
 
+def route_weights_of(types, weights):
+    """One site weight per route of a variant, aligned with its types.
+
+    ``types`` is a variant's ``mut_types`` (one type or a list, one
+    entry per route) and ``weights`` its ``route_weights`` entry
+    (:func:`site_weights.variant_route_weights`). Anything that is not
+    a list of the same length -- no site weights, a splice variant --
+    gives weight 1 to every route. Every variant rate multiplies its
+    route terms by these, so that the rate is the one its sites carry
+    in the opportunity.
+    """
+    n = 1 if isinstance(types, str) else len(types)
+    if (
+        isinstance(weights, (list, tuple, np.ndarray))
+        and len(weights) == n
+    ):
+        return [float(w) for w in weights]
+    return [1.0] * n
+
+
 def compute_mu_m_per_tumor(
     variants_df: pd.DataFrame,
     mu_g_tau_j: dict[str, pd.DataFrame],
@@ -1343,12 +1363,6 @@ def compute_mu_m_per_tumor(
     # with mut_types; 1 where there are none.
     has_w = "route_weights" in variants.columns
 
-    def _weights(types, w):
-        n = 1 if isinstance(types, str) else len(types)
-        if isinstance(w, (list, tuple, np.ndarray)) and len(w) == n:
-            return list(w)
-        return [1.0] * n
-
     routes = pd.DataFrame(
         {
             "row": np.arange(len(variants)),
@@ -1368,7 +1382,8 @@ def compute_mu_m_per_tumor(
         else [None] * len(routes)
     )
     routes["route_weight"] = [
-        _weights(t, w) for t, w in zip(routes["mut_types"], wcol)
+        route_weights_of(t, w)
+        for t, w in zip(routes["mut_types"], wcol)
     ]
     routes = routes.explode(["mut_types", "route_weight"])
     routes["route_weight"] = routes["route_weight"].astype(float)

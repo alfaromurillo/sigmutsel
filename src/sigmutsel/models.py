@@ -9839,12 +9839,20 @@ class Model:
         from .constants import extract_context
         from .estimate_mus import (
             compute_mu_g_channel_per_tumor,
+            route_weights_of,
             variant_site_denominators,
         )
 
         row = self.dataset.variant_db.loc[variant]
         gene_id = row["ensembl_gene_id"]
         mut_types = row["mut_types"]
+        # Same route weights as compute_mu_m_per_tumor: under site
+        # weights a route's rate is its type's per-unit rate times its
+        # site's weight. Leaving them out centres the draws on the
+        # unweighted rate, off mu_ms by the weight (up to ~1.9x).
+        weights = route_weights_of(
+            mut_types, row.get("route_weights")
+        )
         if isinstance(mut_types, str):
             mut_types = [mut_types]
 
@@ -9875,7 +9883,7 @@ class Model:
 
         total = None
         tumor_index = None
-        for tau in mut_types:
+        for tau, weight in zip(mut_types, weights):
             context = extract_context(tau)
             if (
                 gene_id not in contexts_by_gene.index
@@ -9900,7 +9908,9 @@ class Model:
             )[tau].loc[gene_id]
 
             contribution = scale[:, None] * (
-                baseline_g_tau.to_numpy()[None, :] / n_context
+                weight
+                * baseline_g_tau.to_numpy()[None, :]
+                / n_context
             )
             total = (
                 contribution

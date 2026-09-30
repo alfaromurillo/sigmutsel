@@ -495,6 +495,48 @@ def test_compute_mu_ms_divides_by_the_nonsyn_opportunities(tmp_path):
     )
 
 
+def test_mu_m_posterior_draws_carry_the_route_weights(tmp_path):
+    """Draws and mu_ms weight each route by its site weight alike.
+
+    All variants of one gene share their covariate-scale draws, so
+    ``draws / mu_ms`` is one number per draw, the same in every tumor
+    and for every variant of the gene, whatever the variant's route
+    weights. A draw path that drops the weights breaks that ratio by
+    exactly the weight -- which a loose centring check (rtol 0.2) did
+    not see.
+    """
+    from sigmutsel.constants import canonical_types_order
+
+    model = _fitted_model_with_variants(tmp_path)
+    t0, t1 = canonical_types_order[0], canonical_types_order[1]
+    model.dataset._variant_db = pd.DataFrame(
+        {
+            "ensembl_gene_id": ["ENSG_B"] * 3,
+            "mut_types": [t0, t0, [t0, t1]],
+            "route_weights": [None, [1.7], [0.6, 1.3]],
+        },
+        index=["PLAIN", "WEIGHTED", "WEIGHTED_MULTI"],
+    )
+    model.compute_mu_ms()
+    ratios = []
+    for v in model.dataset.variant_db.index:
+        draws = model.compute_mu_m_posterior_draws(
+            v, r_g_variant="none"
+        )
+        point = model.mu_ms.loc[v].reindex(draws.columns).to_numpy()
+        ratios.append(draws.to_numpy() / point[None, :])
+    for r in ratios:
+        np.testing.assert_allclose(r, ratios[0], rtol=1e-9)
+        np.testing.assert_allclose(
+            r, r[:, :1].repeat(r.shape[1], 1), rtol=1e-9
+        )
+    np.testing.assert_allclose(
+        model.mu_ms.loc["WEIGHTED"].to_numpy(),
+        1.7 * model.mu_ms.loc["PLAIN"].to_numpy(),
+        rtol=1e-9,
+    )
+
+
 def _model_with_a_silent_variant(tmp_path):
     """VAR1 plus a synonymous variant at a site of the same type in
     the same gene, marked silent the way MAF calls would mark it."""

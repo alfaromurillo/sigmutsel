@@ -174,6 +174,8 @@ class SiteTable:
         dbin, orient = position_bins(models)
         masked = np.zeros(types.shape, dtype=bool)
         if masked_keys is not None:
+            # Sorted and unique, for the binary searches of _in_sorted.
+            masked_keys = np.unique(np.asarray(masked_keys, np.int64))
             masked = _masked_alleles(models, idx, masked_keys)
 
         sg, st, sw = _splice_site_weights(models, splice_in)
@@ -267,6 +269,20 @@ def _chrom_codes(chrom):
     )
 
 
+def _in_sorted(keys, sorted_keys):
+    """``np.isin(keys, sorted_keys)`` for sorted, unique ``sorted_keys``.
+
+    A binary search: ``np.isin`` hashes the whole mask (millions of
+    alleles) on every call, ~0.5 s for a single query.
+    """
+    keys = np.asarray(keys, dtype=np.int64)
+    if not len(sorted_keys):
+        return np.zeros(keys.shape, dtype=bool)
+    j = np.searchsorted(sorted_keys, keys)
+    j = np.minimum(j, len(sorted_keys) - 1)
+    return sorted_keys[j] == keys
+
+
 def _masked_alleles(models, idx, masked_keys, chunk=5_000_000):
     """(n, 3) bool: which alternate bases of each position are masked."""
     from .germline_mask import allele_keys
@@ -280,7 +296,7 @@ def _masked_alleles(models, idx, masked_keys, chunk=5_000_000):
         minus = minus_gene[models.gene_of[i]]
         genomic_alt = np.where(minus[:, None], 3 - alts, alts)
         site = allele_keys(models.chrom_of[i], models.gpos[i], 0)
-        out[s : s + chunk] = np.isin(
+        out[s : s + chunk] = _in_sorted(
             site[:, None] + genomic_alt, masked_keys
         )
     return out
@@ -900,7 +916,7 @@ class SiteRates:
         if self.table.masked_keys is not None:
             genomic_alt = 3 - coding_alt if minus else coding_alt
             key = allele_keys([chrom], [gpos], [genomic_alt])
-            masked = bool(np.isin(key, self.table.masked_keys)[0])
+            masked = bool(_in_sorted(key, self.table.masked_keys)[0])
 
         if self.genome_dir is not None:
             step = -1 if minus else 1
@@ -1182,7 +1198,7 @@ class SiteRates:
         keys = allele_keys(
             m.chrom_of[flat], m.gpos[flat], genomic_alt
         )
-        return np.isin(keys, self.table.masked_keys)
+        return _in_sorted(keys, self.table.masked_keys)
 
     def _edge_record(self, channel, sites):
         """Routes at positions with no element: genome type, weight 1."""

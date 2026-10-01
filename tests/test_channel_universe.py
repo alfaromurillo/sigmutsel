@@ -703,6 +703,101 @@ def test_germline_mask_table_and_calls(tmp_path):
     ]
 
 
+def test_masked_calls_leave_the_models_data(tmp_path, monkeypatch):
+    """The mask is QC on both sides: calls on masked alleles are marked,
+    left out of model_calls (and so of every model input), and come
+    back when the mask is cleared."""
+    from sigmutsel import germline_mask
+    from sigmutsel.models import MutationDataset
+
+    db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["t1", "t2", "t2", "t3"],
+            "gene": ["GA", "GA", "GB", "GB"],
+            "ensembl_gene_id": ["ENSGA", "ENSGA", "ENSGB", "ENSGB"],
+            "variant": ["GA p.F2S", "GA p.F2C", "GB p.M1V", "GB x"],
+            "Chromosome": ["chr1", "chr1", "chr2", "chr2"],
+            "Start_Position": [105, 105, 1108, 1500],
+            "Tumor_Seq_Allele2": ["C", "G", "C", "A"],
+            "type": ["T[T>C]T", "T[T>G]T", "C[T>C]G", "T[C>T]A"],
+            "Variant_Classification": [
+                "Missense_Mutation",
+                "Missense_Mutation",
+                "Missense_Mutation",
+                "Intron",
+            ],
+            "channel": ["mis", "mis", "mis", None],
+            "in_universe": [True, True, True, False],
+        }
+    )
+    keys = _masked_keys([("chr1", 105, "C"), ("chr2", 1500, "A")])
+    monkeypatch.setattr(
+        germline_mask, "load_germline_mask", lambda af, **k: keys
+    )
+    dataset = MutationDataset(str(tmp_path / "mafs"))
+    dataset._mutation_db = db
+    dataset._channel_universe = {
+        "territory": None,
+        "splice_padding": 0,
+    }
+    dataset.compute_gene_presence()
+    assert dataset.genes_present.loc["ENSGA"].sum() == 2
+
+    dataset.set_germline_mask(0.001)
+    assert dataset.calls_masked
+    assert dataset.mutation_db["germline_masked"].tolist() == [
+        True,
+        False,
+        False,
+        True,
+    ]
+    # the masked in-universe call is gone from the data, and the
+    # presence table was rebuilt without it
+    assert list(dataset.model_db["variant"]) == [
+        "GA p.F2C",
+        "GB p.M1V",
+    ]
+    assert dataset.genes_present.loc["ENSGA"].sum() == 1
+    assert len(dataset.mutation_db) == 4  # stored, not deleted
+
+    dataset.set_germline_mask(None)
+    assert not dataset.calls_masked
+    assert len(dataset.model_db) == 3
+    assert dataset.genes_present.loc["ENSGA"].sum() == 2
+
+
+def test_masked_routes_weigh_nothing(models):
+    """A route on a masked allele gets weight 0, with or without site
+    weights; the other routes keep theirs."""
+    from sigmutsel.site_weights import variant_route_weights
+
+    db = pd.DataFrame(
+        {
+            "in_universe": [True],
+            "channel": ["mis"],
+            "variant": ["GA p.F2L"],
+            "ensembl_gene_id": ["ENSGA"],
+            "Start_Position": [104],
+            "Tumor_Seq_Allele2": ["C"],
+            "type": ["G[T>C]T"],
+        }
+    )
+    # F2L's routes: CTT at 104, TTA and TTG at 106. Mask TTG (106 G).
+    keys = _masked_keys([("chr1", 106, "G")])
+    plain = variant_route_weights(db, models, None, None)["GA p.F2L"]
+    masked = variant_route_weights(
+        db, models, None, None, masked_keys=keys
+    )["GA p.F2L"]
+    assert plain == [1.0, 1.0, 1.0]
+    assert sorted(masked) == [0.0, 1.0, 1.0]
+    weighted = variant_route_weights(
+        db, models, None, _planted(), masked_keys=keys
+    )["GA p.F2L"]
+    zero = masked.index(0.0)
+    assert weighted[zero] == 0.0
+    assert all(w > 0 for i, w in enumerate(weighted) if i != zero)
+
+
 def test_germline_table_resolution(tmp_path, monkeypatch):
     """Full table first; else the distributed one down to its floor;
     below the floor only an explicit full build."""

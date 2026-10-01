@@ -1589,9 +1589,14 @@ def model_calls(db, scope=None):
     With the channel universe (a ``in_universe`` column), only
     in-universe calls, and the scope is read off ``channel``:
     ``"silent"`` is ``syn`` and ``"non-silent"`` is ``mis``, ``non``
-    or ``spl``. A table classified before the channel universe existed
-    has no such column and keeps the old behaviour: every call, scoped
-    by the MAF's ``Variant_Classification``.
+    or ``spl``. A call on a germline-masked allele (a ``True`` in
+    ``germline_masked``, see
+    :meth:`models.MutationDataset.set_germline_mask`) is left out too:
+    the opportunity gives that allele no weight, so the data must not
+    count the few calls a pipeline rescued there. A table classified
+    before the channel universe existed has no such column and keeps
+    the old behaviour: every call, scoped by the MAF's
+    ``Variant_Classification``.
 
     Parameters
     ----------
@@ -1610,7 +1615,10 @@ def model_calls(db, scope=None):
             f"'non-silent'; got {scope!r}."
         )
     if "in_universe" in db.columns:
-        db = db[db["in_universe"].astype(bool)]
+        keep = db["in_universe"].astype(bool)
+        if "germline_masked" in db.columns:
+            keep &= ~db["germline_masked"].fillna(False).astype(bool)
+        db = db[keep]
         if scope == "silent":
             return db[db["channel"] == "syn"]
         if scope == "non-silent":

@@ -165,7 +165,9 @@ def _variant_db(models, db):
         ["ensembl_gene_id", "gene", "channel", "routes"]
     ]
     variants["mut_types"] = variants["routes"].str.split(";")
-    weights = variant_route_weights(db, models, None, _planted())
+    weights = variant_route_weights(
+        db, models, None, _planted(), masked_keys=_masked_keys(MASK)
+    )
     variants["route_weights"] = weights.reindex(
         variants.index
     ).to_numpy()
@@ -201,24 +203,6 @@ def _mu_ms(tables, mu_taus, variants):
             )
         )
     return pd.concat(parts).loc[variants.index], nonsyn_tab, syn_tab
-
-
-def _covered(variants, syn_tab, nonsyn_tab):
-    """Variants whose every route's type has opportunity in its channel.
-
-    mu_ms spreads a type rate over the channel's elements of the type;
-    where the mask removed a gene's last one, it drops the route (0/0)
-    while the site rate keeps it as mutation rate.
-    """
-
-    def covered(row):
-        tab = syn_tab if row["channel"] == "syn" else nonsyn_tab
-        return all(
-            tab.at[row["ensembl_gene_id"], t] > 0
-            for t in row["mut_types"]
-        )
-
-    return variants.apply(covered, axis=1).to_numpy()
 
 
 def test_site_table_rebuilds_the_opportunity(models):
@@ -272,19 +256,29 @@ def test_every_variant_gets_the_models_rate(models):
     rates = _site_rates(models, tables, mu_taus)
     db = _every_call(models)
     variants = _variant_db(models, db)
-    mu_ms, nonsyn_tab, syn_tab = _mu_ms(tables, mu_taus, variants)
-    info, got, _ = rates.variant_rates(
+    mu_ms, _, _ = _mu_ms(tables, mu_taus, variants)
+    info, got, observable = rates.variant_rates(
         list(variants.index), genes=list(variants["ensembl_gene_id"])
     )
     assert info["error"].isna().all()
     # Test 3: the same routes, in the same order.
     assert (info["routes"] == variants["routes"]).all()
-    ok = _covered(variants, syn_tab, nonsyn_tab)
-    assert ok.sum() > 0.95 * len(ok)
+    # mu_ms weights a masked route 0 (route_weights), so it is the
+    # observable rate -- for every variant, the 0/0 case included.
     np.testing.assert_allclose(
-        got.to_numpy()[ok], mu_ms.to_numpy()[ok], rtol=1e-9
+        observable.to_numpy(), mu_ms.to_numpy(), rtol=1e-9, atol=0
     )
-    assert (mu_ms.sum(axis=1).to_numpy()[ok] > 0).all()
+    masked = info["n_masked_routes"].to_numpy() > 0
+    assert masked.any() and (~masked).any()
+    np.testing.assert_allclose(
+        got.to_numpy()[~masked], mu_ms.to_numpy()[~masked], rtol=1e-9
+    )
+    # A masked route still mutates (unless, in this toy, its type has
+    # no other element anywhere, D_tau = 0).
+    assert (got.to_numpy() >= observable.to_numpy()).all()
+    assert (
+        got.to_numpy()[masked] > observable.to_numpy()[masked]
+    ).any()
 
 
 def test_masked_routes_are_mutation_not_observable(models):
@@ -424,17 +418,14 @@ def test_from_model_reproduces_mu_ms(models, tmp_path):
         genome_dir=None,
     )
     variants = dataset.variant_db
-    _, got, _ = rates.variant_rates(
+    _, _, observable = rates.variant_rates(
         list(variants.index), genes=list(variants["ensembl_gene_id"])
     )
-    full = _covered(
-        variants, tables["syn"], dataset._contexts_by_gene_nonsyn
-    )
-    assert full.sum() > 0.95 * len(full)
     np.testing.assert_allclose(
-        got.to_numpy()[full],
-        model.mu_ms.loc[variants.index].to_numpy()[full],
+        observable.to_numpy(),
+        model.mu_ms.loc[variants.index].to_numpy(),
         rtol=1e-9,
+        atol=0,
     )
     with pytest.raises(ValueError, match="production"):
         SiteRates.from_model(model, r_g="production")

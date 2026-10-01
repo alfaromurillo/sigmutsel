@@ -696,33 +696,62 @@ class MutationDataset:
                 self.generate_contexts_by_gene()
             else:
                 self.generate_contexts_by_gene(gene_universe=universe)
-        if self._variant_db is not None:
-            self._variant_db = self._variant_db.drop(
-                columns=["route_weights"], errors="ignore"
-            )
-            if site_weights is not None:
-                from .channel_universe import (
-                    load_or_build_transcript_models,
-                    territory_masks,
-                )
-                from .site_weights import variant_route_weights
+        self._attach_route_weights()
 
-                models = load_or_build_transcript_models()
-                coding_in, _ = territory_masks(
-                    models,
-                    splice_padding=params.get("splice_padding", 0),
-                )
-                weights = variant_route_weights(
-                    self.model_db, models, coding_in, site_weights
-                )
-                key = (
-                    self._variant_db["variant"]
-                    if "variant" in self._variant_db.columns
-                    else self._variant_db.index.to_series()
-                )
-                self._variant_db["route_weights"] = key.map(
-                    weights
-                ).to_numpy()
+    def _attach_route_weights(self):
+        """Give each variant of :attr:`variant_db` its route weights.
+
+        ``route_weights`` (aligned with ``mut_types``) is each route's
+        site weight, 0 where its allele is germline-masked
+        (:func:`site_weights.variant_route_weights`);
+        :func:`estimate_mus.compute_mu_m_per_tumor` multiplies them in.
+        Dropped when there are neither site weights nor a mask.
+        """
+        if (
+            self._variant_db is None
+            or not self.has_channel_universe()
+        ):
+            return
+        self._variant_db = self._variant_db.drop(
+            columns=["route_weights"], errors="ignore"
+        )
+        sw = self.site_weights
+        mask_af = self.germline_mask_af
+        if sw is None and mask_af is None:
+            return
+        from .channel_universe import (
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+        from .site_weights import variant_route_weights
+
+        params = self._channel_universe or {}
+        models = load_or_build_transcript_models()
+        coding_in = None
+        if params.get("territory", "mc3") == "mc3":
+            coding_in, _ = territory_masks(
+                models, splice_padding=params.get("splice_padding", 0)
+            )
+        masked_keys = None
+        if mask_af is not None:
+            from .germline_mask import load_germline_mask
+
+            masked_keys = load_germline_mask(mask_af)
+        weights = variant_route_weights(
+            self.model_db,
+            models,
+            coding_in,
+            sw,
+            masked_keys=masked_keys,
+        )
+        key = (
+            self._variant_db["variant"]
+            if "variant" in self._variant_db.columns
+            else self._variant_db.index.to_series()
+        )
+        self._variant_db["route_weights"] = key.map(
+            weights
+        ).to_numpy()
 
     @property
     def type_opportunity(self):
@@ -751,13 +780,20 @@ class MutationDataset:
 
     @record_call
     def set_germline_mask(self, germline_mask_af):
-        """Set (or clear, with None) the germline mask of the opportunity.
+        """Set (or clear, with None) the germline mask.
 
-        The calls do not change -- the mask is an opportunity
-        correction -- so this only records the threshold and rebuilds
-        the opportunity tables over the same gene universe. Use it to
-        move an existing dataset onto a mask without regenerating the
-        mutation table.
+        The mask removes the alleles GDC-style pipelines filter calls
+        on from the opportunity, and, symmetrically, every call on
+        them from the model's data: each call gets ``germline_masked``
+        and :func:`channel_universe.model_calls` leaves the marked ones
+        out (they stay in :attr:`mutation_db`). Those are the few calls
+        a pipeline rescued onto a masked allele; the model gives such
+        an allele no opportunity, so it must not count them either.
+        The opportunity tables, the call-derived tables that exist
+        (gene presence and counts, the variant catalogue and its
+        presence) and the route weights are rebuilt. Upstream fits
+        built from the calls (signature decomposition, mutational
+        matrices) are not: rebuild the dataset for those.
         """
         if not self.has_channel_universe():
             raise ValueError(
@@ -777,6 +813,72 @@ class MutationDataset:
                 self.generate_contexts_by_gene()
             else:
                 self.generate_contexts_by_gene(gene_universe=universe)
+        self._mark_germline_masked_calls()
+        self._refresh_call_tables()
+
+    def _mark_germline_masked_calls(self):
+        """Mark every call on an allele of the germline mask.
+
+        Sets ``germline_masked`` on :attr:`mutation_db` (all False
+        without a mask) and records ``mask_calls`` in
+        :attr:`channel_universe`, so a model can tell whether its data
+        had them removed.
+        """
+        if (
+            self._mutation_db is None
+            or not self.has_channel_universe()
+        ):
+            return
+        db = self._mutation_db.copy()
+        af = self.germline_mask_af
+        if af is None:
+            db["germline_masked"] = False
+        else:
+            from .germline_mask import (
+                calls_on_masked_alleles,
+                load_germline_mask,
+            )
+
+            db["germline_masked"] = calls_on_masked_alleles(
+                db, load_germline_mask(af)
+            ).to_numpy()
+            inside = db["in_universe"].astype(bool)
+            logger.info(
+                "Germline mask: %d of %d in-universe calls sit on a "
+                "masked allele and leave the model's data",
+                int((db["germline_masked"] & inside).sum()),
+                int(inside.sum()),
+            )
+        self._mutation_db = db
+        params = dict(self._channel_universe or {})
+        params["mask_calls"] = af is not None
+        self._channel_universe = params
+
+    def _refresh_call_tables(self):
+        """Recompute the call-derived tables that exist, after the
+        model's calls changed, and the route weights."""
+        if self._genes_present is not None:
+            self.compute_gene_presence()
+        if self._genes_present_non_silent is not None:
+            self.compute_gene_presence_non_silent()
+        if self._genes_present_silent is not None:
+            self.compute_gene_presence_silent()
+        if (
+            self._genes_counts_silent is not None
+            or self._genes_counts_non_silent is not None
+        ):
+            self.compute_gene_counts_channels()
+        if self._variant_db is not None:
+            self.generate_variant_db()
+            if self._variants_present is not None:
+                self.compute_variants_present()
+        else:
+            self._attach_route_weights()
+
+    @property
+    def calls_masked(self):
+        """Whether calls on germline-masked alleles are out of the data."""
+        return bool((self._channel_universe or {}).get("mask_calls"))
 
     @property
     def gene_transcripts(self):
@@ -1394,9 +1496,10 @@ class MutationDataset:
             with the territory so the opportunity removes the same
             alleles (:func:`channel_universe.channel_opportunity`).
             For GDC's masked MAFs, gnomAD v2.1.1 exomes above an
-            allele frequency. It does not reclassify any call: calls a
-            pipeline rescued onto a masked allele stay in the
-            universe. See also :meth:`set_germline_mask`.
+            allele frequency. Calls a pipeline rescued onto a masked
+            allele are marked ``germline_masked`` and left out of the
+            model's data, as the opportunity leaves out their alleles.
+            See also :meth:`set_germline_mask`.
 
         Returns
         -------
@@ -1465,6 +1568,9 @@ class MutationDataset:
                 else float(germline_mask_af)
             ),
         }
+
+        self._mark_germline_masked_calls()
+        db = self._mutation_db
 
         reasons = db["universe_reason"].value_counts()
         n = len(db)
@@ -1538,7 +1644,8 @@ class MutationDataset:
         )
 
         self._variant_db = variants
-        return variants
+        self._attach_route_weights()
+        return self._variant_db
 
     def compute_gene_presence(self):
         """Compute gene presence matrix from mutation database.
@@ -2754,13 +2861,16 @@ class MutationDataset:
                 mask_label,
             )
 
+            db = self.mutation_db
+            db = db[db["in_universe"].astype(bool)]
             on = calls_on_masked_alleles(
-                self.model_db, load_germline_mask(mask_af)
+                db, load_germline_mask(mask_af)
             )
             logger.info(
                 "Germline mask %s: opportunity removed per channel %s; "
-                "%d of %d model calls sit on a masked allele (kept: a "
-                "pipeline rescued them)",
+                "%d of %d in-universe calls sit on a masked allele "
+                "(rescued by a pipeline; out of the model's data once "
+                "marked)",
                 mask_label(mask_af),
                 tables["report"].get("masked_opportunity"),
                 int(on.sum()),
@@ -3166,6 +3276,7 @@ class Model:
     _rg_delta_intercept: float = None
     _baseline_germline_mask_af: float = None
     _baseline_site_weights: dict = None
+    _baseline_calls_masked: bool = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
     _rg_map_diagnostics: dict = None
@@ -3240,6 +3351,7 @@ class Model:
         self._rg_delta_intercept = None
         self._baseline_germline_mask_af = None
         self._baseline_site_weights = None
+        self._baseline_calls_masked = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
         self._rg_map_diagnostics = None
@@ -4117,6 +4229,15 @@ class Model:
     def baseline_site_weights(self):
         """Site weights (as a dict) the baselines were built on, or None."""
         return self._baseline_site_weights
+
+    @property
+    def baseline_calls_masked(self):
+        """Whether the baselines' data left out calls on masked alleles.
+
+        None for a model built before this was recorded (its data kept
+        them).
+        """
+        return self._baseline_calls_masked
 
     @record_call
     def estimate_site_weights(
@@ -6553,6 +6674,7 @@ class Model:
             "rg_delta_intercept": self._rg_delta_intercept,
             "baseline_germline_mask_af": self._baseline_germline_mask_af,
             "baseline_site_weights": self._baseline_site_weights,
+            "baseline_calls_masked": self._baseline_calls_masked,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -6723,6 +6845,9 @@ class Model:
         )
         model._baseline_site_weights = manifest.get(
             "baseline_site_weights"
+        )
+        model._baseline_calls_masked = manifest.get(
+            "baseline_calls_masked"
         )
         shifts = manifest.get("fallback_shifts")
         model._fallback_shifts = (
@@ -7403,6 +7528,9 @@ class Model:
         self._baseline_site_weights = (
             getattr(self.dataset, "channel_universe", None) or {}
         ).get("site_weights")
+        self._baseline_calls_masked = bool(
+            getattr(self.dataset, "calls_masked", False)
+        )
         return self._base_mus
 
     @record_call
@@ -7498,6 +7626,9 @@ class Model:
         self._baseline_site_weights = (
             getattr(self.dataset, "channel_universe", None) or {}
         ).get("site_weights")
+        self._baseline_calls_masked = bool(
+            getattr(self.dataset, "calls_masked", False)
+        )
 
         return self._base_mus_syn, self._base_mus_nonsyn
 

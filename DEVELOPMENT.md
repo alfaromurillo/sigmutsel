@@ -503,9 +503,25 @@ Martincorena et al. 2017, STAR Methods).
   germline_mask_af=)` caches the masked tables under their own tag.
 - The dataset records the threshold in `channel_universe`
   (`classify_mutation_db(germline_mask_af=)`, or `set_germline_mask()`
-  on an existing dataset, which rebuilds only the opportunity: no call
-  changes). Calls a pipeline rescued onto a masked allele stay in the
-  universe; the build logs how many.
+  on an existing dataset).
+- **The mask is QC on both sides.** The opportunity drops the masked
+  alleles, so the data drop the calls on them: each call gets
+  `germline_masked`, `model_calls` leaves the marked ones out of every
+  model input (they stay in `mutation_db`), and `channel_universe`
+  records `mask_calls`. These are the calls a pipeline rescued onto a
+  masked allele (0.2-0.4% of calls in TCGA cohorts) -- mostly germline
+  leakage or mapping artifacts, occasionally a real hotspot on a
+  common allele; a model whose opportunity cannot produce them must
+  not count them. `set_germline_mask()` re-marks the calls and
+  rebuilds the call-derived tables (presence, counts, variants, route
+  weights) but not the fits upstream of them (signature
+  decomposition): rebuild the dataset for those. A model records
+  whether its baselines' data were masked (`baseline_calls_masked`).
+- **Route weights carry the mask.** `variant_route_weights(...,
+  masked_keys=)` gives a route on a masked allele weight 0, so `mu_ms`
+  counts only observable routes (the article's `upsilon_o`); route
+  weights are attached whenever a mask or site weights are set
+  (`_attach_route_weights`, also called by `generate_variant_db`).
 - **The identity changes under a mask**: `Σ_h n^h[g,τ] <=
   contexts[g, c(τ)]`, so a type's opportunity is no longer its
   context's position count. Every rate builder then takes
@@ -553,9 +569,8 @@ the site table rebuilds the dataset's four channel tables.
 - **Masked alleles** keep their mutation rate (`rate`) and have
   observable rate 0 (`observable_rate`). Compare with calls through
   the observable rate; simulate mutations with the mutation rate.
-  `compute_mu_m_per_tumor` gives every route its unmasked weight
-  (it is the mutation rate), so the two differ exactly for variants
-  with a masked route.
+  `mu_ms` is the observable rate: `route_weights` are 0 on masked
+  routes.
 - **Splice contexts.** Aggregates spread donor +2 / acceptor -2 sites
   over the four contexts by composition, as the opportunity does; a
   single splice query reads the site's trinucleotide from a genome

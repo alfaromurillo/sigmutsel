@@ -231,15 +231,23 @@ def fit_site_weights(
     )
 
 
-def variant_route_weights(db, models, coding_in, sw):
+def variant_route_weights(
+    db, models, coding_in, sw, masked_keys=None
+):
     """Per variant, the weight of each of its routes, in route order.
 
     Routes are regenerated with their sites
     (:func:`channel_universe._routes`, ``with_sites=True``) from the
     variant's first in-universe coding call, in the order
     :func:`channel_universe.classify_calls` wrote them, so the list
-    lines up with the variant's ``mut_types``. Splice variants (one
-    site, outside the coding table) get weight 1.
+    lines up with the variant's ``mut_types``. A route's weight is its
+    site weight (``sw``; 1 without one) times 0 if its allele is in
+    ``masked_keys``: the germline mask removes that element from the
+    opportunity, so it adds nothing to the rate of an observable call
+    (the article's ``upsilon_o``). A call whose codon is incomplete
+    has one route, its own site. Splice variants (one site, outside
+    the coding table) get weight 1: their only route is the call's
+    own allele, which ``model_calls`` keeps only when it is unmasked.
 
     Returns
     -------
@@ -268,6 +276,10 @@ def variant_route_weights(db, models, coding_in, sw):
     keys_sorted, coding_sorted = keys[order], coding[order]
     minus_gene = models.selection["strand"].to_numpy() == "-"
     code_of = {"A": 0, "C": 1, "G": 2, "T": 3}
+    if masked_keys is not None:
+        masked_keys = np.unique(
+            np.asarray(masked_keys, dtype=np.int64)
+        )
     out = {}
     for row in calls.itertuples(index=False):
         g = gene_index.get(str(row.ensembl_gene_id))
@@ -282,27 +294,34 @@ def variant_route_weights(db, models, coding_in, sw):
         if minus_gene[g]:
             alt = int(_COMPLEMENT_CODE[alt])
         start = i - (models.local[i] % 3)
+        end = models.offsets[g] + models.lengths[g]
         codon = "".join(
             _BASES[c] if c < 4 else "N"
-            for c in models.codes[start : start + 3]
+            for c in models.codes[start : min(start + 3, end)]
         )
         if "N" in codon or len(codon) < 3:
-            # classify_calls gives such a call no routes either; the
-            # variant keeps weight 1.
+            # classify_calls gives such a call one route, its own
+            # site and type.
+            types = [str(row.type)]
+            sites = [(i, alt)]
+            if types[0] not in canonical_types_order:
+                continue
+        else:
+            pos = models.local[i] % 3
+            mutated = codon[:pos] + _BASES[alt] + codon[pos + 1 :]
+            target = (
+                None if row.channel == "syn" else _CODONS.get(mutated)
+            )
+            types, sites = _routes(
+                models,
+                start,
+                target,
+                row.channel,
+                coding_in,
+                with_sites=True,
+            )
+        if not types:
             continue
-        pos = models.local[i] % 3
-        mutated = codon[:pos] + _BASES[alt] + codon[pos + 1 :]
-        target = (
-            None if row.channel == "syn" else _CODONS.get(mutated)
-        )
-        types, sites = _routes(
-            models,
-            start,
-            target,
-            row.channel,
-            coding_in,
-            with_sites=True,
-        )
         t_idx = np.array(
             [canonical_types_order.index(t) for t in types],
             dtype=np.int64,
@@ -311,5 +330,30 @@ def variant_route_weights(db, models, coding_in, sw):
         w = weights_at(
             dbin[s_idx], orient[s_idx], t_idx[:, None], sw
         )[:, 0]
+        if masked_keys is not None:
+            w = w * ~_route_alleles_masked(
+                models, sites, minus_gene, masked_keys
+            )
         out[row.variant] = [float(x) for x in w]
     return pd.Series(out, dtype=object)
+
+
+def _route_alleles_masked(models, sites, minus_gene, masked_keys):
+    """Whether each route's (site, coding alt) allele is masked."""
+    from .germline_mask import allele_keys
+
+    flat = np.array([s for s, _ in sites], dtype=np.int64)
+    alt = np.array([a for _, a in sites], dtype=np.int64)
+    minus = minus_gene[models.gene_of[flat]]
+    genomic_alt = np.where(minus, 3 - alt, alt)
+    keys = allele_keys(
+        models.chrom_of[flat], models.gpos[flat], genomic_alt
+    )
+    j = np.minimum(
+        np.searchsorted(masked_keys, keys), len(masked_keys) - 1
+    )
+    return (
+        (masked_keys[j] == keys)
+        if len(masked_keys)
+        else np.zeros(len(keys), dtype=bool)
+    )

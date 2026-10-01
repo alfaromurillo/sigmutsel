@@ -31,15 +31,16 @@ grouping of the elements.
 Masked alleles
 --------------
 An allele of the germline mask is not opportunity (a call there is
-filtered out, so the model gives it ``upsilon_o = 0``), but it still
-mutates. Every query reports both: ``rate`` is the **mutation rate**,
-each element at its unmasked weight, and ``observable_rate`` the rate
-of an observable call, masked elements at 0. Use the observable rate
-for anything compared with calls -- expected counts, gamma, the
-recurrence check -- and the mutation rate for simulating mutations.
-:func:`estimate_mus.compute_mu_m_per_tumor` (``mu_ms``) gives every
-route its unmasked weight, so it is the mutation rate; the two agree
-for a variant with no masked route.
+filtered out, so the model gives it ``upsilon_o = 0``, and the few calls
+a pipeline rescued there are left out of the model's data,
+:func:`channel_universe.model_calls`), but it still mutates. Every
+query reports both: ``rate`` is the **mutation rate**, each element at
+its unmasked weight, and ``observable_rate`` the rate of an observable
+call, masked elements at 0. Use the observable rate for anything
+compared with calls -- expected counts, gamma, the recurrence check --
+and the mutation rate for simulating mutations. ``mu_ms``
+(:func:`estimate_mus.compute_mu_m_per_tumor`, whose ``route_weights``
+are 0 on masked routes) is the observable rate.
 
 Splice contexts
 ---------------

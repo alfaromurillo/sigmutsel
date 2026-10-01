@@ -2378,7 +2378,12 @@ class MutationDataset:
         ``sig_assignments`` that surfaced as an all-NaN row deep in
         downstream covariate-effect estimation, far from the actual
         cause. Any rerun with different fit parameters must clear (or
-        back up) **both** directories, not just one.
+        back up) **both** directories, not just one. Since 2026-09-30
+        each cache also stores a fingerprint of its input matrix and
+        settings (:func:`signature_decomposition.signature_decomposition`)
+        and is refitted when they differ, so a rebuilt matrix -- e.g.
+        without the calls on germline-masked alleles -- can no longer
+        load old exposures.
 
         Only supports ``signature_class="SBS"`` (the matrix rebuild
         uses `constants.canonical_types_order`, which is SBS96-specific).

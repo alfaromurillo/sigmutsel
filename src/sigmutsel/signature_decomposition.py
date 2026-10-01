@@ -864,6 +864,45 @@ def run_signature_decomposition(
     )
 
 
+def _decomposition_fingerprint(input_data, kwargs):
+    """Hash of a decomposition's input and the settings that reach it.
+
+    The input file's bytes (a directory: its files' names and sizes),
+    plus every keyword argument passed to SigProfilerAssignment. The
+    signature include/exclude lists are applied after loading, so they
+    are not part of it.
+    """
+    import hashlib
+
+    h = hashlib.sha1()
+    path = Path(input_data)
+    if path.is_file():
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                h.update(block)
+    elif path.is_dir():
+        for f in sorted(path.rglob("*")):
+            if f.is_file():
+                h.update(
+                    f"{f.relative_to(path)}:{f.stat().st_size}".encode()
+                )
+    else:
+        h.update(str(input_data).encode())
+    settings = {
+        k: v
+        for k, v in kwargs.items()
+        if k
+        not in (
+            "include_signature_subgroups",
+            "exclude_signature_subgroups",
+        )
+    }
+    h.update(
+        repr(sorted(settings.items(), key=lambda kv: kv[0])).encode()
+    )
+    return h.hexdigest()
+
+
 def signature_decomposition(
     results_dir: str,
     input_data: str,
@@ -923,6 +962,31 @@ def signature_decomposition(
         / "Assignment_Solution_Activities.txt"
     )
 
+    # A cached solution is valid only for the input and settings it was
+    # fitted on. The cache used to be existence-only, so a rebuilt
+    # matrix (other calls, e.g. after a QC change) or a changed setting
+    # silently got the old exposures.
+    fingerprint = _decomposition_fingerprint(input_data, kwargs)
+    fingerprint_file = solution_dir / "input_fingerprint.txt"
+    if solution_dir.exists() and not force_generation:
+        stored = (
+            fingerprint_file.read_text().strip()
+            if fingerprint_file.exists()
+            else None
+        )
+        if stored != fingerprint:
+            logger.warning(
+                "Cached signature decomposition in %s was fitted on %s; "
+                "refitting.",
+                solution_dir,
+                (
+                    "another input or other settings"
+                    if stored
+                    else "an unrecorded input (no fingerprint)"
+                ),
+            )
+            force_generation = True
+
     if force_generation and solution_dir.exists():
         logger.info(
             f"Deleting previous signature decomposition from {solution_dir}"
@@ -938,6 +1002,8 @@ def signature_decomposition(
         run_signature_decomposition(
             str(input_data), str(results_path), **kwargs
         )
+        if solution_dir.exists():
+            fingerprint_file.write_text(fingerprint + "\n")
     else:
         logger.info(
             "Loading signature decomposition for all tumors..."

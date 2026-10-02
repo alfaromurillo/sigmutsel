@@ -96,16 +96,26 @@ def process_tcga_maf_downloads(
         annotations_condition = annotations_file.is_file()
         logs_condition = logs_dir.is_dir()
 
-        if maf_condition and annotations_condition and logs_condition:
+        # Only the MAF itself is data. gdc-client fetches
+        # annotations.txt from a separate API call that times out under
+        # load, and a bundle without it is still a complete MAF:
+        # requiring it silently dropped valid tumors.
+        if maf_condition:
             logger.info("Processing %s", subdir.name)
             _extract_maf(maf_files[0], destination_dir)
+            if not (annotations_condition and logs_condition):
+                logger.info(
+                    "%s: extracted without annotations.txt (%s) or "
+                    "logs dir (%s)",
+                    subdir.name,
+                    annotations_condition,
+                    logs_condition,
+                )
         else:
             logger.warning(
-                "Skipping %s (maf.gz: %d, annotations.txt: %s, logs dir: %s)",
+                "Skipping %s (maf.gz: %d)",
                 subdir.name,
                 len(maf_files),
-                annotations_condition,
-                logs_condition,
             )
 
         if not maf_condition:

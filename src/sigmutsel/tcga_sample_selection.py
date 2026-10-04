@@ -372,8 +372,12 @@ def select_tcga_maf_files(
         trigger a GDC API call (needs *project* only for logging
         context, not for the query itself).
     exclude_prior_treatment : bool, default False
-        If ``True``, drop every file belonging to a case whose GDC
-        ``diagnoses.prior_treatment`` is ``"Yes"``. This is a
+        If ``True``, drop every file belonging to a case whose
+        primary diagnosis has GDC ``prior_treatment`` ``"Yes"``
+        (gdcfetch reads the primary diagnosis since c24ae4f; before,
+        it read whichever diagnosis GDC listed first, often a
+        recurrence or metastasis whose treatment followed the
+        primary's collection). This is a
         case-level flag, not sample-level -- GDC does not reliably
         record which specific aliquot was collected relative to a
         treatment's start date (see :func:`fetch_gdc_case_metadata`),

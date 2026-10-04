@@ -2516,10 +2516,12 @@ class MutationDataset:
                 if treatment_cols
                 else pd.Series(0.0, index=pass_a_assignments.index)
             )
-            treatment_load = treatment_totals / pass_a_totals.replace(
-                0, pd.NA
-            )
-            treatment_load = treatment_load.astype(float)
+            # np.nan, not pd.NA: a zero-burden tumor (all-zero
+            # exposures) made the ratio an object column holding
+            # pd.NA, which astype(float) cannot convert.
+            treatment_load = treatment_totals.astype(
+                float
+            ) / pass_a_totals.astype(float).replace(0, np.nan)
             # Below the burden gate, an unrestricted fit's fraction is
             # too noisy to trust as a QC signal -- never flag these
             # (NaN > threshold is False, so this is sufficient).

@@ -410,3 +410,59 @@ def test_two_pass_only_supports_sbs(tmp_path):
     )
     with pytest.raises(NotImplementedError, match="SBS"):
         dataset.run_two_pass_signature_decomposition()
+
+
+def test_two_pass_treatment_load_qc_keeps_zero_burden_tumor(
+    tmp_path, monkeypatch
+):
+    """A tumor with all-zero pass A exposures (its only SNV outside
+    the channel universe) has no treatment load at all; the ratio
+    used to hold pd.NA and astype(float) raised a TypeError."""
+    dataset = _make_dataset(tmp_path)
+    dataset._mutation_db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1"] * 10 + ["S0"],
+            "type": ["A[C>A]A"] * 11,
+            "Variant_Classification": ["Missense_Mutation"] * 11,
+        }
+    )
+    monkeypatch.setattr("sigmutsel.constants.ARTIFACT_SIGNATURES", [])
+    monkeypatch.setattr(
+        "sigmutsel.constants.TREATMENT_ASSOCIATED_SIGNATURES",
+        ["SIG_TREAT"],
+    )
+    pass_a_assignments = pd.DataFrame(
+        {"SIG_A": [9, 0], "SIG_TREAT": [1, 0]}, index=["S1", "S0"]
+    )
+    sig_matrix = pd.DataFrame(
+        {
+            "MutationType": ["A[C>A]A"],
+            "SIG_A": [1.0],
+            "SIG_TREAT": [1.0],
+        }
+    ).set_index("MutationType")
+
+    def fake_pass_a(self, *args, **kwargs):
+        self._sig_assignments = pass_a_assignments
+        self._signature_matrix = sig_matrix
+        return pass_a_assignments
+
+    monkeypatch.setattr(
+        MutationDataset, "run_signature_decomposition", fake_pass_a
+    )
+    monkeypatch.setattr(
+        "sigmutsel.signature_decomposition.signature_decomposition",
+        lambda **kwargs: pd.DataFrame(
+            {"SIG_A": [9, 0]}, index=["S1", "S0"]
+        ),
+    )
+
+    dataset.run_two_pass_signature_decomposition(
+        treatment_load_threshold=0.2,
+        min_burden_for_diagnostics=5,
+    )
+
+    assert set(dataset.mutation_db["Tumor_Sample_Barcode"]) == {
+        "S0",
+        "S1",
+    }

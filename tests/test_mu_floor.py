@@ -84,3 +84,39 @@ def test_floor_signature_with_a_zero_type_is_refused(setup):
             floor_signature="SIG_Z",
             floor_pseudocount=1,
         )
+
+
+def test_pooled_share_shrinks_toward_the_cohort_spectrum(setup):
+    db, path, assignments = setup
+    db = db.assign(type=["T1"] * 3 + ["T1"] * 60 + ["T2"] * 40)
+    mus = compute_mu_tau_per_tumor(
+        db,
+        path,
+        assignments,
+        floor_signature="SIG5",
+        floor_pseudocount=1,
+        floor_pooled_share=0.9,
+    )
+    # Pooled observed spectrum (63, 40) / 103; e = 0.9 pooled + 0.1 SIG5.
+    e_t2 = 0.9 * 40 / 103 + 0.1 * 0.5
+    # A: unfloored spectrum (1, 0), n = 3 -> T2 share e_t2 / 4.
+    assert mus.at["A", "T2"] == pytest.approx(3 * e_t2 / 4)
+    assert mus.loc["A"].sum() == pytest.approx(3)
+    # B: spectrum (0.75, 0.25), n = 100.
+    assert mus.at["B", "T2"] == pytest.approx(
+        100 * (100 * 0.25 + e_t2) / 101
+    )
+
+
+def test_pooled_share_is_refused_with_separate_per_sigma(setup):
+    db, path, assignments = setup
+    with pytest.raises(ValueError, match="separate_per_sigma"):
+        compute_mu_tau_per_tumor(
+            db,
+            path,
+            assignments,
+            separate_per_sigma=True,
+            floor_signature="SIG5",
+            floor_pseudocount=1,
+            floor_pooled_share=0.5,
+        )

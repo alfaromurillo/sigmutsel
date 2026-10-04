@@ -120,6 +120,74 @@ def _floor_alphas(
     return alphas, sig_matrix
 
 
+def _floored_spectra(
+    db,
+    alphas,
+    sig_matrix,
+    full_matrix,
+    assignments,
+    ell_hats,
+    signature,
+    kappa,
+    scope,
+    pooled_share,
+):
+    """Per-type rates with the spectrum floor of a pooled share.
+
+    See `compute_mu_tau_per_tumor`'s ``floor_pooled_share``.
+    """
+    from .channel_universe import model_calls
+
+    if scope not in ("all", "zero_types"):
+        raise ValueError(
+            f"floor_scope must be 'all' or 'zero_types', not {scope!r}"
+        )
+    if signature not in full_matrix.columns:
+        raise ValueError(
+            f"floor signature {signature!r} is not in the signature matrix"
+        )
+    types = sig_matrix.index
+    floor = full_matrix[signature].reindex(types)
+    if (floor <= 0).any():
+        raise ValueError(
+            f"floor signature {signature!r} has types with probability 0; "
+            "it cannot guarantee every type a positive rate"
+        )
+    counts = (
+        model_calls(db)["type"]
+        .value_counts()
+        .reindex(types, fill_value=0)
+    )
+    pooled = counts / counts.sum() if counts.sum() else floor * 0
+    e = pooled_share * pooled + (1 - pooled_share) * floor
+    p = alphas.dot(sig_matrix.T)
+    n = (
+        assignments.reindex(index=alphas.index)
+        .sum(axis=1)
+        .fillna(0.0)
+        .astype(float)
+    )
+    rows = pd.Series(True, index=p.index)
+    if scope == "zero_types":
+        rows = (p <= 0).any(axis=1)
+    floored = (
+        p.mul(n, axis=0).add(kappa * e, axis=1).div(n + kappa, axis=0)
+    )
+    p = p.where(~rows, floored, axis=0)
+    logger.info(
+        "Spectrum floor: %g pseudo-mutation(s), %.0f%% the cohort's "
+        "pooled spectrum and %.0f%% %s, in %d of %d tumors (scope %s)",
+        kappa,
+        100 * pooled_share,
+        100 * (1 - pooled_share),
+        signature,
+        int(rows.sum()),
+        len(rows),
+        scope,
+    )
+    return p.multiply(ell_hats, axis=0)
+
+
 def compute_mu_tau_per_tumor(
     db,
     location_signature_matrix,
@@ -131,6 +199,7 @@ def compute_mu_tau_per_tumor(
     floor_signature=None,
     floor_pseudocount=0.0,
     floor_scope="all",
+    floor_pooled_share=0.0,
 ):
     r"""Compute per-tumor per-type baseline mutation rates.
 
@@ -184,6 +253,18 @@ def compute_mu_tau_per_tumor(
     floor_scope : {"all", "zero_types"}, default "all"
         Which tumors get the floor: every tumor, or only those whose
         unfloored spectrum gives some type probability 0.
+    floor_pooled_share : float, default 0.0
+        Share of the cohort's pooled spectrum (its observed type
+        frequencies over every tumor in ``db``) in what the
+        pseudo-mutations are drawn from; the rest is
+        ``floor_signature``. The floor then acts on the spectrum, ``p'
+        = (n p + kappa e) / (n + kappa)``, ``e = share * pooled + (1 -
+        share) * floor_signature`` -- with share 0 the same as the
+        signature floor above. Must be below 1, so ``e`` keeps every
+        type positive. Held out, a pooled spectrum with a 10% SBS5
+        share predicted tumors' unseen mutations best; it shrinks
+        every tumor's spectrum toward its cohort's. Not available
+        with ``separate_per_sigma``.
     L_high : float or None, default None
         Upper burden threshold for intermediate-burden
         correction. If None, no correction is applied.
@@ -263,6 +344,31 @@ def compute_mu_tau_per_tumor(
     common_sigs = sig_matrix.columns.intersection(assignments.columns)
     sig_matrix = sig_matrix[common_sigs]
     alphas = alphas[common_sigs]
+
+    if (
+        floor_signature is not None
+        and floor_pseudocount > 0
+        and floor_pooled_share > 0
+    ):
+        if separate_per_sigma:
+            raise ValueError(
+                "floor_pooled_share acts on the spectrum, not per "
+                "signature; it cannot be combined with separate_per_sigma"
+            )
+        if not 0 < floor_pooled_share < 1:
+            raise ValueError("floor_pooled_share must be in [0, 1)")
+        return _floored_spectra(
+            db,
+            alphas,
+            sig_matrix,
+            load_signature_matrix(location_signature_matrix),
+            assignments,
+            ell_hats,
+            floor_signature,
+            floor_pseudocount,
+            floor_scope,
+            floor_pooled_share,
+        )
 
     if floor_signature is not None and floor_pseudocount > 0:
         alphas, sig_matrix = _floor_alphas(

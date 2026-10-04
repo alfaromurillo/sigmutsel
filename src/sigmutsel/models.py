@@ -3359,6 +3359,7 @@ class Model:
         mu_floor_signature: str | None = None,
         mu_floor_pseudocount: float | None = None,
         mu_floor_scope: str | None = None,
+        mu_floor_pooled_share: float | None = None,
     ):
         self._run_history = []
         self.dataset = dataset
@@ -3407,6 +3408,7 @@ class Model:
             "floor_signature": mu_floor_signature,
             "floor_pseudocount": mu_floor_pseudocount,
             "floor_scope": mu_floor_scope,
+            "floor_pooled_share": mu_floor_pooled_share,
         }
         self._auto_cov_effects_per_sigma = cov_effects_per_sigma
         self._auto_prob_g_tau_tau_independent = (
@@ -4267,7 +4269,7 @@ class Model:
     def mu_floor(self):
         """The exposure floor the baselines were built with, or None.
 
-        ``{"signature", "pseudocount", "scope"}`` (see
+        ``{"signature", "pseudocount", "scope", "pooled_share"}`` (see
         `estimate_mus.compute_mu_tau_per_tumor`'s ``floor_signature``).
         """
         return self._mu_floor
@@ -7402,6 +7404,10 @@ class Model:
                     "pseudocount": float(kappa),
                     "scope": compute_kwargs.get("floor_scope")
                     or "all",
+                    "pooled_share": float(
+                        compute_kwargs.get("floor_pooled_share")
+                        or 0.0
+                    ),
                 }
                 if floor is not None and kappa > 0
                 else None

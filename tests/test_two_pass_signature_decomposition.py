@@ -109,8 +109,11 @@ def test_two_pass_cleans_mutation_db_and_uses_pass_b_results(
         fake_pass_b,
     )
 
+    # S1 has 10 fitted mutations; the gate is lowered so the
+    # artifact step applies to it (the default, 100, would keep its
+    # artifact mutation -- see the low-burden test below).
     result = dataset.run_two_pass_signature_decomposition(
-        artifact_threshold=0.5
+        artifact_threshold=0.5, min_burden_for_diagnostics=5
     )
 
     assert len(pass_b_calls) == 1
@@ -466,3 +469,52 @@ def test_two_pass_treatment_load_qc_keeps_zero_burden_tumor(
         "S0",
         "S1",
     }
+
+
+def test_two_pass_keeps_artifact_type_mutation_below_burden_gate(
+    tmp_path, monkeypatch
+):
+    """Below min_burden_for_diagnostics no mutation is flagged as an
+    artifact: a tumor's pass A fit on a few mutations makes any type
+    only the artifact signature emits look like an artifact, real
+    driver hotspots included (thyroid BRAF V600E, thymoma GTF2I
+    L424H)."""
+    dataset = _make_dataset(tmp_path)
+    monkeypatch.setattr(
+        "sigmutsel.constants.ARTIFACT_SIGNATURES", ["SIG_ARTIFACT"]
+    )
+    monkeypatch.setattr(
+        "sigmutsel.constants.TREATMENT_ASSOCIATED_SIGNATURES", []
+    )
+    pass_a_assignments = pd.DataFrame(
+        {"SIG_A": [8], "SIG_ARTIFACT": [2]}, index=["S1"]
+    )
+
+    def fake_pass_a(self, *args, **kwargs):
+        self._sig_assignments = pass_a_assignments
+        self._signature_matrix = _SIG_MATRIX
+        return pass_a_assignments
+
+    monkeypatch.setattr(
+        MutationDataset, "run_signature_decomposition", fake_pass_a
+    )
+
+    def fake_pass_b(**kwargs):
+        matrix = pd.read_csv(
+            kwargs["input_data"], sep="\t", index_col=0
+        )
+        # The artifact-type mutation reaches pass B.
+        assert matrix.loc["A[C>A]C", "S1"] == 1
+        return pd.DataFrame({"SIG_A": [10]}, index=["S1"])
+
+    monkeypatch.setattr(
+        "sigmutsel.signature_decomposition.signature_decomposition",
+        fake_pass_b,
+    )
+
+    dataset.run_two_pass_signature_decomposition(
+        artifact_threshold=0.5
+    )
+
+    assert len(dataset.mutation_db) == 3
+    assert (dataset.mutation_db["type"] == "A[C>A]C").sum() == 1

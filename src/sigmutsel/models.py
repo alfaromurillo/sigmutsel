@@ -2404,12 +2404,14 @@ class MutationDataset:
             entirely -- the per-cancer-type table is used as-is.
         min_burden_for_diagnostics : int, default 100
             Minimum fitted mutation count (pass A's per-sample
-            assignment total) for a sample to be eligible for either
-            step 2 or step 3 -- both are per-sample/per-cohort
-            statistics that are too noisy to trust below this count
-            (see this project's plan). Samples below this count are
-            never flagged by step 2 and never contribute to step 3's
-            prevalence counts.
+            assignment total) for a sample to be eligible for any of
+            steps 1-3 -- all three read pass A's per-sample fit, which
+            is too noisy to trust below this count (see this
+            project's plan). Below it no mutation is flagged by step
+            1, no sample by step 2, and none contributes to step 3's
+            prevalence counts. Step 1 took no gate until 2026-10-04:
+            low-burden tumors lost 4-9% of their calls, driver
+            hotspots among them.
         force_generation, exome, cosmic_version, genome_build :
             Forwarded to both passes (see :meth:`run_signature_decomposition`
             for defaults).
@@ -2631,6 +2633,27 @@ class MutationDataset:
         artifact_mass = pd.Series(
             artifact_mass, index=working_db.index
         )
+        # Below the burden gate a tumor's pass A fit is a handful of
+        # mutations spread over whichever signatures happen to fit
+        # them, and a mutation whose type only the artifact
+        # signature can emit gets artifact mass 1 -- real driver
+        # hotspots included (thyroid BRAF V600E, thymoma GTF2I L424H).
+        # Never flag a mutation there, as steps 2 and 3 never use
+        # such a tumor.
+        low_burden = working_db["Tumor_Sample_Barcode"].map(
+            pass_a_totals < min_burden_for_diagnostics
+        )
+        low_burden = low_burden.fillna(True).astype(bool)
+        n_gated = int(
+            (low_burden & (artifact_mass > artifact_threshold)).sum()
+        )
+        if n_gated:
+            logger.info(
+                f"Pass A: {n_gated} mutation(s) above the artifact "
+                "threshold kept: their tumors' pass A burden is below "
+                f"{min_burden_for_diagnostics}."
+            )
+        artifact_mass = artifact_mass.where(~low_burden, 0.0)
 
         tagged_db = flag_artifact_signature_mutations(
             working_db,

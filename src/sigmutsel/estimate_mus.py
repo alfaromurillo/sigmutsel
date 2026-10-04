@@ -53,6 +53,73 @@ def _with_fallback(scaled, baseline, ids_all, fallback_log_scale):
     return scaled.loc[ids_all]
 
 
+def _floor_alphas(
+    alphas,
+    sig_matrix,
+    full_matrix,
+    assignments,
+    signature,
+    kappa,
+    scope,
+):
+    """Mix ``kappa`` pseudo-mutations of ``signature`` into exposures.
+
+    See `compute_mu_tau_per_tumor`'s ``floor_signature``. Returns the
+    floored exposures and the signature matrix extended with
+    ``signature`` if the fit did not use it.
+    """
+    if scope not in ("all", "zero_types"):
+        raise ValueError(
+            f"floor_scope must be 'all' or 'zero_types', not {scope!r}"
+        )
+    if signature not in full_matrix.columns:
+        raise ValueError(
+            f"floor signature {signature!r} is not in the signature matrix"
+        )
+    floor = full_matrix[signature]
+    if (floor <= 0).any():
+        raise ValueError(
+            f"floor signature {signature!r} has types with probability 0; "
+            "it cannot guarantee every type a positive rate"
+        )
+    if signature not in sig_matrix.columns:
+        sig_matrix = sig_matrix.join(floor)
+        alphas = alphas.assign(**{signature: 0.0})
+    n = (
+        assignments.reindex(index=alphas.index)
+        .sum(axis=1)
+        .fillna(0.0)
+        .astype(float)
+    )
+    rows = pd.Series(True, index=alphas.index)
+    if scope == "zero_types":
+        spectrum = alphas.to_numpy() @ sig_matrix.to_numpy().T
+        rows = pd.Series(
+            (spectrum <= 0).any(axis=1), index=alphas.index
+        )
+    e = pd.Series(0.0, index=alphas.columns)
+    e[signature] = 1.0
+    floored = (alphas.mul(n, axis=0) + kappa * e).div(
+        n + kappa, axis=0
+    )
+    alphas = alphas.where(~rows, floored, axis=0)
+    logger.info(
+        "Exposure floor: %g pseudo-mutation(s) of %s in %d of %d tumors "
+        "(scope %s); median weight %.3g",
+        kappa,
+        signature,
+        int(rows.sum()),
+        len(rows),
+        scope,
+        (
+            float((kappa / (n[rows] + kappa)).median())
+            if rows.any()
+            else 0.0
+        ),
+    )
+    return alphas, sig_matrix
+
+
 def compute_mu_tau_per_tumor(
     db,
     location_signature_matrix,
@@ -61,6 +128,9 @@ def compute_mu_tau_per_tumor(
     L_high=None,
     cut_at_L_low=False,
     separate_per_sigma=False,
+    floor_signature=None,
+    floor_pseudocount=0.0,
+    floor_scope="all",
 ):
     r"""Compute per-tumor per-type baseline mutation rates.
 
@@ -97,6 +167,23 @@ def compute_mu_tau_per_tumor(
         Lower burden threshold for correcting low-burden
         samples. If None, no correction is applied. Used to
         handle samples with very few mutations.
+    floor_signature : str or None, default None
+        A signature mixed into every tumor's exposures as
+        ``floor_pseudocount`` pseudo-mutations:
+        ``alpha' = (n alpha + kappa e) / (n + kappa)``, with ``n`` the
+        tumor's fitted mutation count (its assignment total) and ``e``
+        the unit vector of ``floor_signature``. A fit on a few
+        mutations can land on signatures that give some type
+        probability 0 -- e.g. SBS84 alone, which cannot emit any
+        T>A -- and then a mutation the tumor carries has rate 0. A
+        signature with no zero types (SBS5) guarantees every type a
+        positive rate; its weight ``kappa / (n + kappa)`` vanishes
+        with burden. None (default) applies no floor.
+    floor_pseudocount : float, default 0.0
+        ``kappa`` above. 0 applies no floor.
+    floor_scope : {"all", "zero_types"}, default "all"
+        Which tumors get the floor: every tumor, or only those whose
+        unfloored spectrum gives some type probability 0.
     L_high : float or None, default None
         Upper burden threshold for intermediate-burden
         correction. If None, no correction is applied.
@@ -176,6 +263,17 @@ def compute_mu_tau_per_tumor(
     common_sigs = sig_matrix.columns.intersection(assignments.columns)
     sig_matrix = sig_matrix[common_sigs]
     alphas = alphas[common_sigs]
+
+    if floor_signature is not None and floor_pseudocount > 0:
+        alphas, sig_matrix = _floor_alphas(
+            alphas,
+            sig_matrix,
+            load_signature_matrix(location_signature_matrix),
+            assignments,
+            floor_signature,
+            floor_pseudocount,
+            floor_scope,
+        )
 
     if not separate_per_sigma:
         mus = alphas.dot(sig_matrix.T).multiply(ell_hats, axis=0)

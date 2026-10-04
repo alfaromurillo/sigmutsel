@@ -3307,6 +3307,7 @@ class Model:
     _baseline_germline_mask_af: float = None
     _baseline_site_weights: dict = None
     _baseline_calls_masked: bool = None
+    _mu_floor: dict = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
     _rg_map_diagnostics: dict = None
@@ -3355,6 +3356,9 @@ class Model:
         prob_g_tau_tau_independent: bool | None = None,
         signature_selection: list | tuple | None = None,
         include_other: bool = False,
+        mu_floor_signature: str | None = None,
+        mu_floor_pseudocount: float | None = None,
+        mu_floor_scope: str | None = None,
     ):
         self._run_history = []
         self.dataset = dataset
@@ -3382,6 +3386,7 @@ class Model:
         self._baseline_germline_mask_af = None
         self._baseline_site_weights = None
         self._baseline_calls_masked = None
+        self._mu_floor = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
         self._rg_map_diagnostics = None
@@ -3399,6 +3404,9 @@ class Model:
             "L_low": L_low,
             "L_high": L_high,
             "cut_at_L_low": cut_at_L_low,
+            "floor_signature": mu_floor_signature,
+            "floor_pseudocount": mu_floor_pseudocount,
+            "floor_scope": mu_floor_scope,
         }
         self._auto_cov_effects_per_sigma = cov_effects_per_sigma
         self._auto_prob_g_tau_tau_independent = (
@@ -4254,6 +4262,15 @@ class Model:
         saved before masks existed).
         """
         return self._baseline_germline_mask_af
+
+    @property
+    def mu_floor(self):
+        """The exposure floor the baselines were built with, or None.
+
+        ``{"signature", "pseudocount", "scope"}`` (see
+        `estimate_mus.compute_mu_tau_per_tumor`'s ``floor_signature``).
+        """
+        return self._mu_floor
 
     @property
     def baseline_site_weights(self):
@@ -6705,6 +6722,7 @@ class Model:
             "baseline_germline_mask_af": self._baseline_germline_mask_af,
             "baseline_site_weights": self._baseline_site_weights,
             "baseline_calls_masked": self._baseline_calls_masked,
+            "mu_floor": self._mu_floor,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -6876,6 +6894,7 @@ class Model:
         model._baseline_site_weights = manifest.get(
             "baseline_site_weights"
         )
+        model._mu_floor = manifest.get("mu_floor")
         model._baseline_calls_masked = manifest.get(
             "baseline_calls_masked"
         )
@@ -7374,6 +7393,19 @@ class Model:
             # Store L_low and L_high for use by other methods
             self._auto_mu_taus_kwargs["L_low"] = l_low
             self._auto_mu_taus_kwargs["L_high"] = l_high
+
+            floor = compute_kwargs.get("floor_signature")
+            kappa = compute_kwargs.get("floor_pseudocount") or 0.0
+            self._mu_floor = (
+                {
+                    "signature": floor,
+                    "pseudocount": float(kappa),
+                    "scope": compute_kwargs.get("floor_scope")
+                    or "all",
+                }
+                if floor is not None and kappa > 0
+                else None
+            )
 
             # Compute mutation burdens
             self._mu_taus = compute_mu_tau_per_tumor(

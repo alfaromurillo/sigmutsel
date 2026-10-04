@@ -903,6 +903,44 @@ def _decomposition_fingerprint(input_data, kwargs):
     return h.hexdigest()
 
 
+def _keep_every_matrix_tumor(assignments, input_data):
+    """Give every tumor of a matrix input a row, zeros if it had none.
+
+    SigProfilerAssignment leaves out a tumor whose column is all
+    zeros -- e.g. one whose only SNV lies outside the channel
+    universe, which `build_sbs96_matrix_from_mutation_db` keeps as a
+    zero column on purpose. Without its row, every consumer that
+    looks tumors up in the assignments (`signature_attribution`'s
+    per-mutation attribution first) raises a KeyError on that tumor.
+    A zero row is what the tumor's exposures are.
+
+    Inputs other than a matrix file are returned unchanged.
+    """
+    path = Path(input_data)
+    if not path.is_file():
+        return assignments
+    with open(path) as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+    if not header or header[0] != "MutationType":
+        return assignments
+    tumors = header[1:]
+    missing = [t for t in tumors if t not in assignments.index]
+    if not missing:
+        return assignments
+    logger.info(
+        "%d tumor(s) with an all-zero matrix column have no "
+        "exposures in the assignment output; given zero rows: %s",
+        len(missing),
+        ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else ""),
+    )
+    zeros = pd.DataFrame(
+        0,
+        index=pd.Index(missing, name=assignments.index.name),
+        columns=assignments.columns,
+    ).astype(assignments.dtypes.to_dict())
+    return pd.concat([assignments, zeros])
+
+
 def signature_decomposition(
     results_dir: str,
     input_data: str,
@@ -1011,6 +1049,7 @@ def signature_decomposition(
 
     assignments = pd.read_csv(results_file, sep="\t")
     assignments = assignments.set_index("Samples")
+    assignments = _keep_every_matrix_tumor(assignments, input_data)
 
     # Filter assignments based on include/exclude parameters
     # (post-processing since SigProfilerAssignment ignores

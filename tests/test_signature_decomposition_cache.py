@@ -52,3 +52,23 @@ def test_cache_follows_the_input_and_settings(tmp_path, monkeypatch):
     (out / "Assignment_Solution" / "input_fingerprint.txt").unlink()
     assert fit(exome=True).at["t1", "SBS1"] == 4
     assert fit(exome=True).at["t1", "SBS1"] == 4
+
+
+def test_all_zero_tumor_gets_a_zero_row(tmp_path, monkeypatch):
+    # SigProfilerAssignment leaves out a tumor whose matrix column is
+    # all zeros (its only SNV outside the channel universe), and
+    # signature attribution then raised a KeyError on it.
+    calls = []
+    monkeypatch.setattr(
+        sd, "run_signature_decomposition", _fake_run(calls)
+    )
+    matrix = tmp_path / "matrix.txt"
+    matrix.write_text("MutationType\tt1\tt0\nA[C>A]A\t3\t0\n")
+
+    out = sd.signature_decomposition(
+        str(tmp_path / "results"), str(matrix), cosmic_version=3.6
+    )
+
+    assert list(out.index) == ["t1", "t0"]
+    assert out.at["t0", "SBS1"] == 0
+    assert out.at["t1", "SBS1"] == 1

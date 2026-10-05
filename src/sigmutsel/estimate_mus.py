@@ -120,6 +120,14 @@ def _floor_alphas(
     return alphas, sig_matrix
 
 
+def _census_genes():
+    """Cancer Gene Census symbols (the drivers left out of the pool)."""
+    from .locations import location_cancer_gene_census
+
+    census = pd.read_csv(location_cancer_gene_census, sep="\t")
+    return set(census["Gene Symbol"].dropna())
+
+
 def _floored_spectra(
     db,
     alphas,
@@ -153,11 +161,14 @@ def _floored_spectra(
             f"floor signature {signature!r} has types with probability 0; "
             "it cannot guarantee every type a positive rate"
         )
-    counts = (
-        model_calls(db)["type"]
-        .value_counts()
-        .reindex(types, fill_value=0)
-    )
+    # Passenger genes only: a recurrent driver's calls would otherwise
+    # inflate their own type in the pool -- thyroid BRAF V600E is 5.9%
+    # of its cohort's calls, all G[T>A]G -- and the floor would raise
+    # that driver's rate in every tumor, letting selection into the
+    # rate model.
+    calls = model_calls(db)
+    calls = calls[~calls["gene"].isin(_census_genes())]
+    counts = calls["type"].value_counts().reindex(types, fill_value=0)
     pooled = counts / counts.sum() if counts.sum() else floor * 0
     e = pooled_share * pooled + (1 - pooled_share) * floor
     p = alphas.dot(sig_matrix.T)
@@ -255,7 +266,9 @@ def compute_mu_tau_per_tumor(
         unfloored spectrum gives some type probability 0.
     floor_pooled_share : float, default 0.0
         Share of the cohort's pooled spectrum (its observed type
-        frequencies over every tumor in ``db``) in what the
+        frequencies over every tumor in ``db``, passenger genes only:
+        Cancer Gene Census genes are left out, or a recurrent driver
+        would raise its own rate) in what the
         pseudo-mutations are drawn from; the rest is
         ``floor_signature``. The floor then acts on the spectrum, ``p'
         = (n p + kappa e) / (n + kappa)``, ``e = share * pooled + (1 -

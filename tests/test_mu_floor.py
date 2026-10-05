@@ -88,7 +88,9 @@ def test_floor_signature_with_a_zero_type_is_refused(setup):
 
 def test_pooled_share_shrinks_toward_the_cohort_spectrum(setup):
     db, path, assignments = setup
-    db = db.assign(type=["T1"] * 3 + ["T1"] * 60 + ["T2"] * 40)
+    db = db.assign(
+        type=["T1"] * 3 + ["T1"] * 60 + ["T2"] * 40, gene="P"
+    )
     mus = compute_mu_tau_per_tumor(
         db,
         path,
@@ -120,3 +122,27 @@ def test_pooled_share_is_refused_with_separate_per_sigma(setup):
             floor_pseudocount=1,
             floor_pooled_share=0.5,
         )
+
+
+def test_pooled_spectrum_leaves_out_census_genes(setup, monkeypatch):
+    # A recurrent driver's calls must not shape the pool: thyroid
+    # BRAF V600E would otherwise raise its own rate in every tumor.
+    import sigmutsel.estimate_mus as em
+
+    monkeypatch.setattr(em, "_census_genes", lambda: {"DRIVER"})
+    db, path, assignments = setup
+    db = db.assign(
+        type=["T1"] * 3 + ["T1"] * 60 + ["T2"] * 40,
+        gene=["P"] * 63 + ["DRIVER"] * 40,
+    )
+    mus = compute_mu_tau_per_tumor(
+        db,
+        path,
+        assignments,
+        floor_signature="SIG5",
+        floor_pseudocount=1,
+        floor_pooled_share=0.9,
+    )
+    # The pool is the passengers' (63, 0) / 63: T2 only from SIG5.
+    e_t2 = 0.1 * 0.5
+    assert mus.at["A", "T2"] == pytest.approx(3 * e_t2 / 4)

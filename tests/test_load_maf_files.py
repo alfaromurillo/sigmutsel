@@ -52,3 +52,49 @@ def test_compact_data_still_builds_expected_columns():
         assert col in out.columns
     assert out["gene"].iloc[0] == "TP53"
     assert out["variant"].iloc[0] == "TP53 p.R175H"
+
+
+# --- process_single_maf: multi-base rows kept aside ------------------------
+
+
+def _write_maf(path, rows):
+    df = pd.DataFrame(rows)
+    df["Variant_Type"] = "SNP"
+    df.to_csv(path, sep="\t", index=False)
+    return path
+
+
+def test_multi_base_rows_are_dropped_by_default(tmp_path):
+    from sigmutsel.load_maf_files import process_single_maf
+
+    maf = _write_maf(
+        tmp_path / "a.maf",
+        [
+            _valid_snv_row(Start_Position=1000),
+            _valid_snv_row(Start_Position=1001),
+            _valid_snv_row(Start_Position=5000),
+        ],
+    )
+    out = process_single_maf(maf, qc_mode=True)
+    assert list(out["Start_Position"]) == [5000]
+    assert "multi_base" not in out.columns
+
+
+def test_multi_base_rows_are_kept_aside_when_asked(tmp_path):
+    from sigmutsel.load_maf_files import process_single_maf
+
+    maf = _write_maf(
+        tmp_path / "a.maf",
+        [
+            _valid_snv_row(Start_Position=1000),
+            _valid_snv_row(Start_Position=1001),
+            _valid_snv_row(Start_Position=3000),
+            _valid_snv_row(Start_Position=3002),
+            _valid_snv_row(Start_Position=5000),
+        ],
+    )
+    out = process_single_maf(maf, qc_mode=True, keep_multi_base=True)
+    kinds = dict(zip(out["Start_Position"], out["multi_base"]))
+    assert kinds[1000] == kinds[1001] == "dbs"
+    assert kinds[3000] == kinds[3002] == "mnv"
+    assert pd.isna(kinds[5000])

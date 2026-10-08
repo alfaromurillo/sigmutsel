@@ -210,6 +210,7 @@ class MutationDataset:
     _gene_transcripts: pd.DataFrame = None
     _channel_universe: dict | None = None
     _sample_qc_flags: pd.DataFrame = None
+    _multi_base_db: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -445,6 +446,12 @@ class MutationDataset:
                 "sample_qc_flags.parquet",
                 "parquet",
             ),
+            (
+                "multi_base_db",
+                "_multi_base_db",
+                "multi_base_db.parquet",
+                "parquet",
+            ),
         ]
 
         saved_files = {}
@@ -504,8 +511,11 @@ class MutationDataset:
             # per-gene transcript record are saved, and
             # `channel_universe` records how they were built. A
             # dataset without it is a pre-channel-universe build and
-            # reads every call, as before.
-            "version": 5,
+            # reads every call, as before. 6 -> adds multi_base_db, the
+            # single-base rows of doublets and other multi-base events,
+            # kept aside for the gamma hold-out; a dataset without it
+            # simply has no such hold-out.
+            "version": 6,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -630,6 +640,72 @@ class MutationDataset:
     def mutation_db(self, value):
         """Set mutation database."""
         self._mutation_db = value
+
+    @property
+    def multi_base_db(self):
+        """Single-base rows of multi-base events, kept aside (or None).
+
+        The rows the call QC tags as one event split by the caller
+        (:data:`qc.MULTI_BASE_PROBLEMS`: an adjacent doublet, ``"dbs"``,
+        or a cluster within 2 bp, ``"mnv"``), with the same columns as
+        :attr:`mutation_db` and their kind in ``multi_base``. They are
+        not SBS calls, so no rate, burden, signature or presence table
+        reads them; the gamma hold-out does
+        (:meth:`multi_base_hits`).
+        """
+        return self._multi_base_db
+
+    @multi_base_db.setter
+    def multi_base_db(self, value):
+        self._multi_base_db = value
+
+    def multi_base_hits(self, gene_id):
+        """Tumors with a non-silent multi-base event in a gene.
+
+        A component counts when it is in the channel universe and its
+        own consequence is ``mis``, ``non`` or ``spl`` (without the
+        universe, when its MAF class is not ``Silent``). Two components
+        that are each synonymous but change one codon together are
+        missed; that combination is rare.
+
+        Returns
+        -------
+        pandas.Index
+            Tumor barcodes; empty without :attr:`multi_base_db`.
+        """
+        db = self._multi_base_db
+        if db is None or db.empty:
+            return pd.Index([])
+        rows = db[db["ensembl_gene_id"] == gene_id]
+        if "in_universe" in rows.columns:
+            rows = rows[
+                rows["in_universe"].astype(bool)
+                & rows["channel"].isin(["mis", "non", "spl"])
+            ]
+        else:
+            rows = rows[rows["Variant_Classification"] != "Silent"]
+        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    def _split_multi_base(self):
+        """Move the multi-base rows out of :attr:`mutation_db`."""
+        db = self._mutation_db
+        if db is None or "multi_base" not in db.columns:
+            return
+        aside = db["multi_base"].notna()
+        self._multi_base_db = db[aside].reset_index(drop=True)
+        self._mutation_db = (
+            db[~aside]
+            .drop(columns="multi_base")
+            .reset_index(drop=True)
+        )
+        logger.info(
+            "Multi-base events: %d single-base rows kept aside "
+            "(%s), out of every SBS input",
+            int(aside.sum()),
+            self._multi_base_db["multi_base"]
+            .value_counts()
+            .to_dict(),
+        )
 
     @property
     def model_db(self):
@@ -1452,6 +1528,11 @@ class MutationDataset:
                 / "ID"
             )
 
+        # The call QC tags the single-base rows of a multi-base event;
+        # keep them aside rather than drop them (see multi_base_db).
+        if kwargs.get("qc_mode") and self.signature_class == "SBS":
+            kwargs.setdefault("keep_multi_base", True)
+
         # Use generate_compact_db and store result
         self._mutation_db = generate_compact_db(
             self.location_maf_files,
@@ -1459,6 +1540,8 @@ class MutationDataset:
             location_gene_set=location_gene_set,
             **kwargs,
         )
+        self._multi_base_db = None
+        self._split_multi_base()
         self._channel_universe = None
         if channel_universe and self.signature_class == "SBS":
             self.classify_mutation_db(
@@ -1557,6 +1640,7 @@ class MutationDataset:
             ~classified["in_universe"], classified["variant_label"]
         )
         self._mutation_db = db
+        self._classify_multi_base(models, coding_in, splice_in)
         self._channel_universe = {
             "territory": territory,
             "splice_padding": int(splice_padding),
@@ -1583,6 +1667,87 @@ class MutationDataset:
             reasons.to_dict(),
         )
         return reasons
+
+    def _classify_multi_base(self, models, coding_in, splice_in):
+        """Place each multi-base component on its gene's transcript.
+
+        The same classification as :meth:`classify_mutation_db`, one
+        component at a time, so :meth:`multi_base_hits` can tell a
+        non-silent event from a silent one.
+        """
+        from .channel_universe import classify_calls
+
+        mb = self._multi_base_db
+        if mb is None or mb.empty:
+            return
+        mb = mb.copy()
+        if "variant_maf" not in mb.columns:
+            mb["variant_maf"] = mb["variant"]
+        got = classify_calls(mb, models, coding_in, splice_in)
+        for column in (
+            "channel",
+            "in_universe",
+            "universe_reason",
+            "transcript_id",
+        ):
+            mb[column] = got[column]
+        mb["variant"] = mb["variant_maf"].where(
+            ~got["in_universe"], got["variant_label"]
+        )
+        self._multi_base_db = mb
+
+    @record_call
+    def build_multi_base_db(
+        self, qc_kwargs=None, location_gene_set=None
+    ):
+        """Recover the multi-base rows of a dataset built without them.
+
+        A dataset built before :attr:`multi_base_db` existed dropped
+        them. This reads the MAFs again with the same call QC, keeps
+        only the multi-base rows, and classifies them with the
+        dataset's own channel universe; nothing else in the dataset
+        changes, so its models stay valid. ``qc_kwargs`` must match
+        the build's for the tags to be the same (the germline and
+        duplicate checks run before the multi-base one; the repeat
+        check runs after it and does not affect it).
+
+        Returns
+        -------
+        pandas.Series
+            Single-base rows per kind (``dbs``, ``mnv``).
+        """
+        from .load_maf_files import generate_compact_db
+
+        if self.signature_class != "SBS":
+            raise ValueError(
+                "Multi-base events are an SBS-dataset notion."
+            )
+        db = generate_compact_db(
+            self.location_maf_files,
+            signature_class=self.signature_class,
+            location_gene_set=location_gene_set,
+            qc_mode=True,
+            qc_kwargs=qc_kwargs,
+            keep_multi_base=True,
+        )
+        aside = db["multi_base"].notna()
+        self._multi_base_db = db[aside].reset_index(drop=True)
+        params = self._channel_universe
+        if params is not None:
+            from .channel_universe import (
+                load_or_build_transcript_models,
+                territory_masks,
+            )
+
+            models = load_or_build_transcript_models()
+            coding_in = splice_in = None
+            if params.get("territory", "mc3") == "mc3":
+                coding_in, splice_in = territory_masks(
+                    models,
+                    splice_padding=params.get("splice_padding", 0),
+                )
+            self._classify_multi_base(models, coding_in, splice_in)
+        return self._multi_base_db["multi_base"].value_counts()
 
     def has_gene_presence(self):
         """Check if gene presence matrix has been computed."""
@@ -4598,6 +4763,7 @@ class Model:
         r_g_variant="none",
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=True,
+        hold_out_multi_base=True,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -4670,6 +4836,19 @@ class Model:
             exclusivity such a tumor may have met the same selective
             pressure by another hit. The "with" set is untouched. See
             :meth:`_estimate_gamma_variant`.
+        hold_out_multi_base : bool, default True
+            Genes and variants. Leave out of the "without" set every
+            tumor with a non-silent multi-base event (a doublet, or a
+            cluster within 2 bp) in the gene
+            (:meth:`MutationDataset.multi_base_hits`). The rates are
+            SBS rates and gamma is about SBS hits; such a tumor has met
+            the gene's selective pressure by an event the SBS model does
+            not describe, so its lack of an SBS hit is not evidence
+            against selection. Only that gene's (and its variants')
+            likelihood changes. Recorded as
+            ``n_tumors_held_out_multi_base`` (and in
+            ``n_tumors_held_out``). Without
+            :attr:`MutationDataset.multi_base_db` it holds out nobody.
 
         Returns
         -------
@@ -4706,6 +4885,7 @@ class Model:
                 r_g_variant=r_g_variant,
                 gene_tumor_dispersion=gene_tumor_dispersion,
                 hold_out_same_gene_samples=hold_out_same_gene_samples,
+                hold_out_multi_base=hold_out_multi_base,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -4717,6 +4897,7 @@ class Model:
                 use_mu_posterior=use_mu_posterior,
                 r_g_variant=r_g_variant,
                 gene_tumor_dispersion=gene_tumor_dispersion,
+                hold_out_multi_base=hold_out_multi_base,
             )
         else:
             raise ValueError(
@@ -4816,6 +4997,7 @@ class Model:
         r_g_variant="none",
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=True,
+        hold_out_multi_base=True,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -4851,6 +5033,10 @@ class Model:
             ``non`` or ``spl`` calls with the channel universe),
             cancereffectsizeR's default for a single variant. The
             count is recorded as ``n_tumors_held_out``.
+        hold_out_multi_base : bool, default True
+            See :meth:`estimate_gamma`. Applied after the same-gene
+            hold-out, so a tumor both would remove counts once, as
+            same-gene.
 
         Returns
         -------
@@ -4881,6 +5067,13 @@ class Model:
             )
             hold = absent_mask & same_gene
             held_out = int(hold.sum())
+            absent_mask &= ~hold
+        held_multi = 0
+        if hold_out_multi_base:
+            hold = absent_mask & self._multi_base_mutated(
+                self._variant_gene_id(variant), absent_mask.index
+            )
+            held_multi = int(hold.sum())
             absent_mask &= ~hold
 
         extra = (
@@ -4927,7 +5120,11 @@ class Model:
                 phi
             )
         self._record_sample_accounting(
-            result, present_mask, absent_mask, held_out=held_out
+            result,
+            present_mask,
+            absent_mask,
+            held_out=held_out + held_multi,
+            held_out_multi_base=held_multi,
         )
         if self.cov_matrix is not None:
             self._record_covariate_fallback(
@@ -4954,6 +5151,17 @@ class Model:
             .reindex(tumors, fill_value=0)
             .astype(bool)
         )
+
+    def _multi_base_mutated(self, gene_id, tumors):
+        """Whether each tumor has a non-silent multi-base event in a gene.
+
+        From :meth:`MutationDataset.multi_base_hits`; all False for a
+        dataset without :attr:`MutationDataset.multi_base_db`.
+        """
+        hits_of = getattr(self.dataset, "multi_base_hits", None)
+        if hits_of is None:
+            return pd.Series(False, index=tumors)
+        return pd.Series(tumors.isin(hits_of(gene_id)), index=tumors)
 
     @record_call
     def estimate_gamma_compound(
@@ -5161,6 +5369,7 @@ class Model:
         use_mu_posterior=False,
         r_g_variant="none",
         gene_tumor_dispersion=None,
+        hold_out_multi_base=True,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5202,6 +5411,8 @@ class Model:
             Which ``r_g`` feeds the mu draws when
             ``use_mu_posterior=True``; ignored otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
+            See :meth:`estimate_gamma`.
+        hold_out_multi_base : bool, default True
             See :meth:`estimate_gamma`.
 
         Returns
@@ -5264,6 +5475,13 @@ class Model:
             not_excluded = ~present_mask.index.isin(excluded_samples)
             present_mask &= not_excluded
             absent_mask &= not_excluded
+        held_multi = 0
+        if hold_out_multi_base:
+            hold = absent_mask & self._multi_base_mutated(
+                gene_id, absent_mask.index
+            )
+            held_multi = int(hold.sum())
+            absent_mask &= ~hold
 
         extra = (
             {}
@@ -5300,7 +5518,11 @@ class Model:
                 phi
             )
         self._record_sample_accounting(
-            result, present_mask, absent_mask
+            result,
+            present_mask,
+            absent_mask,
+            held_out=held_multi,
+            held_out_multi_base=held_multi,
         )
         self._record_covariate_fallback(result, [gene_id])
 
@@ -5312,7 +5534,11 @@ class Model:
 
     @staticmethod
     def _record_sample_accounting(
-        result, present_mask, absent_mask, held_out=0
+        result,
+        present_mask,
+        absent_mask,
+        held_out=0,
+        held_out_multi_base=0,
     ):
         """Stamp which tumors a gamma fit actually used.
 
@@ -5333,8 +5559,10 @@ class Model:
         applied to every sample, so the number would always be a
         fabricated zero. ``n_tumors_held_out`` counts the tumors the
         same-gene hold-out removed from the absent set
-        (``hold_out_same_gene_samples``); they are in neither
+        (``hold_out_same_gene_samples``) and the multi-base hold-out
+        (``hold_out_multi_base``) together; they are in neither
         ``n_tumors_without`` nor ``n_tumors_excluded``.
+        ``n_tumors_held_out_multi_base`` is the multi-base part.
 
         ``n_tumors_without`` is the absent set handed to the fit.
         The fit then drops absent tumors whose rate is zero (they
@@ -5365,6 +5593,9 @@ class Model:
                     len(present_mask) - n_with - n_without - held_out
                 ),
                 "n_tumors_held_out": int(held_out),
+                "n_tumors_held_out_multi_base": int(
+                    held_out_multi_base
+                ),
             }
         )
         return result

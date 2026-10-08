@@ -50,7 +50,7 @@ cols_to_keep = [
 
 # Kept when the MAF has them: VEP's transcript, to check the channel
 # universe's labels against the MAF's on the same transcript.
-optional_cols_to_keep = ["Transcript_ID"]
+optional_cols_to_keep = ["Transcript_ID", "multi_base"]
 
 
 def filter_db(db, variant_type="SNP"):
@@ -701,6 +701,7 @@ def process_single_maf(
     *,
     qc_mode=False,
     qc_kwargs=None,
+    keep_multi_base=False,
     **kwargs,
 ):
     """Process a single MAF file into a cleaned and compact DataFrame.
@@ -731,6 +732,16 @@ def process_single_maf(
         Extra keyword arguments forwarded to :func:`qc.apply_qc`
         (e.g. `germline_af_threshold`, or `check_mnv_dbs=False` to
         disable one check). Ignored if `qc_mode` is False.
+
+    keep_multi_base : bool, default False
+        With `qc_mode`, keep the single-base rows of a multi-base event
+        (:data:`qc.MULTI_BASE_PROBLEMS`: an adjacent doublet, or a
+        cluster within 2 bp) instead of dropping them, with a
+        ``multi_base`` column holding ``"dbs"`` or ``"mnv"`` (None on
+        every other row). They are not SBS calls; a caller that keeps
+        them must keep them out of every SBS input, as
+        :meth:`MutationDataset.generate_mutation_db` does by moving
+        them to :attr:`MutationDataset.multi_base_db`.
 
     **kwargs : dict
         Additional keyword arguments to be passed to
@@ -764,7 +775,15 @@ def process_single_maf(
                 logger.info(
                     f"{maf_file.name} QC problems: {problems}"
                 )
-            df = df[df["problem"].isna()].drop(columns="problem")
+            keep = df["problem"].isna()
+            if keep_multi_base:
+                from .qc import MULTI_BASE_PROBLEMS
+
+                df["multi_base"] = df["problem"].map(
+                    MULTI_BASE_PROBLEMS
+                )
+                keep |= df["multi_base"].notna()
+            df = df[keep].drop(columns="problem")
         else:
             df = validate_full(df, variant_type=variant_type)
 

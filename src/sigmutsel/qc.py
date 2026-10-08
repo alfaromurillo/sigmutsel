@@ -224,6 +224,16 @@ def flag_germline_variants(
     return df
 
 
+# The two tags :func:`detect_mnv_dbs` gives a multi-base event, and the
+# kind each is kept as when the loader keeps them aside
+# (``process_single_maf(keep_multi_base=True)``): "dbs" for an
+# adjacent pair, "mnv" for any other cluster.
+MULTI_BASE_PROBLEMS = {
+    "merged_into_dbs_variant": "dbs",
+    "merged_with_nearby_variant": "mnv",
+}
+
+
 def detect_mnv_dbs(df):
     """Tag adjacent same-sample SNVs likely from one real event.
 

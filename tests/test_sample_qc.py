@@ -380,7 +380,11 @@ def test_flag_vaf_shape_samples_end_to_end():
     segments = _diploid_segments("TCGA-AA-0001-01", "TCGA-AA-0002-01")
 
     flags = flag_vaf_shape_samples(
-        mutation_db, purity_table, segments, threshold=0.7
+        mutation_db,
+        purity_table,
+        segments,
+        threshold=0.7,
+        lift_to_hg19=False,  # synthetic positions; see the lift tests
     )
 
     assert not flags[good_sample]
@@ -397,7 +401,11 @@ def test_flag_vaf_shape_samples_barcode_truncation():
     )
     segments = _diploid_segments("TCGA-AA-0001-01")
     flags = flag_vaf_shape_samples(
-        mutation_db, purity_table, segments, threshold=0.7
+        mutation_db,
+        purity_table,
+        segments,
+        threshold=0.7,
+        lift_to_hg19=False,  # synthetic positions; see the lift tests
     )
     assert sample in flags.index
 
@@ -597,3 +605,69 @@ def test_sample_qc_flags_dataset_without_it_still_saves_loads(
     loaded = MutationDataset.load_dataset(save_dir)
     with pytest.raises(ValueError, match="sample_qc_flags"):
         _ = loaded.sample_qc_flags
+
+
+# --- the calls are GRCh38, the ABSOLUTE segments hg19 ---------------------
+
+
+def _shift_chain(shift=1000):
+    """A toy chain moving chr1 by `shift` from GRCh38 to "hg19"."""
+    return pd.DataFrame(
+        {
+            "tchrom": ["chr1"],
+            "tstart": [0],
+            "tend": [100_000],
+            "qchrom": ["chr1"],
+            "qstart": [shift],
+            "qstrand": ["+"],
+            "qsize": [1_000_000],
+        }
+    )
+
+
+def test_annotate_local_copy_number_lifts_before_the_lookup():
+    segments = load_copy_number_segments(
+        pd.DataFrame(
+            {
+                "Sample": ["TCGA-AA-0001-01"] * 2,
+                "Chromosome": [1.0, 1.0],
+                "Start": [1, 1501],
+                "End": [1500, 9000],
+                "Modal_Total_CN": [2.0, 4.0],
+            }
+        )
+    )
+    db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["TCGA-AA-0001-01A"] * 2,
+            "Chromosome": ["chr1", "chr1"],
+            "Start_Position": [1000, 200_000],
+        }
+    )
+    plain = annotate_local_copy_number(db, segments)
+    lifted = annotate_local_copy_number(
+        db, segments, chain_blocks=_shift_chain()
+    )
+    # GRCh38 1000 is hg19 2000: the second segment, not the first.
+    assert plain["local_cn"].iloc[0] == 2.0
+    assert lifted["local_cn"].iloc[0] == 4.0
+    # A position the chain does not cover gets no copy number.
+    assert np.isnan(lifted["local_cn"].iloc[1])
+
+
+def test_flag_vaf_shape_samples_lifts_by_default(monkeypatch):
+    import sigmutsel.sample_qc as sq
+
+    monkeypatch.setattr(
+        sq, "_hg38_to_hg19_blocks", lambda *a: _shift_chain()
+    )
+    sample = "TCGA-AA-0001-01A-11D-0001-01"
+    mutation_db = _binomial_mutation_db(sample, purity=0.6, seed=4)
+    purity_table = pd.DataFrame(
+        {"array": ["TCGA-AA-0001-01"], "purity": [0.6]}
+    )
+    segments = _diploid_segments("TCGA-AA-0001-01")
+    flags = flag_vaf_shape_samples(
+        mutation_db, purity_table, segments
+    )
+    assert not flags[sample]  # scored, through the lifted position

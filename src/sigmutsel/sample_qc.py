@@ -299,6 +299,7 @@ def annotate_local_copy_number(
     position_col="Start_Position",
     barcode_length=15,
     out_col="local_cn",
+    chain_blocks=None,
 ):
     """Add a local total-copy-number column to `mutation_db`.
 
@@ -320,6 +321,13 @@ def annotate_local_copy_number(
         aliquot barcode MAFs use).
     out_col : str, default "local_cn"
         Name of the added column.
+    chain_blocks : pandas.DataFrame, optional
+        A chain (:func:`liftover.read_chain`) from the calls' assembly
+        to the segments'. Given, each call's position is lifted before
+        the lookup, and a call that does not lift gets ``NaN``. TCGA's
+        ABSOLUTE segments are hg19 while GDC's calls are GRCh38, so
+        :func:`flag_vaf_shape_samples` passes the hg38-to-hg19 chain;
+        without it, positions are compared across assemblies.
 
     Returns
     -------
@@ -332,6 +340,28 @@ def annotate_local_copy_number(
     result[out_col] = np.nan
     short_barcode = result[sample_col].str.slice(0, barcode_length)
     chrom_norm = result[chrom_col].map(_normalize_chromosome)
+    lifted = None
+    if chain_blocks is not None:
+        from .liftover import lift_positions
+
+        chroms = result[chrom_col].astype(str)
+        chroms = chroms.where(
+            chroms.str.startswith("chr"), "chr" + chroms
+        )
+        out_chrom, out_pos = lift_positions(
+            chain_blocks,
+            chroms.to_numpy(),
+            result[position_col].to_numpy(),
+        )
+        ok = out_pos > 0
+        chrom_norm = pd.Series(
+            [
+                _normalize_chromosome(c) if good else None
+                for c, good in zip(out_chrom, ok)
+            ],
+            index=result.index,
+        )
+        lifted = pd.Series(out_pos, index=result.index)
 
     for (sample, chrom), group in result.groupby(
         [short_barcode, chrom_norm]
@@ -342,7 +372,11 @@ def annotate_local_copy_number(
         starts, ends, cn = copy_number_segments[key]
         if len(starts) == 0:
             continue
-        positions = group[position_col].to_numpy()
+        positions = (
+            group[position_col].to_numpy()
+            if lifted is None
+            else lifted.loc[group.index].to_numpy()
+        )
         idx = np.searchsorted(starts, positions, side="right") - 1
         in_segment = np.zeros(len(positions), dtype=bool)
         valid = idx >= 0
@@ -454,6 +488,8 @@ def flag_vaf_shape_samples(
     alt_col="t_alt_count",
     min_depth=20,
     min_variants=5,
+    lift_to_hg19=True,
+    chain_blocks=None,
 ):
     """Flag samples whose VAF distribution doesn't match their purity.
 
@@ -476,6 +512,13 @@ def flag_vaf_shape_samples(
     threshold : float, default 0.7
         Samples with an estimated 75th-percentile CCF below this are
         flagged.
+    lift_to_hg19 : bool, default True
+        Lift the calls' GRCh38 positions to hg19 before looking up their
+        segments, as TCGA's ABSOLUTE segments are hg19 (the
+        homozygous-deletion segments of PTEN and RB1 sit at their hg19
+        positions). False compares positions as given.
+    chain_blocks : pandas.DataFrame, optional
+        The hg38-to-hg19 chain already read; defaults to the package's.
     Other parameters : see :func:`compute_vaf_shape_score`.
 
     Returns
@@ -491,10 +534,13 @@ def flag_vaf_shape_samples(
         purity = purity[~purity.index.duplicated(keep="first")]
 
     barcode_length = len(purity.index[0])
+    if lift_to_hg19 and chain_blocks is None:
+        chain_blocks = _hg38_to_hg19_blocks()
     annotated = annotate_local_copy_number(
         mutation_db,
         copy_number_segments,
         barcode_length=barcode_length,
+        chain_blocks=chain_blocks if lift_to_hg19 else None,
     )
 
     scores = {}
@@ -577,6 +623,22 @@ def combine_sample_flags(*flags, how="any", warn_threshold=0.05):
     return result
 
 
+def _hg38_to_hg19_blocks(chain_path=None):
+    """The package's hg38-to-hg19 chain, read (downloaded if missing)."""
+    from pathlib import Path
+
+    from . import setup
+    from .liftover import read_chain
+    from .locations import location_liftover_chain_hg38_to_hg19
+
+    chain_path = Path(
+        chain_path or location_liftover_chain_hg38_to_hg19
+    )
+    if not chain_path.exists():
+        setup.download_liftover_chain()
+    return read_chain(chain_path)
+
+
 def homozygously_deleted_genes(
     copy_number_segments,
     models,
@@ -625,20 +687,12 @@ def homozygously_deleted_genes(
         One row per (tumor, deleted gene): ``Tumor_Sample_Barcode``,
         ``ensembl_gene_id``.
     """
-    from pathlib import Path
 
-    from . import setup
-    from .liftover import lift_positions, read_chain
-    from .locations import location_liftover_chain_hg38_to_hg19
+    from .liftover import lift_positions
 
     blocks = chain_blocks
     if blocks is None:
-        chain_path = Path(
-            chain_path or location_liftover_chain_hg38_to_hg19
-        )
-        if not chain_path.exists():
-            setup.download_liftover_chain()
-        blocks = read_chain(chain_path)
+        blocks = _hg38_to_hg19_blocks(chain_path)
 
     first, last = [], []
     for i in range(len(models.selection)):

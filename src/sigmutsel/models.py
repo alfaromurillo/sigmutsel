@@ -211,6 +211,7 @@ class MutationDataset:
     _channel_universe: dict | None = None
     _sample_qc_flags: pd.DataFrame = None
     _multi_base_db: pd.DataFrame = None
+    _homdel_db: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -452,6 +453,12 @@ class MutationDataset:
                 "multi_base_db.parquet",
                 "parquet",
             ),
+            (
+                "homdel_db",
+                "_homdel_db",
+                "homdel_db.parquet",
+                "parquet",
+            ),
         ]
 
         saved_files = {}
@@ -514,8 +521,9 @@ class MutationDataset:
             # reads every call, as before. 6 -> adds multi_base_db, the
             # single-base rows of doublets and other multi-base events,
             # kept aside for the gamma hold-out; a dataset without it
-            # simply has no such hold-out.
-            "version": 6,
+            # simply has no such hold-out. 7 -> adds homdel_db, the
+            # (tumor, gene) pairs with a homozygous deletion.
+            "version": 7,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -684,6 +692,33 @@ class MutationDataset:
             ]
         else:
             rows = rows[rows["Variant_Classification"] != "Silent"]
+        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    @property
+    def homdel_db(self):
+        """(tumor, gene) pairs with a homozygous deletion (or None).
+
+        From :func:`sample_qc.homozygously_deleted_genes`; read by the
+        gamma hold-out (:meth:`homdel_hits`).
+        """
+        return self._homdel_db
+
+    @homdel_db.setter
+    def homdel_db(self, value):
+        self._homdel_db = value
+
+    def homdel_hits(self, gene_id):
+        """Tumors with a homozygous deletion of a gene.
+
+        Returns
+        -------
+        pandas.Index
+            Tumor barcodes; empty without :attr:`homdel_db`.
+        """
+        db = self._homdel_db
+        if db is None or db.empty:
+            return pd.Index([])
+        rows = db[db["ensembl_gene_id"] == gene_id]
         return pd.Index(rows["Tumor_Sample_Barcode"].unique())
 
     def _split_multi_base(self):
@@ -4770,6 +4805,7 @@ class Model:
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
+        hold_out_homdel=True,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -4855,6 +4891,14 @@ class Model:
             ``n_tumors_held_out_multi_base`` (and in
             ``n_tumors_held_out``). Without
             :attr:`MutationDataset.multi_base_db` it holds out nobody.
+        hold_out_homdel : bool, default True
+            Genes and variants. Leave out of the "without" set every
+            tumor with a homozygous deletion of the gene
+            (:meth:`MutationDataset.homdel_hits`): it has no
+            opportunity for a point mutation where the gene is gone,
+            and a tumor suppressor lost this way has met its pressure.
+            Recorded as ``n_tumors_held_out_homdel``. Without
+            :attr:`MutationDataset.homdel_db` it holds out nobody.
 
         Returns
         -------
@@ -4892,6 +4936,7 @@ class Model:
                 gene_tumor_dispersion=gene_tumor_dispersion,
                 hold_out_same_gene_samples=hold_out_same_gene_samples,
                 hold_out_multi_base=hold_out_multi_base,
+                hold_out_homdel=hold_out_homdel,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -4904,6 +4949,7 @@ class Model:
                 r_g_variant=r_g_variant,
                 gene_tumor_dispersion=gene_tumor_dispersion,
                 hold_out_multi_base=hold_out_multi_base,
+                hold_out_homdel=hold_out_homdel,
             )
         else:
             raise ValueError(
@@ -5004,6 +5050,7 @@ class Model:
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
+        hold_out_homdel=True,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5043,6 +5090,8 @@ class Model:
             See :meth:`estimate_gamma`. Applied after the same-gene
             hold-out, so a tumor both would remove counts once, as
             same-gene.
+        hold_out_homdel : bool, default True
+            See :meth:`estimate_gamma`.
 
         Returns
         -------
@@ -5074,13 +5123,12 @@ class Model:
             hold = absent_mask & same_gene
             held_out = int(hold.sum())
             absent_mask &= ~hold
-        held_multi = 0
-        if hold_out_multi_base:
-            hold = absent_mask & self._multi_base_mutated(
-                self._variant_gene_id(variant), absent_mask.index
-            )
-            held_multi = int(hold.sum())
-            absent_mask &= ~hold
+        absent_mask, held_by = self._gene_hold_outs(
+            self._variant_gene_id(variant),
+            absent_mask,
+            multi_base=hold_out_multi_base,
+            homdel=hold_out_homdel,
+        )
 
         extra = (
             {}
@@ -5129,8 +5177,8 @@ class Model:
             result,
             present_mask,
             absent_mask,
-            held_out=held_out + held_multi,
-            held_out_multi_base=held_multi,
+            held_out=held_out + sum(held_by.values()),
+            held_out_by=held_by,
         )
         if self.cov_matrix is not None:
             self._record_covariate_fallback(
@@ -5168,6 +5216,48 @@ class Model:
         if hits_of is None:
             return pd.Series(False, index=tumors)
         return pd.Series(tumors.isin(hits_of(gene_id)), index=tumors)
+
+    def _homdel_mutated(self, gene_id, tumors):
+        """Whether each tumor has a homozygous deletion of a gene.
+
+        From :meth:`MutationDataset.homdel_hits`; all False for a
+        dataset without :attr:`MutationDataset.homdel_db`.
+        """
+        hits_of = getattr(self.dataset, "homdel_hits", None)
+        if hits_of is None:
+            return pd.Series(False, index=tumors)
+        return pd.Series(tumors.isin(hits_of(gene_id)), index=tumors)
+
+    def _gene_hold_outs(
+        self, gene_id, absent_mask, multi_base, homdel
+    ):
+        """Remove from the absent set the tumors a gene-level rule holds out.
+
+        ``multi_base``: a non-silent doublet or other multi-base event
+        in the gene. ``homdel``: a homozygous deletion of the gene --
+        no point mutation can occur where the gene is gone, and a
+        tumor suppressor deleted this way has met its pressure. A
+        tumor both would remove counts once, as multi-base.
+
+        Returns
+        -------
+        (pandas.Series, dict)
+            The absent mask, and tumors held out per rule.
+        """
+        held_by = {}
+        for reason, on, lookup in (
+            ("multi_base", multi_base, self._multi_base_mutated),
+            ("homdel", homdel, self._homdel_mutated),
+        ):
+            n = 0
+            if on:
+                hold = absent_mask & lookup(
+                    gene_id, absent_mask.index
+                )
+                n = int(hold.sum())
+                absent_mask = absent_mask & ~hold
+            held_by[reason] = n
+        return absent_mask, held_by
 
     @record_call
     def estimate_gamma_compound(
@@ -5376,6 +5466,7 @@ class Model:
         r_g_variant="none",
         gene_tumor_dispersion=None,
         hold_out_multi_base=True,
+        hold_out_homdel=True,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5418,7 +5509,7 @@ class Model:
             ``use_mu_posterior=True``; ignored otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
             See :meth:`estimate_gamma`.
-        hold_out_multi_base : bool, default True
+        hold_out_multi_base, hold_out_homdel : bool, default True
             See :meth:`estimate_gamma`.
 
         Returns
@@ -5481,13 +5572,12 @@ class Model:
             not_excluded = ~present_mask.index.isin(excluded_samples)
             present_mask &= not_excluded
             absent_mask &= not_excluded
-        held_multi = 0
-        if hold_out_multi_base:
-            hold = absent_mask & self._multi_base_mutated(
-                gene_id, absent_mask.index
-            )
-            held_multi = int(hold.sum())
-            absent_mask &= ~hold
+        absent_mask, held_by = self._gene_hold_outs(
+            gene_id,
+            absent_mask,
+            multi_base=hold_out_multi_base,
+            homdel=hold_out_homdel,
+        )
 
         extra = (
             {}
@@ -5527,8 +5617,8 @@ class Model:
             result,
             present_mask,
             absent_mask,
-            held_out=held_multi,
-            held_out_multi_base=held_multi,
+            held_out=sum(held_by.values()),
+            held_out_by=held_by,
         )
         self._record_covariate_fallback(result, [gene_id])
 
@@ -5544,7 +5634,7 @@ class Model:
         present_mask,
         absent_mask,
         held_out=0,
-        held_out_multi_base=0,
+        held_out_by=None,
     ):
         """Stamp which tumors a gamma fit actually used.
 
@@ -5568,7 +5658,8 @@ class Model:
         (``hold_out_same_gene_samples``) and the multi-base hold-out
         (``hold_out_multi_base``) together; they are in neither
         ``n_tumors_without`` nor ``n_tumors_excluded``.
-        ``n_tumors_held_out_multi_base`` is the multi-base part.
+        ``n_tumors_held_out_<reason>`` gives each gene-level hold-out's
+        part (``multi_base``, ``homdel``; see :meth:`_gene_hold_outs`).
 
         ``n_tumors_without`` is the absent set handed to the fit.
         The fit then drops absent tumors whose rate is zero (they
@@ -5599,9 +5690,10 @@ class Model:
                     len(present_mask) - n_with - n_without - held_out
                 ),
                 "n_tumors_held_out": int(held_out),
-                "n_tumors_held_out_multi_base": int(
-                    held_out_multi_base
-                ),
+                **{
+                    f"n_tumors_held_out_{reason}": int(n)
+                    for reason, n in (held_out_by or {}).items()
+                },
             }
         )
         return result

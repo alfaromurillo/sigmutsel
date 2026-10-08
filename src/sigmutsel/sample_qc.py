@@ -575,3 +575,111 @@ def combine_sample_flags(*flags, how="any", warn_threshold=0.05):
             )
 
     return result
+
+
+def homozygously_deleted_genes(
+    copy_number_segments,
+    models,
+    tumors,
+    *,
+    barcode_length=15,
+    chain_path=None,
+    chain_blocks=None,
+):
+    """Which genes each tumor has lost both copies of.
+
+    A gene is deleted in a tumor when a segment with total copy number
+    0 overlaps its coding span. Such a tumor cannot carry a point
+    mutation where the gene is gone, and a tumor suppressor deleted
+    this way has met its selective pressure, so gamma should not count
+    the tumor as evidence against selection (see
+    ``Model.estimate_gamma(hold_out_homdel=...)``).
+
+    The segments are TCGA's pan-cancer ABSOLUTE calls, in **hg19**
+    coordinates (checked: homozygous-deletion segments pile up on PTEN
+    and RB1 at their hg19 positions, not their GRCh38 ones), while the
+    transcripts are GRCh38. Each gene's coding span -- first and last
+    coding base of its chosen transcript -- is lifted to hg19 first; a
+    gene whose ends do not both lift to one chromosome is skipped.
+
+    Parameters
+    ----------
+    copy_number_segments : dict
+        As returned by :func:`load_copy_number_segments`.
+    models : channel_universe.TranscriptModels
+        The chosen transcripts.
+    tumors : iterable of str
+        Full tumor barcodes to look up; each is matched to the
+        segments by its first `barcode_length` characters. A tumor
+        without segments gets no deletions (unknown, not absent).
+    barcode_length : int, default 15
+    chain_path : path-like, optional
+        hg38-to-hg19 chain; defaults to the package's.
+    chain_blocks : pandas.DataFrame, optional
+        The chain already read (:func:`liftover.read_chain`), in place
+        of `chain_path`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per (tumor, deleted gene): ``Tumor_Sample_Barcode``,
+        ``ensembl_gene_id``.
+    """
+    from pathlib import Path
+
+    from . import setup
+    from .liftover import lift_positions, read_chain
+    from .locations import location_liftover_chain_hg38_to_hg19
+
+    blocks = chain_blocks
+    if blocks is None:
+        chain_path = Path(
+            chain_path or location_liftover_chain_hg38_to_hg19
+        )
+        if not chain_path.exists():
+            setup.download_liftover_chain()
+        blocks = read_chain(chain_path)
+
+    first, last = [], []
+    for i in range(len(models.selection)):
+        block = models.gpos[
+            models.offsets[i] : models.offsets[i] + models.lengths[i]
+        ]
+        block = block[block > 0]
+        first.append(block.min() if len(block) else -1)
+        last.append(block.max() if len(block) else -1)
+    chroms = models.selection["chrom"].to_numpy()
+    c1, p1 = lift_positions(blocks, chroms, first)
+    c2, p2 = lift_positions(blocks, chroms, last)
+    ok = (p1 > 0) & (p2 > 0) & (c1 == c2)
+    spans = pd.DataFrame(
+        {
+            "ensembl_gene_id": models.gene_ids[ok],
+            "chrom": [_normalize_chromosome(c) for c in c1[ok]],
+            "start": np.minimum(p1[ok], p2[ok]),
+            "end": np.maximum(p1[ok], p2[ok]),
+        }
+    )
+    by_chrom = {c: g for c, g in spans.groupby("chrom")}
+
+    rows = []
+    for tumor in pd.unique(pd.Series(list(tumors))):
+        short = str(tumor)[:barcode_length]
+        for chrom, genes in by_chrom.items():
+            seg = copy_number_segments.get((short, chrom))
+            if seg is None:
+                continue
+            starts, ends, cn = seg
+            zero = cn == 0
+            if not zero.any():
+                continue
+            gs = genes["start"].to_numpy()
+            ge = genes["end"].to_numpy()
+            hit = np.zeros(len(genes), dtype=bool)
+            for s, e in zip(starts[zero], ends[zero]):
+                hit |= (gs <= e) & (ge >= s)
+            for gene_id in genes["ensembl_gene_id"].to_numpy()[hit]:
+                rows.append((tumor, gene_id))
+    return pd.DataFrame(
+        rows, columns=["Tumor_Sample_Barcode", "ensembl_gene_id"]
+    )

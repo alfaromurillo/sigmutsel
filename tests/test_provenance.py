@@ -154,7 +154,7 @@ def test_dataset_history_round_trips_through_a_save(tmp_path, caplog):
     manifest = json.loads(
         (saved / "dataset_manifest.json").read_text()
     )
-    assert manifest["version"] == 6
+    assert manifest["version"] == 7
     assert manifest["sigmutsel_version"]
     assert manifest["run_history"][0]["note"] == "planted"
 

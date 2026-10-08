@@ -6,6 +6,7 @@ calls: they leave every SBS input but are kept in
 absent set the tumors whose hit in it was a multi-base event.
 """
 
+import numpy as np
 import pandas as pd
 
 from sigmutsel.models import Model, MutationDataset
@@ -193,3 +194,90 @@ def test_gene_absent_set_loses_the_multi_base_tumors(monkeypatch):
     attrs = captured["result"].posterior.attrs
     assert attrs["n_tumors_held_out_multi_base"] == 2
     assert attrs["n_tumors_excluded"] == 0
+
+
+# --- homozygous deletions -------------------------------------------------
+
+
+def _models_and_chain():
+    """Two genes on chr1 (coding 101-110 and 501-510, GRCh38) and a chain
+    that shifts chr1 by +1000 into "hg19"."""
+    from types import SimpleNamespace
+
+    models = SimpleNamespace(
+        selection=pd.DataFrame(
+            {"chrom": ["chr1", "chr1"]}, index=["G1", "G2"]
+        ),
+        offsets=np.array([0, 12]),
+        lengths=np.array([12, 12]),
+        gpos=np.concatenate(
+            [
+                [-1, -1],
+                np.arange(101, 111),
+                [-1, -1],
+                np.arange(501, 511),
+            ]
+        ),
+        gene_ids=np.array(["G1", "G2"]),
+    )
+    chain = pd.DataFrame(
+        {
+            "tchrom": ["chr1"],
+            "tstart": [0],
+            "tend": [10_000],
+            "qchrom": ["chr1"],
+            "qstart": [1000],
+            "qstrand": ["+"],
+            "qsize": [1_000_000],
+        }
+    )
+    return models, chain
+
+
+def test_homdel_is_read_in_hg19_coordinates():
+    from sigmutsel.sample_qc import homozygously_deleted_genes
+
+    models, chain = _models_and_chain()
+    segments = {
+        # T1: CN 0 over G1's hg19 span (1101-1110) only.
+        ("TCGA-AA-0001-01", "1"): (
+            np.array([1, 1105, 1200]),
+            np.array([1104, 1150, 9000]),
+            np.array([2, 0, 2]),
+        ),
+        # T2: CN 0 at G2's GRCh38 position, i.e. not at its hg19 one.
+        ("TCGA-AA-0002-01", "1"): (
+            np.array([1, 501]),
+            np.array([500, 520]),
+            np.array([2, 0]),
+        ),
+    }
+    out = homozygously_deleted_genes(
+        segments,
+        models,
+        [
+            "TCGA-AA-0001-01A-11D",
+            "TCGA-AA-0002-01A-11D",
+            "TCGA-AA-0003-01A",
+        ],
+        chain_blocks=chain,
+    )
+    assert list(map(tuple, out.to_numpy())) == [
+        ("TCGA-AA-0001-01A-11D", "G1")
+    ]
+
+
+def test_homdel_hold_out_counts_separately(monkeypatch):
+    captured = _capture(monkeypatch)
+    model = _variant_model({"G1": ["T3"]})
+    model.dataset.homdel_hits = lambda gene_id: pd.Index(
+        ["T2", "T3"] if gene_id == "G1" else []
+    )
+    model._estimate_gamma_variant("VAR1", store=False)
+    attrs = captured["result"].posterior.attrs
+    assert captured["no"] == ["T4"]
+    assert (
+        attrs["n_tumors_held_out_multi_base"] == 1
+    )  # T3, counted once
+    assert attrs["n_tumors_held_out_homdel"] == 1  # T2
+    assert attrs["n_tumors_held_out"] == 2

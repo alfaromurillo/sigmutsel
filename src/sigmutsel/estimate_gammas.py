@@ -830,3 +830,51 @@ def estimate_gamma_from_mus(
         f"Sampling failed after {max_retries} attempts "
         "Try setting a smaller upper_bound_prior manually."
     )
+
+
+def summarize_gamma(result, prob=0.89):
+    """Point estimate and interval of a gamma, or an upper bound only.
+
+    A gamma fitted with no tumor carrying the mutation -- typical of a
+    consequence channel of an oncogene, such as the truncating channel
+    of NRAS -- is informed only by the tumors that do not carry it.
+    Its posterior is then the prior cut down by the absences: it says
+    how large gamma can be, not where it is, and its mean depends on
+    the prior's shape. Such a gamma is reported as an upper bound
+    alone: the ``(1 + prob) / 2`` quantile, the upper end of the
+    equal-tailed ``prob`` interval it would otherwise have had.
+
+    Parameters
+    ----------
+    result : arviz.InferenceData
+        A gamma posterior. Whether it had carriers is read from
+        ``posterior.attrs["n_tumors_with"]``; a posterior without
+        that count (fitted before it was recorded) is summarized as
+        an estimate.
+    prob : float, default=0.89
+        Probability mass of the equal-tailed interval.
+
+    Returns
+    -------
+    dict
+        ``mean``, ``lower`` and ``upper`` of gamma and
+        ``upper_bound_only`` (bool). With ``upper_bound_only``,
+        ``mean`` and ``lower`` are NaN and ``upper`` is the bound.
+    """
+    draws = np.asarray(result.posterior["gamma"]).ravel()
+    tail = 100 * (1 - prob) / 2
+    lower, upper = np.percentile(draws, [tail, 100 - tail])
+    n_with = result.posterior.attrs.get("n_tumors_with")
+    if n_with is not None and int(n_with) == 0:
+        return {
+            "mean": np.nan,
+            "lower": np.nan,
+            "upper": float(upper),
+            "upper_bound_only": True,
+        }
+    return {
+        "mean": float(draws.mean()),
+        "lower": float(lower),
+        "upper": float(upper),
+        "upper_bound_only": False,
+    }

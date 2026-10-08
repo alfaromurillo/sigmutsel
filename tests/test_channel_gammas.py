@@ -151,3 +151,35 @@ def test_variant_level_refuses_a_channel():
     )
     with pytest.raises(ValueError, match="gene gammas only"):
         model.estimate_gamma("V1", level="variant", channel="mis")
+
+
+def test_a_channel_without_carriers_is_an_upper_bound(monkeypatch):
+    import arviz as az
+    import numpy as np
+
+    from sigmutsel.estimate_gammas import summarize_gamma
+
+    captured = _capture(monkeypatch)
+    model = _model()
+    model.dataset._by_channel["trunc"] = [0, 0, 0, 0]
+    model._estimate_gamma_gene("G1", store=False, channel="trunc")
+    assert captured["yes"] == []
+    attrs = captured["result"].posterior.attrs
+    assert attrs["upper_bound_only"] == 1
+
+    draws = np.linspace(0.0, 10.0, 1001)[None, :]
+    posterior = {"gamma": draws}
+    if int(az.__version__.split(".")[0]) >= 1:
+        result = az.from_dict({"posterior": posterior})
+    else:
+        result = az.from_dict(posterior=posterior)
+    result.posterior.attrs["n_tumors_with"] = 0
+    bound = summarize_gamma(result, prob=0.89)
+    assert bound["upper_bound_only"]
+    assert np.isnan(bound["mean"]) and np.isnan(bound["lower"])
+    assert np.isclose(bound["upper"], 9.45)
+    result.posterior.attrs["n_tumors_with"] = 3
+    estimate = summarize_gamma(result, prob=0.89)
+    assert not estimate["upper_bound_only"]
+    assert np.isclose(estimate["mean"], 5.0)
+    assert np.isclose(estimate["lower"], 0.55)

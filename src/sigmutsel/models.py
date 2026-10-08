@@ -5758,7 +5758,10 @@ class Model:
         cancereffectsizeR's: it has per-sample coverage intervals
         and this package has one fixed capture-target gene universe
         applied to every sample, so the number would always be a
-        fabricated zero. ``n_tumors_held_out`` counts the tumors the
+        fabricated zero. ``upper_bound_only`` is 1 when no tumor
+        carries the mutation: such a gamma is reported as an upper
+        bound (:func:`.estimate_gammas.summarize_gamma`).
+        ``n_tumors_held_out`` counts the tumors the
         same-gene hold-out removed from the absent set
         (``hold_out_same_gene_samples``) and the multi-base hold-out
         (``hold_out_multi_base``) together; they are in neither
@@ -5795,6 +5798,9 @@ class Model:
                     len(present_mask) - n_with - n_without - held_out
                 ),
                 "n_tumors_held_out": int(held_out),
+                # No carrier: the posterior bounds gamma from above
+                # and nothing more (estimate_gammas.summarize_gamma).
+                "upper_bound_only": int(n_with == 0),
                 **{
                     f"n_tumors_held_out_{reason}": int(n)
                     for reason, n in (held_out_by or {}).items()
@@ -5828,6 +5834,7 @@ class Model:
             "n_tumors_included",
             "n_tumors_excluded",
             "n_tumors_held_out",
+            "upper_bound_only",
         ]
         keys = list(self.gammas) if keys is None else list(keys)
         rows = {}

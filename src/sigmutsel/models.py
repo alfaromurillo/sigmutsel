@@ -1731,6 +1731,12 @@ class MutationDataset:
             keep_multi_base=True,
         )
         aside = db["multi_base"].notna()
+        if self._mutation_db is not None:
+            # Tumors the build dropped (e.g. the two-pass decomposition's
+            # treatment flag) are not in the dataset; neither are theirs.
+            aside &= db["Tumor_Sample_Barcode"].isin(
+                self._mutation_db["Tumor_Sample_Barcode"]
+            )
         self._multi_base_db = db[aside].reset_index(drop=True)
         params = self._channel_universe
         if params is not None:

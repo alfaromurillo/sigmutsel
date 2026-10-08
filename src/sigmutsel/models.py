@@ -14,6 +14,19 @@ from .provenance import record_call
 
 logger = logging.getLogger(__name__)
 
+# The consequence channels a gene gamma can be scored on, and the call
+# channels (channel_universe.CHANNELS) each one counts. "nonsyn" is the
+# gene gamma as always; "trunc" pools nonsense and essential splice;
+# "syn" is a negative control, expected near 1.
+GAMMA_CHANNELS = {
+    "nonsyn": ("mis", "non", "spl"),
+    "mis": ("mis",),
+    "trunc": ("non", "spl"),
+    "non": ("non",),
+    "spl": ("spl",),
+    "syn": ("syn",),
+}
+
 
 def _gamma_posterior_draws(result):
     """Flatten a gamma result's posterior draws to a 1-D array."""
@@ -693,6 +706,38 @@ class MutationDataset:
         else:
             rows = rows[rows["Variant_Classification"] != "Silent"]
         return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    def genes_present_channel(self, channel):
+        """0/1 genes x tumors: a call of one consequence channel.
+
+        ``channel`` is a key of :data:`GAMMA_CHANNELS`; the calls are
+        the model's (:attr:`model_db`), and the tumors are those of
+        :attr:`genes_present_non_silent`, in its order. A gene with no
+        such call has no row. Computed on demand, not saved.
+        """
+        if channel not in GAMMA_CHANNELS:
+            raise ValueError(
+                f"channel must be one of {sorted(GAMMA_CHANNELS)}; "
+                f"got {channel!r}."
+            )
+        if not self.has_channel_universe():
+            raise ValueError(
+                "Per-channel presence needs the channel universe "
+                "(classify_mutation_db)."
+            )
+        calls = self.model_db
+        calls = calls[calls["channel"].isin(GAMMA_CHANNELS[channel])]
+        tumors = self.genes_present_non_silent.columns
+        present = (
+            pd.crosstab(
+                calls["ensembl_gene_id"],
+                calls["Tumor_Sample_Barcode"],
+            )
+            > 0
+        )
+        return present.reindex(
+            columns=tumors, fill_value=False
+        ).astype(int)
 
     @property
     def homdel_db(self):
@@ -4806,6 +4851,7 @@ class Model:
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        channel=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -4899,6 +4945,20 @@ class Model:
             and a tumor suppressor lost this way has met its pressure.
             Recorded as ``n_tumors_held_out_homdel``. Without
             :attr:`MutationDataset.homdel_db` it holds out nobody.
+        channel : str or None, default None
+            Genes only, channel-split models only. None (or
+            ``"nonsyn"``) is the gene gamma on its whole non-synonymous
+            rate. Otherwise one consequence channel
+            (:data:`GAMMA_CHANNELS`): ``"mis"``, ``"trunc"`` (nonsense
+            plus essential splice), ``"non"``, ``"spl"``, or ``"syn"``
+            (a negative control, expected near 1). Presence counts that
+            channel's calls, the rate is the gene's on that channel, a
+            dispersed fit inherits the gene's per-tumor dispersion, and
+            no other channel's hits are held out. Stored under
+            ``"<gene_id>__<channel>"``. A gene gamma averages over every
+            site of the channel, so for an oncogene report variant
+            gammas; the channel gammas are for tumor suppressors and for
+            telling the two apart.
 
         Returns
         -------
@@ -4925,6 +4985,8 @@ class Model:
         if level is None:
             level = self._detect_item_level(item)
 
+        if level == "variant" and channel not in (None, "nonsyn"):
+            raise ValueError("channel applies to gene gammas only.")
         if level == "variant":
             result = self._estimate_gamma_variant(
                 item,
@@ -4950,6 +5012,7 @@ class Model:
                 gene_tumor_dispersion=gene_tumor_dispersion,
                 hold_out_multi_base=hold_out_multi_base,
                 hold_out_homdel=hold_out_homdel,
+                channel=channel or "nonsyn",
             )
         else:
             raise ValueError(
@@ -5467,6 +5530,7 @@ class Model:
         gene_tumor_dispersion=None,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        channel="nonsyn",
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5511,6 +5575,8 @@ class Model:
             See :meth:`estimate_gamma`.
         hold_out_multi_base, hold_out_homdel : bool, default True
             See :meth:`estimate_gamma`.
+        channel : str, default "nonsyn"
+            See :meth:`estimate_gamma`.
 
         Returns
         -------
@@ -5535,16 +5601,32 @@ class Model:
         if self._mu_gs is None:
             self.compute_mu_gs()
 
-        gene_presence = (
-            self.dataset.genes_present_non_silent
-            if non_silent
-            else self.dataset.genes_present
-        )
-
-        if non_silent and self.has_channel_base_mus():
-            mu_source = self.compute_channel_mu_gs("nonsyn")
+        part = channel != "nonsyn"
+        if part:
+            if channel not in GAMMA_CHANNELS:
+                raise ValueError(
+                    f"channel must be one of {sorted(GAMMA_CHANNELS)}; "
+                    f"got {channel!r}."
+                )
+            if not non_silent or not self.has_channel_base_mus():
+                raise ValueError(
+                    "A per-channel gamma needs a channel-split model "
+                    "(compute_channel_base_mus) and non_silent=True."
+                )
+            gene_presence = self.dataset.genes_present_channel(
+                channel
+            )
+            mu_source = self.compute_channel_mu_gs(channel)
         else:
-            mu_source = self.mu_gs
+            gene_presence = (
+                self.dataset.genes_present_non_silent
+                if non_silent
+                else self.dataset.genes_present
+            )
+            if non_silent and self.has_channel_base_mus():
+                mu_source = self.compute_channel_mu_gs("nonsyn")
+            else:
+                mu_source = self.mu_gs
 
         # Try to get ensembl_gene_id if gene is a name
         if gene in mu_source.index:
@@ -5566,17 +5648,23 @@ class Model:
                 f"Gene ID {gene_id!r} not found in mu_gs."
             )
 
-        present_mask = gene_presence.loc[gene_id] == 1
+        if gene_id in gene_presence.index:
+            present_mask = gene_presence.loc[gene_id] == 1
+        else:  # a channel the gene has no call in
+            present_mask = pd.Series(
+                False, index=gene_presence.columns
+            )
         absent_mask = ~present_mask
         if excluded_samples is not None:
             not_excluded = ~present_mask.index.isin(excluded_samples)
             present_mask &= not_excluded
             absent_mask &= not_excluded
+        # The synonymous gamma is a control: no hold-out applies to it.
         absent_mask, held_by = self._gene_hold_outs(
             gene_id,
             absent_mask,
-            multi_base=hold_out_multi_base,
-            homdel=hold_out_homdel,
+            multi_base=hold_out_multi_base and channel != "syn",
+            homdel=hold_out_homdel and channel != "syn",
         )
 
         extra = (
@@ -5587,11 +5675,24 @@ class Model:
         phi = self._resolve_gene_tumor_dispersion(
             gene_tumor_dispersion, gene_id, present_mask | absent_mask
         )
-        if phi is not None:
+        if phi is not None and not part:
             extra["gene_tumor_dispersion"] = phi
+        elif phi is not None:
+            # A channel inherits the gene's per-tumor dispersion, as a
+            # variant does: the random rate acts on the (gene, tumor)
+            # pair, whichever channel a call falls in.
+            yes_ids = present_mask.index[present_mask]
+            no_ids = absent_mask.index[absent_mask]
+            shapes = self._gene_tumor_shapes(
+                gene_id, phi, yes_ids.union(no_ids)
+            )
+            extra["gene_tumor_shape"] = (
+                shapes.loc[yes_ids].to_numpy(),
+                shapes.loc[no_ids].to_numpy(),
+            )
         if use_mu_posterior:
             draws = self.compute_mu_g_posterior_draws(
-                gene_id, r_g_variant=r_g_variant
+                gene_id, r_g_variant=r_g_variant, channel=channel
             )
             result = estimate_gamma_from_mus(
                 draws.loc[
@@ -5621,10 +5722,14 @@ class Model:
             held_out_by=held_by,
         )
         self._record_covariate_fallback(result, [gene_id])
+        if part and hasattr(result, "posterior"):
+            result.posterior.attrs["channel"] = channel
 
         if store:
-            # Always store with ensembl_gene_id for consistency
-            self.gammas[gene_id] = result
+            # Always store with ensembl_gene_id for consistency; a
+            # channel's gamma under "<gene_id>__<channel>".
+            key = f"{gene_id}__{channel}" if part else gene_id
+            self.gammas[key] = result
 
         return result
 
@@ -8011,8 +8116,11 @@ class Model:
 
         Parameters
         ----------
-        channel : {"syn", "nonsyn"}
-            Which channel's rates to scale.
+        channel : str
+            Which channel's rates to scale: ``"syn"``, ``"nonsyn"``,
+            or a part of the non-synonymous channel (``"mis"``,
+            ``"trunc"``, ``"non"``, ``"spl"``; :data:`GAMMA_CHANNELS`),
+            which takes ``exp(delta)`` like the whole.
 
         Returns
         -------
@@ -8021,15 +8129,7 @@ class Model:
         """
         from .estimate_mus import compute_mus_per_gene_per_sample
 
-        if channel == "syn":
-            base = self._base_mus_syn
-        elif channel == "nonsyn":
-            base = self._base_mus_nonsyn
-        else:
-            raise ValueError(
-                f"Unknown channel {channel!r}; expected 'syn' or "
-                "'nonsyn'."
-            )
+        base = self._channel_baseline(channel)
 
         if base is None:
             raise ValueError(
@@ -8051,13 +8151,67 @@ class Model:
         # here is not optional: without it the channel rates silently
         # omit the very offset that was fitted, and the offset is
         # large -- 13-18% on real cohorts.
-        if (
-            channel == "nonsyn"
-            and self._rg_delta_intercept is not None
-        ):
+        if channel != "syn" and self._rg_delta_intercept is not None:
             rates = rates * np.exp(self._rg_delta_intercept)
 
         return rates
+
+    def _channel_baseline(self, channel):
+        """Baseline rates ``mu-bar`` of one channel (genes x tumors).
+
+        ``syn`` and ``nonsyn`` are :meth:`compute_channel_base_mus`'s;
+        a part of the non-synonymous channel is computed the same way
+        from its own opportunity table (``contexts_by_gene_mis``,
+        ``_non``, ``_spl``; ``trunc`` sums the last two), on first use,
+        and kept for the session. The parts sum to ``nonsyn``.
+        """
+        if channel not in GAMMA_CHANNELS:
+            raise ValueError(
+                f"Unknown channel {channel!r}; expected one of "
+                f"{sorted(GAMMA_CHANNELS)}."
+            )
+        if channel == "syn":
+            return self._base_mus_syn
+        if channel == "nonsyn":
+            return self._base_mus_nonsyn
+        cache = self.__dict__.setdefault("_base_mus_parts", {})
+        if channel in cache:
+            return cache[channel]
+        from .estimate_mus import compute_mu_g_channel_per_tumor
+
+        if self._mu_taus is None or self._base_mus_nonsyn is None:
+            raise ValueError(
+                "Channel baselines need compute_channel_base_mus() first."
+            )
+        tables = {
+            "mis": self.dataset.contexts_by_gene_mis,
+            "non": self.dataset.contexts_by_gene_non,
+            "spl": self.dataset.contexts_by_gene_spl,
+        }
+        parts = []
+        for part in GAMMA_CHANNELS[channel]:
+            if tables[part] is None:
+                raise ValueError(
+                    f"The dataset has no opportunity table for {part!r}."
+                )
+            if part not in cache:
+                cache[part] = compute_mu_g_channel_per_tumor(
+                    mu_taus=self._mu_taus,
+                    channel_contexts_by_gene=tables[part],
+                    contexts_by_gene=self.dataset.contexts_by_gene,
+                    prob_g_tau_tau_independent=(
+                        self._prob_g_tau_tau_independent
+                    ),
+                    type_opportunity=getattr(
+                        self.dataset, "type_opportunity", None
+                    ),
+                )
+            parts.append(cache[part])
+        total = parts[0]
+        for extra in parts[1:]:
+            total = total.add(extra, fill_value=0.0)
+        cache[channel] = total
+        return total
 
     @record_call
     def compute_mu_gs(self, assign_base_mus_to_rest=True, **kwargs):
@@ -9954,7 +10108,12 @@ class Model:
         )
 
     def compute_mu_g_posterior_draws(
-        self, gene, r_g_variant="none", n_draws=None, rng=None
+        self,
+        gene,
+        r_g_variant="none",
+        n_draws=None,
+        rng=None,
+        channel="nonsyn",
     ):
         """Per-tumor mu posterior draws for one gene's non-silent rate.
 
@@ -10004,6 +10163,10 @@ class Model:
         rng : numpy.random.Generator or None, default None
             Source of randomness for the ``r_g`` draws (ignored when
             ``r_g_variant == "none"``).
+        channel : str, default "nonsyn"
+            The gene's rate on one channel (:data:`GAMMA_CHANNELS`):
+            the same covariate scale and ``r_g`` draws, on that
+            channel's baseline; ``"syn"`` without ``delta_intercept``.
 
         Returns
         -------
@@ -10063,10 +10226,13 @@ class Model:
             )
 
         scale, n_draws = self._covariate_scale_draws(
-            gene_id, n_draws=n_draws, rng=rng
+            gene_id,
+            n_draws=n_draws,
+            rng=rng,
+            include_delta=channel != "syn",
         )
 
-        baseline = self._base_mus_nonsyn.loc[gene_id]
+        baseline = self._channel_baseline(channel).loc[gene_id]
         mu_draws = pd.DataFrame(
             scale[:, None] * baseline.to_numpy()[None, :],
             columns=baseline.index,

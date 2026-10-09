@@ -557,7 +557,10 @@ def _model_with_a_silent_variant(tmp_path):
         },
         index=["VAR_NONSYN", "VAR_SILENT"],
     )
-    model._silent_variant_labels = lambda: {"VAR_SILENT"}
+    model._silent_variant_labels = lambda: {
+        "syn": {"VAR_SILENT"},
+        "esyn": set(),
+    }
     return model, tau
 
 
@@ -625,7 +628,8 @@ def test_silent_variant_labels_read_the_classification(tmp_path):
     ) + np.arange(len(db)).astype(str)
     model.dataset._mutation_db = db.assign(variant=labels)
     found = model._silent_variant_labels()
-    assert found == {v for v in labels if v.startswith("S_")}
+    assert found["syn"] == {v for v in labels if v.startswith("S_")}
+    assert found["esyn"] == set()
 
 
 def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(

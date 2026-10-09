@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # The consequence channels a gene gamma can be scored on, and the call
 # channels (channel_universe.CHANNELS) each one counts. "nonsyn" is the
 # gene gamma as always; "trunc" pools nonsense and essential splice;
-# "syn" is a negative control, expected near 1.
+# "syn" is a negative control, expected near 1; "esyn" is the exon-end
+# synonymous sites, which can act through splicing.
 GAMMA_CHANNELS = {
     "nonsyn": ("mis", "non", "spl"),
     "mis": ("mis",),
@@ -25,7 +26,11 @@ GAMMA_CHANNELS = {
     "non": ("non",),
     "spl": ("spl",),
     "syn": ("syn",),
+    "esyn": ("esyn",),
 }
+# Channels whose rate carries no delta_intercept (it is the
+# non-synonymous channel's offset) and whose gamma holds no tumor out.
+_SILENT_GAMMA_CHANNELS = ("syn", "esyn")
 
 
 def _gamma_posterior_draws(result):
@@ -220,6 +225,7 @@ class MutationDataset:
     _contexts_by_gene_mis: pd.DataFrame = None
     _contexts_by_gene_non: pd.DataFrame = None
     _contexts_by_gene_spl: pd.DataFrame = None
+    _contexts_by_gene_esyn: pd.DataFrame = None
     _gene_transcripts: pd.DataFrame = None
     _channel_universe: dict | None = None
     _sample_qc_flags: pd.DataFrame = None
@@ -446,6 +452,12 @@ class MutationDataset:
                 "contexts_by_gene_spl",
                 "_contexts_by_gene_spl",
                 "contexts_by_gene_spl.csv",
+                "csv",
+            ),
+            (
+                "contexts_by_gene_esyn",
+                "_contexts_by_gene_esyn",
+                "contexts_by_gene_esyn.csv",
                 "csv",
             ),
             (
@@ -827,6 +839,73 @@ class MutationDataset:
         )
 
     @record_call
+    @record_call
+    def relabel_exon_end_synonymous(self):
+        """Move exon-end synonymous calls and sites to the ``esyn`` channel.
+
+        For a dataset classified before the ``esyn`` channel existed
+        (:data:`channel_universe.EXON_END_BASES`): its synonymous calls
+        within three bases of an exon-exon junction are relabelled
+        ``esyn`` and their routes restricted to that channel's sites,
+        the opportunity tables are rebuilt with the same territory,
+        germline mask and site weights, and every table that reads the
+        silent channel is recomputed (silent presence, channel counts,
+        the variant catalogue and its route weights, variant presence).
+        No call is added or removed, and the site weights stay valid:
+        they weigh a (site, alternate base), whatever its channel.
+
+        Returns
+        -------
+        int
+            Calls relabelled ``esyn``.
+        """
+        from .channel_universe import (
+            _BUILD_VERSION,
+            classify_calls,
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+
+        if not self.has_channel_universe():
+            raise ValueError(
+                "Relabelling needs the channel universe; this dataset "
+                "was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        models = load_or_build_transcript_models()
+        if params.get("territory", "mc3") == "mc3":
+            coding_in, splice_in = territory_masks(
+                models, splice_padding=params.get("splice_padding", 0)
+            )
+        else:
+            coding_in = splice_in = None
+        db = self._mutation_db.copy()
+        syn = db["channel"].eq("syn").to_numpy()
+        got = classify_calls(db[syn], models, coding_in, splice_in)
+        db.loc[syn, "channel"] = got["channel"].to_numpy()
+        db.loc[syn, "routes"] = got["routes"].to_numpy()
+        self._mutation_db = db
+        self._classify_multi_base(models, coding_in, splice_in)
+        params["build_version"] = _BUILD_VERSION
+        self._channel_universe = params
+
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+        self.compute_gene_presence_silent()
+        self.compute_gene_counts_channels()
+        if self._variant_db is not None:
+            self.generate_variant_db()
+            self.compute_variants_present()
+        n = int(db["channel"].eq("esyn").sum())
+        logger.info(
+            "Relabelled %d exon-end synonymous calls esyn.", n
+        )
+        return n
+
     def set_site_weights(self, site_weights):
         """Set (or clear, with None) site weights on the opportunity.
 
@@ -913,7 +992,8 @@ class MutationDataset:
     def type_opportunity(self):
         """Genes x 96 opportunity of each type over all channels.
 
-        ``contexts_by_gene_syn + contexts_by_gene_nonsyn`` when a
+        ``contexts_by_gene_syn + contexts_by_gene_nonsyn`` (plus
+        ``contexts_by_gene_esyn`` when the dataset has it) when a
         germline mask is set, None otherwise. Under a mask a type's
         opportunity is no longer its context's position count, so the
         rate builders take their ``p(g | tau)`` numerator and
@@ -930,9 +1010,16 @@ class MutationDataset:
             or self._contexts_by_gene_nonsyn is None
         ):
             return None
-        return self._contexts_by_gene_syn.add(
+        total = self._contexts_by_gene_syn.add(
             self._contexts_by_gene_nonsyn, fill_value=0.0
         )
+        if self._contexts_by_gene_esyn is not None:
+            # Exon-end synonymous sites left the silent channel but not
+            # the genome: a mutation of the type can still land there.
+            total = total.add(
+                self._contexts_by_gene_esyn, fill_value=0.0
+            )
+        return total
 
     @record_call
     def set_germline_mask(self, germline_mask_af):
@@ -1079,20 +1166,39 @@ class MutationDataset:
         self._contexts_by_gene_spl = value
 
     @property
-    def contexts_by_gene_channels(self):
-        """The four channel opportunity tables, or None.
+    def contexts_by_gene_esyn(self):
+        """Exon-end synonymous opportunity counts by gene.
 
-        ``{"syn", "mis", "non", "spl"}`` -> genes x 96 types; see
+        The ``esyn`` channel (:data:`channel_universe.EXON_END_BASES`):
+        synonymous sites next to an exon-exon junction, out of the
+        neutral ``syn`` channel. None for a dataset built before it,
+        whose ``syn`` table still holds these sites.
+        """
+        return self._contexts_by_gene_esyn
+
+    @contexts_by_gene_esyn.setter
+    def contexts_by_gene_esyn(self, value):
+        self._contexts_by_gene_esyn = value
+
+    @property
+    def contexts_by_gene_channels(self):
+        """The channel opportunity tables, or None.
+
+        ``{"syn", "mis", "non", "spl", "esyn"}`` -> genes x 96 types
+        (``esyn`` only for a dataset built with it); see
         :mod:`channel_universe`.
         """
         if self._contexts_by_gene_mis is None:
             return None
-        return {
+        tables = {
             "syn": self._contexts_by_gene_syn,
             "mis": self._contexts_by_gene_mis,
             "non": self._contexts_by_gene_non,
             "spl": self._contexts_by_gene_spl,
         }
+        if self._contexts_by_gene_esyn is not None:
+            tables["esyn"] = self._contexts_by_gene_esyn
+        return tables
 
     @property
     def n_samples(self):
@@ -3128,6 +3234,7 @@ class MutationDataset:
         self._contexts_by_gene_mis = tables["mis"]
         self._contexts_by_gene_non = tables["non"]
         self._contexts_by_gene_spl = tables["spl"]
+        self._contexts_by_gene_esyn = tables["esyn"]
         self._contexts_by_gene_nonsyn = (
             tables["mis"] + tables["non"] + tables["spl"]
         )
@@ -4604,7 +4711,7 @@ class Model:
         expected = rate[types] * alive * is_pas[:, None]
 
         db = ds.model_db
-        db = db[db["channel"].isin(["syn", "mis", "non"])]
+        db = db[db["channel"].isin(["syn", "esyn", "mis", "non"])]
         if excluded_samples is not None:
             db = db[
                 ~db["Tumor_Sample_Barcode"].isin(excluded_samples)
@@ -5665,8 +5772,10 @@ class Model:
         absent_mask, held_by = self._gene_hold_outs(
             gene_id,
             absent_mask,
-            multi_base=hold_out_multi_base and channel != "syn",
-            homdel=hold_out_homdel and channel != "syn",
+            multi_base=hold_out_multi_base
+            and channel not in _SILENT_GAMMA_CHANNELS,
+            homdel=hold_out_homdel
+            and channel not in _SILENT_GAMMA_CHANNELS,
         )
 
         extra = (
@@ -6470,12 +6579,12 @@ class Model:
         ----------
         use_cov_effects : bool, default True
             Scale by the covariate effects when they are available.
-        channel : {"nonsyn", "syn"}, default "nonsyn"
+        channel : {"nonsyn", "syn", "esyn"}, default "nonsyn"
             Which consequence channel's per-type rates a channel-split
             model returns: the non-synonymous one (with its
-            ``delta_intercept``), or the synonymous one (without it),
-            which a synonymous variant needs. Ignored for a merged
-            model.
+            ``delta_intercept``), or the synonymous or exon-end
+            synonymous one (without it), which a synonymous variant
+            needs. Ignored for a merged model.
         taus : list of str or None, default None
             Restrict to these types (all 96 when None).
 
@@ -6509,18 +6618,19 @@ class Model:
             compute_mus_per_gene_per_sample,
         )
 
-        if channel not in ("nonsyn", "syn"):
+        if channel not in ("nonsyn", "syn", "esyn"):
             raise ValueError(
-                f"channel must be 'nonsyn' or 'syn', got {channel!r}"
+                "channel must be 'nonsyn', 'syn' or 'esyn', got "
+                f"{channel!r}"
             )
         is_channel = self.has_channel_base_mus()
         channel_table = None
         if is_channel:
-            channel_table = (
-                self.dataset.contexts_by_gene_syn
-                if channel == "syn"
-                else self.dataset.contexts_by_gene_nonsyn
-            )
+            channel_table = {
+                "syn": self.dataset.contexts_by_gene_syn,
+                "esyn": self.dataset.contexts_by_gene_esyn,
+                "nonsyn": self.dataset.contexts_by_gene_nonsyn,
+            }[channel]
         signature_separated = isinstance(self._mu_taus, dict)
 
         # self._base_mus may have been aggregated (e.g. 30 raw
@@ -6744,7 +6854,8 @@ class Model:
         # type -- see variant_site_denominators. Almost every variant
         # is non-silent; a synonymous one (p.X=) takes the synonymous
         # channel, which carries no delta_intercept.
-        silent = variants.index.isin(self._silent_variant_labels())
+        labels = self._silent_variant_labels()
+        silent = variants.index.isin(labels["syn"] | labels["esyn"])
         parts = [
             compute_mu_m_per_tumor(
                 variants_df=variants[~silent],
@@ -6755,23 +6866,30 @@ class Model:
                 **common,
             )
         ]
-        if silent.any():
+        for channel in ("syn", "esyn"):
+            these = variants.index.isin(labels[channel])
+            if not these.any():
+                continue
             taus = sorted(
                 {
                     t
-                    for mt in variants.loc[silent, "mut_types"]
+                    for mt in variants.loc[these, "mut_types"]
                     for t in ([mt] if isinstance(mt, str) else mt)
                 }
             )
             parts.append(
                 compute_mu_m_per_tumor(
-                    variants_df=variants[silent],
+                    variants_df=variants[these],
                     mu_g_tau_j=self._compute_mu_g_taus(
                         use_cov_effects=use_cov_effects,
-                        channel="syn",
+                        channel=channel,
                         taus=taus,
                     ),
-                    opportunity_by_type=self.dataset.contexts_by_gene_syn,
+                    opportunity_by_type=(
+                        self.dataset.contexts_by_gene_syn
+                        if channel == "syn"
+                        else self.dataset.contexts_by_gene_esyn
+                    ),
                     **common,
                 )
             )
@@ -6779,23 +6897,31 @@ class Model:
         return self.mu_ms
 
     def _silent_variant_labels(self):
-        """Variant labels whose calls are synonymous.
+        """Variant labels whose calls are synonymous, by channel.
 
-        A variant label is one protein-level change, so it is silent
-        in every call or in none. With the channel universe this is
-        the ``syn`` channel (read off ``variant_db``'s ``channel``
-        when it has one); otherwise the MAF's ``Silent``. Empty when
-        the catalogue has no ``variant`` column.
+        A variant label is one protein-level change at one codon, so
+        it is silent in every call or in none. With the channel
+        universe these are the ``syn`` and ``esyn`` channels (read off
+        ``variant_db``'s ``channel`` when it has one); otherwise the
+        MAF's ``Silent``, all under ``syn``. Returns ``{"syn": set,
+        "esyn": set}``, empty when the catalogue has no ``variant``
+        column.
         """
         from .channel_universe import model_calls
 
         vdb = self.dataset._variant_db
         if vdb is not None and "channel" in vdb.columns:
-            return set(vdb.index[vdb["channel"] == "syn"])
+            return {
+                ch: set(vdb.index[vdb["channel"] == ch])
+                for ch in ("syn", "esyn")
+            }
         db = self.dataset.mutation_db
         if "variant" not in db.columns:
-            return set()
-        return set(model_calls(db, "silent")["variant"])
+            return {"syn": set(), "esyn": set()}
+        return {
+            "syn": set(model_calls(db, "silent")["variant"]),
+            "esyn": set(),
+        }
 
     def save_model(self, directory, overwrite=False):
         """Persist this Model's results to disk.
@@ -8160,7 +8286,10 @@ class Model:
         # here is not optional: without it the channel rates silently
         # omit the very offset that was fitted, and the offset is
         # large -- 13-18% on real cohorts.
-        if channel != "syn" and self._rg_delta_intercept is not None:
+        if (
+            channel not in _SILENT_GAMMA_CHANNELS
+            and self._rg_delta_intercept is not None
+        ):
             rates = rates * np.exp(self._rg_delta_intercept)
 
         return rates
@@ -8196,6 +8325,9 @@ class Model:
             "mis": self.dataset.contexts_by_gene_mis,
             "non": self.dataset.contexts_by_gene_non,
             "spl": self.dataset.contexts_by_gene_spl,
+            "esyn": getattr(
+                self.dataset, "contexts_by_gene_esyn", None
+            ),
         }
         parts = []
         for part in GAMMA_CHANNELS[channel]:
@@ -10238,7 +10370,7 @@ class Model:
             gene_id,
             n_draws=n_draws,
             rng=rng,
-            include_delta=channel != "syn",
+            include_delta=channel not in _SILENT_GAMMA_CHANNELS,
         )
 
         baseline = self._channel_baseline(channel).loc[gene_id]
@@ -10523,12 +10655,20 @@ class Model:
 
         # Same channel as compute_mu_ms: a synonymous variant takes
         # the synonymous channel, with no delta_intercept.
-        silent = variant in self._silent_variant_labels()
-        channel_table = (
-            self.dataset.contexts_by_gene_syn
-            if silent
-            else self.dataset.contexts_by_gene_nonsyn
-        )
+        labels = self._silent_variant_labels()
+        if variant in labels["esyn"]:
+            silent, channel_table = (
+                True,
+                self.dataset.contexts_by_gene_esyn,
+            )
+        elif variant in labels["syn"]:
+            silent, channel_table = (
+                True,
+                self.dataset.contexts_by_gene_syn,
+            )
+        else:
+            silent = False
+            channel_table = self.dataset.contexts_by_gene_nonsyn
         scale, n_draws = self._covariate_scale_draws(
             gene_id,
             n_draws=n_draws,

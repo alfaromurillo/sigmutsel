@@ -183,3 +183,16 @@ def test_a_channel_without_carriers_is_an_upper_bound(monkeypatch):
     assert not estimate["upper_bound_only"]
     assert np.isclose(estimate["mean"], 5.0)
     assert np.isclose(estimate["lower"], 0.55)
+
+
+def test_exon_end_synonymous_channel_is_silent(monkeypatch):
+    """esyn counts its own calls and, like syn, holds nobody out."""
+    captured = _capture(monkeypatch)
+    model = _model()
+    model.dataset._by_channel["esyn"] = [0, 1, 0, 0]
+    model._estimate_gamma_gene("G1", store=True, channel="esyn")
+    assert captured["yes"] == ["T2"]
+    # T4's doublet would be held out of a protein-changing channel.
+    assert captured["no"] == ["T1", "T3", "T4"]
+    assert "G1__esyn" in model.gammas
+    assert "esyn" in GAMMA_CHANNELS

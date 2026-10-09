@@ -101,8 +101,17 @@ from .constants import canonical_types_order
 
 logger = logging.getLogger(__name__)
 
-CHANNELS = ("syn", "mis", "non", "spl")
+CHANNELS = ("syn", "mis", "non", "spl", "esyn")
 NONSYN_CHANNELS = ("mis", "non", "spl")
+# Synonymous changes within EXON_END_BASES of an exon-exon junction
+# (the exonic part of VEP's splice region: the last three bases of an
+# exon, the first three of the next) are the ``esyn`` channel, not
+# ``syn``. They change no residue but can change splicing, and are
+# selected where that matters (TP53 p.T125=, the last base of exon 4),
+# so the neutral silent channel -- the count fit and ``r_g`` -- leaves
+# them out. They still mutate: they stay in every type's opportunity.
+EXON_END_BASES = 3
+SILENT_CHANNELS = ("syn", "esyn")
 TRANSCRIPT_RULES = ("mane_select", "ensembl_canonical", "longest_cds")
 
 # Measured frequencies at the intronic base the donor +2 / acceptor -2
@@ -122,7 +131,7 @@ ACCEPTOR_MINUS3_COMPOSITION = {
 
 # Bumped whenever a change here alters the derived tables, so a cache
 # written by older code is never served.
-_BUILD_VERSION = 5
+_BUILD_VERSION = 6
 
 _BASES = "ACGT"
 _CODE = np.full(256, 4, dtype=np.int8)
@@ -825,8 +834,11 @@ def _coding_site_table(models, coding_in=None):
     territory when ``coding_in`` is given.
 
     Returns ``(gene, types, channels)`` where ``types`` and
-    ``channels`` are ``(n, 3)`` arrays over the three alternate bases.
-    A position whose codon is truncated or contains N is ``mis``.
+    ``channels`` are ``(n, 3)`` arrays over the three alternate bases,
+    a channel being its index in :data:`CHANNELS`. A position whose
+    codon is truncated or contains N is ``mis``; a synonymous
+    alternative within :data:`EXON_END_BASES` of a junction is
+    ``esyn``.
     """
     codes = models.codes
     n = len(codes)
@@ -866,7 +878,26 @@ def _coding_site_table(models, coding_in=None):
         q[cc, None],
         alts[cc],
     ]
+    end = exon_end_positions(models)[idx]
+    cons[(cons == 0) & end[:, None]] = CHANNELS.index("esyn")
     return models.gene_of[idx], types, cons, idx, (~complete).sum()
+
+
+def exon_end_positions(models, bases=EXON_END_BASES):
+    """Per flat position: within ``bases`` of an exon-exon junction.
+
+    Counted along the coding sequence on either side of a junction
+    between two coding blocks (1 is the base next to it), as
+    :func:`site_weights.junction_distance` counts; the start and end
+    of the CDS are not junctions. Cached on ``models``.
+    """
+    cache = models.__dict__.setdefault("_exon_end_cache", {})
+    if bases not in cache:
+        from .site_weights import junction_distance
+
+        dist, _ = junction_distance(models)
+        cache[bases] = dist <= bases
+    return cache[bases]
 
 
 def _normalised(composition):
@@ -979,7 +1010,7 @@ def compute_channel_opportunity(
     masked_keys=None,
     site_weights=None,
 ):
-    """Per-gene, per-type site counts of the four channels.
+    """Per-gene, per-type site counts of the five channels.
 
     Parameters
     ----------
@@ -1000,7 +1031,8 @@ def compute_channel_opportunity(
     Returns
     -------
     dict
-        ``"syn"``, ``"mis"``, ``"non"``, ``"spl"``: genes x 96 types
+        ``"syn"``, ``"mis"``, ``"non"``, ``"spl"``, ``"esyn"``: genes x
+        96 types
         (float; splice sites carry fractional contexts), after the
         mask and the weights; ``"contexts"``: genes x 32 contexts, the site count
         (positions, before any mask); ``"n_undetermined"``: coding
@@ -1017,12 +1049,14 @@ def compute_channel_opportunity(
     from ``"contexts"``.
     """
     n_genes = len(models.selection)
-    size = n_genes * 4 * 96
+    n_ch = len(CHANNELS)
+    spl = CHANNELS.index("spl")
+    size = n_genes * n_ch * 96
     gene, types, cons, idx, n_undetermined = _coding_site_table(
         models, coding_in
     )
     flat = (
-        gene[:, None].astype(np.int64) * 4 * 96
+        gene[:, None].astype(np.int64) * n_ch * 96
         + cons.astype(np.int64) * 96
         + types.astype(np.int64)
     ).ravel()
@@ -1041,7 +1075,9 @@ def compute_channel_opportunity(
 
     sg, st, sw = _splice_site_weights(models, splice_in)
     splice_flat = (
-        sg.astype(np.int64) * 4 * 96 + 3 * 96 + st.astype(np.int64)
+        sg.astype(np.int64) * n_ch * 96
+        + spl * 96
+        + st.astype(np.int64)
     )
     if len(sg):
         counts += np.bincount(splice_flat, weights=sw, minlength=size)
@@ -1065,15 +1101,15 @@ def compute_channel_opportunity(
         )
         if len(mg):
             masked += np.bincount(
-                mg.astype(np.int64) * 4 * 96
-                + 3 * 96
+                mg.astype(np.int64) * n_ch * 96
+                + spl * 96
                 + mt.astype(np.int64),
                 weights=mw,
                 minlength=size,
             )
 
     def frames(array):
-        array = array.reshape(n_genes, 4, 96)
+        array = array.reshape(n_genes, n_ch, 96)
         out = {}
         for h, channel in enumerate(CHANNELS):
             frame = pd.DataFrame(
@@ -1097,7 +1133,7 @@ def compute_channel_opportunity(
             )
         counts = counts_w + splice_part
     out.update(frames(counts - masked))
-    masked = masked.reshape(n_genes, 4, 96)
+    masked = masked.reshape(n_genes, n_ch, 96)
     out["masked"] = {
         channel: float(masked[:, h, :].sum())
         for h, channel in enumerate(CHANNELS)
@@ -1107,7 +1143,7 @@ def compute_channel_opportunity(
 
 
 def contexts_from_channels(tables):
-    """Genes x 32 contexts from the four channel tables.
+    """Genes x 32 contexts from the channel tables.
 
     Each site offers one opportunity to each of the 3 types sharing
     its context, so the context count is the channel total of any of
@@ -1296,7 +1332,8 @@ def _routes(
 
     ``codon_start`` is the flat index of the codon's first base.
     ``target`` is the alternate residue (``None`` for synonymous,
-    which takes every synonymous substitution of the codon). A route
+    which takes every synonymous substitution of the codon; ``syn``
+    and ``esyn`` each take only their own sites). A route
     whose site has an N in its window, sits at a block's first or
     last base, or lies outside the territory is skipped -- it has no
     opportunity either.
@@ -1311,6 +1348,7 @@ def _routes(
     )
     residue = _CODONS.get(codon)
     nb_left, nb_right, _ = models.neighbours()
+    end = exon_end_positions(models)
     routes = []
     sites = []
     for q in range(3):
@@ -1326,8 +1364,10 @@ def _routes(
             if alt == ref:
                 continue
             new = _CODONS[codon[:q] + _BASES[alt] + codon[q + 1 :]]
-            if channel == "syn":
-                hit = new == residue
+            if channel in SILENT_CHANNELS:
+                hit = new == residue and bool(end[i]) == (
+                    channel == "esyn"
+                )
             else:
                 hit = new == target
             if hit:
@@ -1357,7 +1397,9 @@ def classify_calls(db, models, coding_in=None, splice_in=None):
     -------
     pandas.DataFrame
         Aligned with ``db.index``: ``channel`` (one of
-        :data:`CHANNELS`, or None), ``in_universe`` (bool),
+        :data:`CHANNELS`, or None; a synonymous call within
+        :data:`EXON_END_BASES` of a junction is ``esyn``),
+        ``in_universe`` (bool),
         ``universe_reason`` (``"coding"``, ``"splice"``,
         ``"noncoding"``, ``"no_transcript"``, ``"ref_mismatch"``,
         ``"outside_territory"``), ``transcript_id``,
@@ -1457,6 +1499,7 @@ def classify_calls(db, models, coding_in=None, splice_in=None):
     local = models.local
     offsets = models.offsets
 
+    end = exon_end_positions(models)
     route_cache = {}
     for r in np.flatnonzero(flat >= 0):
         i = flat[r]
@@ -1479,7 +1522,8 @@ def classify_calls(db, models, coding_in=None, splice_in=None):
             aa_ref, aa_alt = _CODONS[codon], _CODONS[new]
             number = li // 3 + 1
             if aa_ref == aa_alt:
-                ch, tag = "syn", f"p.{aa_ref}{number}="
+                ch = "esyn" if end[i] else "syn"
+                tag = f"p.{aa_ref}{number}="
                 target = None
             elif aa_alt == "*":
                 ch, tag, target = "non", f"p.{aa_ref}{number}*", "*"
@@ -1589,7 +1633,8 @@ def model_calls(db, scope=None):
     With the channel universe (a ``in_universe`` column), only
     in-universe calls, and the scope is read off ``channel``:
     ``"silent"`` is ``syn`` and ``"non-silent"`` is ``mis``, ``non``
-    or ``spl``. A call on a germline-masked allele (a ``True`` in
+    or ``spl``. Exon-end synonymous calls (``esyn``) are in neither
+    scope: they are not neutral, and not a protein change either. A call on a germline-masked allele (a ``True`` in
     ``germline_masked``, see
     :meth:`models.MutationDataset.set_germline_mask`) is left out too:
     the opportunity gives that allele no weight, so the data must not

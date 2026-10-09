@@ -181,11 +181,13 @@ def _mu_ms(tables, mu_taus, variants):
     syn_tab = tables["syn"]
     nonsyn_tab = tables["mis"] + tables["non"] + tables["spl"]
     parts = []
-    for silent, tab, col in (
-        (False, nonsyn_tab, "nonsyn"),
-        (True, syn_tab, "syn"),
+    channel = variants["channel"]
+    for part_of, tab, col in (
+        (~channel.isin(["syn", "esyn"]), nonsyn_tab, "nonsyn"),
+        (channel == "syn", syn_tab, "syn"),
+        (channel == "esyn", tables["esyn"], "syn"),
     ):
-        part = variants[(variants["channel"] == "syn") == silent]
+        part = variants[part_of]
         rates = compute_mu_g_channel_per_tumor(
             mu_taus,
             tab,
@@ -222,7 +224,7 @@ def test_site_rates_sum_to_the_gene_rates(models):
     got = rates.aggregate_rates().droplevel("label")
     type_opp = sum(tables[c] for c in CHANNELS)
     for channel in CHANNELS:
-        col = "syn" if channel == "syn" else "nonsyn"
+        col = "syn" if channel in ("syn", "esyn") else "nonsyn"
         # sum_tau n^h_{g tau} mu_bar^j_tau / D_tau: the model's gene rate
         # (compute_mu_g_channel_per_tumor), written out so that a type
         # absent from the toy universe (D_tau = 0) adds 0, not 0/0.

@@ -264,7 +264,7 @@ def variant_route_weights(
     dbin, orient = position_bins(models)
     calls = db[
         db["in_universe"].fillna(False).astype(bool)
-        & db["channel"].isin(["syn", "mis", "non"])
+        & db["channel"].isin(["syn", "esyn", "mis", "non"])
     ].drop_duplicates("variant")
     gene_index = models.gene_index
     coding = np.flatnonzero(models.gpos >= 0)
@@ -310,7 +310,9 @@ def variant_route_weights(
             pos = models.local[i] % 3
             mutated = codon[:pos] + _BASES[alt] + codon[pos + 1 :]
             target = (
-                None if row.channel == "syn" else _CODONS.get(mutated)
+                None
+                if row.channel in ("syn", "esyn")
+                else _CODONS.get(mutated)
             )
             types, sites = _routes(
                 models,

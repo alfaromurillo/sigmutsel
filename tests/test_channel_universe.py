@@ -255,9 +255,15 @@ def test_every_route_is_enumerated(models):
     routes = _routes(models, start + 3, "L", "mis", None)
     assert sorted(routes) == sorted(["G[T>C]T", "T[T>A]C", "T[T>G]C"])
     # Codon 4 is GGG (Gly), whose third position is four-fold
-    # degenerate: three synonymous routes, all at that position.
-    routes = _routes(models, start + 9, None, "syn", None)
-    assert len(routes) == 3
+    # degenerate: three synonymous routes, all at that position --
+    # the third base of exon 2, so exon-end synonymous (esyn).
+    assert len(_routes(models, start + 9, None, "esyn", None)) == 3
+    assert _routes(models, start + 9, None, "syn", None) == []
+    # Codon 2 (TTT) sits in exon 1's interior: TTC is plain syn.
+    assert _routes(models, start + 3, None, "syn", None) == [
+        "T[T>C]C"
+    ]
+    assert _routes(models, start + 3, None, "esyn", None) == []
     # Codon 3 is CGA (Arg): TGA is the only route to a stop.
     assert _routes(models, start + 6, "*", "non", None) == ["T[C>T]G"]
 
@@ -571,6 +577,7 @@ def test_germline_mask_removes_exactly_the_masked_alleles(models):
         "mis": 2.0,
         "non": 0.0,
         "spl": 1.0,
+        "esyn": 0.0,
     }
     expected = {
         ("mis", "ENSGA", "T[T>C]T"): 1,
@@ -1061,3 +1068,143 @@ def test_route_weights_scale_variant_rates(models):
     np.testing.assert_allclose(
         rate([2.0, 0.5, 0.5]), 2 * single + 0.5 * (base - single)
     )
+
+
+def test_exon_end_positions_count_three_bases_each_side(models):
+    from sigmutsel.channel_universe import exon_end_positions
+
+    a = models.gene_index["ENSGA"]
+    lo = models.offsets[a]
+    end = exon_end_positions(models)[lo : lo + models.lengths[a]]
+    # GA's CDS is exon 1 (9 bases) + exon 2 + ...: the last three
+    # bases of exon 1 and the first three of exon 2 are exon ends;
+    # the CDS start is not a junction.
+    assert not end[:6].any()
+    assert end[6:12].all()
+    assert len(exon_end_positions(models, bases=1)[lo : lo + 9]) == 9
+    assert exon_end_positions(models, bases=1)[lo + 8]
+    assert not exon_end_positions(models, bases=1)[lo + 7]
+
+
+def test_exon_end_synonymous_sites_leave_syn_for_esyn(models):
+    """syn + esyn is the synonymous opportunity; contexts unchanged."""
+    from sigmutsel.channel_universe import (
+        CHANNELS,
+        _coding_site_table,
+    )
+
+    tables = compute_channel_opportunity(models)
+    _, _, cons, _, _ = _coding_site_table(models)
+    esyn = CHANNELS.index("esyn")
+    assert (cons == esyn).any() and (cons == 0).any()
+    total = tables["syn"] + tables["esyn"]
+    assert np.isclose(
+        total.to_numpy().sum(), ((cons == 0) | (cons == esyn)).sum()
+    )
+    # Every site still offers three opportunities across channels.
+    assert np.allclose(
+        sum(tables[c] for c in CHANNELS).to_numpy().sum(),
+        3 * tables["contexts"].to_numpy().sum(),
+    )
+
+
+def test_classify_calls_labels_exon_end_synonymous_calls(models):
+    a = models.gene_index["ENSGA"]
+    lo = models.offsets[a]
+    chrom = models.chrom_of[lo]
+    # Codon 2 TTT, third base (exon interior): T>C gives TTC, syn.
+    # Codon 4 GGG, third base (exon 2, base 3): G>A gives GGA, esyn.
+    i2, i4 = lo + 5, lo + 11
+    db = _calls(
+        [
+            (
+                "ENSGA",
+                "GA",
+                chrom,
+                int(models.gpos[i2]),
+                "T",
+                "C",
+                "T[T>C]T",
+            ),
+            (
+                "ENSGA",
+                "GA",
+                chrom,
+                int(models.gpos[i4]),
+                "G",
+                "A",
+                "G[C>T]C",
+            ),
+        ]
+    )
+    out = classify_calls(db, models)
+    assert list(out["channel"]) == ["syn", "esyn"]
+    assert out["in_universe"].all()
+    assert out["variant_label"].iat[1].endswith("=")
+    assert model_calls(db.assign(**out), "silent").shape[0] == 1
+    assert model_calls(db.assign(**out), "non-silent").empty
+
+
+def test_relabel_exon_end_synonymous_on_an_old_dataset(
+    models, tmp_path, monkeypatch
+):
+    """A dataset classified before esyn: its exon-end synonymous call
+    moves to esyn and leaves the silent counts; the rest stay."""
+    from sigmutsel import channel_universe
+    from sigmutsel.models import MutationDataset
+
+    monkeypatch.setattr(
+        channel_universe,
+        "load_or_build_transcript_models",
+        lambda *a, **k: models,
+    )
+    a = models.gene_index["ENSGA"]
+    lo = models.offsets[a]
+    chrom = models.chrom_of[lo]
+    db = _calls(
+        [
+            (
+                "ENSGA",
+                "GA",
+                chrom,
+                int(models.gpos[lo + 5]),
+                "T",
+                "C",
+                "T[T>C]C",
+            ),
+            (
+                "ENSGA",
+                "GA",
+                chrom,
+                int(models.gpos[lo + 11]),
+                "G",
+                "A",
+                "G[C>T]C",
+            ),
+        ]
+    ).assign(
+        Tumor_Sample_Barcode=["t1", "t2"],
+        variant=["GA p.F2=", "GA p.G4="],
+        Variant_Classification="Silent",
+        channel="syn",
+        in_universe=True,
+        routes=["T[T>C]C", "G[C>T]C"],
+    )
+    dataset = MutationDataset(str(tmp_path / "mafs"))
+    dataset._mutation_db = db
+    dataset._channel_universe = {
+        "territory": None,
+        "splice_padding": 2,
+        "germline_mask_af": 0.5,
+    }
+    assert dataset.relabel_exon_end_synonymous() == 1
+    assert list(dataset.mutation_db["channel"]) == ["syn", "esyn"]
+    # the settings the opportunity was built with are kept
+    assert dataset.channel_universe["splice_padding"] == 2
+    assert dataset.channel_universe["germline_mask_af"] == 0.5
+    counts = dataset.genes_counts_silent
+    assert counts.to_numpy().sum() == 1
+    assert dataset.genes_present_silent.loc["ENSGA"].tolist() == [
+        1,
+        0,
+    ]

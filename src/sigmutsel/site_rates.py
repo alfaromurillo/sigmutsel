@@ -81,7 +81,11 @@ logger = logging.getLogger(__name__)
 
 #: Channel of each consequence code of the site table (0 syn, 1 mis,
 #: 2 non; 3 is the splice channel).
-_NONSYN = np.array([False, True, True, True])
+# Per channel code (CHANNELS order): takes the non-synonymous
+# multiplier (delta). The two synonymous channels take the silent one.
+_NONSYN = np.array([False, True, True, True, False])
+_N_CH = len(CHANNELS)
+_SPL = CHANNELS.index("spl")
 _SPLICE_KIND = {"+1": "d1", "+2": "d2", "-2": "a2", "-1": "a1"}
 _KIND_REF = {"d1": 2, "d2": 3, "a2": 0, "a1": 2}  # G, T, A, G
 _P_LABEL = re.compile(r"^p\.([A-Z*])(\d+)([A-Z*=])$")
@@ -571,14 +575,7 @@ class SiteRates:
             },
         )
         if verify:
-            out.verify_opportunity(
-                {
-                    "syn": dataset.contexts_by_gene_syn,
-                    "mis": dataset.contexts_by_gene_mis,
-                    "non": dataset.contexts_by_gene_non,
-                    "spl": dataset.contexts_by_gene_spl,
-                }
-            )
+            out.verify_opportunity(dataset.contexts_by_gene_channels)
         return out
 
     # -----------------------------------------------------------------
@@ -632,7 +629,7 @@ class SiteRates:
         spl_code = names.index(splice_label)
         n_lab = len(names)
         n_genes = len(t.genes) if by_gene else 1
-        size = n_genes * 4 * n_lab * 96
+        size = n_genes * _N_CH * n_lab * 96
         total = np.zeros(size)
         gene = t.gene
         for s in range(0, len(t.idx), chunk):
@@ -645,7 +642,8 @@ class SiteRates:
                 ch = _NONSYN[t.cons[rows]].astype(np.int64)
                 w = w * gene_weights[gene[rows][:, None], ch]
             key = (
-                (g[:, None] * 4 + t.cons[rows]) * n_lab + codes[rows]
+                (g[:, None] * _N_CH + t.cons[rows]) * n_lab
+                + codes[rows]
             ) * 96 + t.types[rows]
             total += np.bincount(
                 key.ravel(), weights=w.ravel(), minlength=size
@@ -656,10 +654,12 @@ class SiteRates:
         sg = (
             t.splice_gene if by_gene else np.zeros_like(t.splice_gene)
         )
-        key = ((sg * 4 + 3) * n_lab + spl_code) * 96 + t.splice_type
+        key = (
+            (sg * _N_CH + _SPL) * n_lab + spl_code
+        ) * 96 + t.splice_type
         total += np.bincount(key, weights=sw, minlength=size)
 
-        total = total.reshape(n_genes * 4 * n_lab, 96)
+        total = total.reshape(n_genes * _N_CH * n_lab, 96)
         if by_gene:
             index = pd.MultiIndex.from_product(
                 [t.genes, CHANNELS, names],
@@ -677,6 +677,13 @@ class SiteRates:
     def verify_opportunity(self, channel_tables, rtol=1e-9):
         """Raise unless the table rebuilds the model's channel tables."""
         opp = self.opportunity(observable=True).droplevel("label")
+        missing = set(CHANNELS) - set(channel_tables)
+        if missing:
+            raise AssertionError(
+                f"The dataset has no {sorted(missing)} opportunity: it "
+                "was built before that channel existed; rebuild its "
+                "channel tables."
+            )
         for channel in CHANNELS:
             expected = channel_tables[channel].reindex(
                 index=self.table.genes, columns=canonical_types_order
@@ -1063,7 +1070,17 @@ class SiteRates:
                     f"({_CODONS.get(codon)}), not {aa_ref}."
                 )
             if aa_alt == "=":
-                channel, target = "syn", None
+                # A synonymous change is esyn when it can arise at an
+                # exon-end site of the codon, as classify_calls labels
+                # a call there; otherwise syn.
+                target = None
+                channel = (
+                    "esyn"
+                    if _routes(
+                        m, cs, None, "esyn", self.table.coding_in
+                    )
+                    else "syn"
+                )
             elif aa_alt == "*":
                 channel, target = "non", "*"
             else:
@@ -1251,7 +1268,7 @@ class SiteRates:
                 )
                 hit = (
                     new == residue
-                    if channel == "syn"
+                    if channel in ("syn", "esyn")
                     else new == target
                 )
                 if hit:
@@ -1351,7 +1368,7 @@ class SiteRates:
             n = len(rec["types"])
             r_var += [i] * n
             r_gene += [g_row] * n
-            r_nonsyn += [rec["channel"] != "syn"] * n
+            r_nonsyn += [rec["channel"] not in ("syn", "esyn")] * n
             r_tau += [type_index[x] for x in rec["types"]]
             r_w += list(rec["weights"])
             r_seen += list(rec["observable"])

@@ -499,6 +499,9 @@ class SiteRates:
                 c_in, s_in = territory_masks(
                     models,
                     splice_padding=params.get("splice_padding", 0),
+                    exclude_repeats=params.get(
+                        "exclude_repeats", False
+                    ),
                 )
             else:
                 c_in = s_in = None

@@ -897,9 +897,17 @@ def test_junction_neighbours_come_from_the_genome(models, tmp_path):
     assert left_c[oa + 9] == 0 and left_g[oa + 9] == 1
     # GB (minus strand): 1100 (ob+8) is followed by intron base 1099
     assert right_g[ob + 8] == 3
-    # Away from junctions nothing changes.
+    # A CDS's own ends: no neighbour without the genome (the flat
+    # array's next base is another gene's), the genome's with it.
+    la, lb = models.lengths[a], models.lengths[b]
+    assert left_c[oa] == 4 and left_g[oa] == 0  # 100, all A
+    assert right_c[oa + la - 1] == 4 and right_g[oa + la - 1] == 0
+    assert left_c[ob] == 4 and left_g[ob] == 3  # 1109 A: coding T
+    assert right_c[ob + lb - 1] == 4 and right_g[ob + lb - 1] == 3
+    # Away from junctions and CDS ends nothing changes.
     inner = np.ones(len(models.codes), dtype=bool)
     inner[[oa + 8, oa + 9, ob + 8, ob + 9]] = False
+    inner[[oa, oa + la - 1, ob, ob + lb - 1]] = False
     np.testing.assert_array_equal(left_c[inner], left_g[inner])
     np.testing.assert_array_equal(right_c[inner], right_g[inner])
 
@@ -1208,3 +1216,80 @@ def test_relabel_exon_end_synonymous_on_an_old_dataset(
         1,
         0,
     ]
+
+
+def test_repeat_masks_take_repeat_sites_out_of_the_territory(
+    models, tmp_path
+):
+    """A RepeatMasker region leaves the territory: no opportunity
+    there, and a call there is outside it, as the QC drops it."""
+    from sigmutsel.channel_universe import repeat_masks
+
+    # UCSC rmsk, 17 columns; chr1 [103, 106) 0-based = 104-106,
+    # GA's codon 2 (TTT).
+    row = ["0"] * 5 + ["chr1", "103", "106"] + ["0"] * 9
+    rmsk = tmp_path / "rmsk.hg38.txt.gz"
+    pd.DataFrame([row]).to_csv(
+        rmsk, sep="\t", header=False, index=False, compression="gzip"
+    )
+    coding_rep, splice_rep = repeat_masks(models, rmsk_path=rmsk)
+    a = models.gene_index["ENSGA"]
+    lo = models.offsets[a]
+    flat = np.flatnonzero(coding_rep)
+    assert sorted(models.gpos[flat]) == [104, 105, 106]
+    assert (models.gene_of[flat] == a).all()
+    assert not splice_rep.any()
+
+    inside = models.gpos >= 0
+    plain = compute_channel_opportunity(models, inside)
+    masked = compute_channel_opportunity(models, inside & ~coding_rep)
+    # Three positions, three alternate bases each, leave the opportunity.
+    total = sum(plain[c] for c in CHANNELS).to_numpy().sum()
+    total_m = sum(masked[c] for c in CHANNELS).to_numpy().sum()
+    assert np.isclose(total - total_m, 9)
+    db = _calls(
+        [
+            (
+                "ENSGA",
+                "GA",
+                models.chrom_of[lo],
+                105,
+                "T",
+                "C",
+                "T[T>C]T",
+            )
+        ]
+    )
+    out = classify_calls(db, models, inside & ~coding_rep)
+    assert out["universe_reason"].iat[0] == "outside_territory"
+    assert not out["in_universe"].iat[0]
+
+
+def test_cds_ends_are_elements_with_a_genome(
+    models, tmp_path, monkeypatch
+):
+    """With the genome's outer neighbours a CDS's first and last
+    bases join the opportunity, and a start-codon change has a route;
+    without one they stay out, as before."""
+    from sigmutsel import channel_universe
+    from sigmutsel.channel_universe import _coding_site_table, _routes
+
+    genome = tmp_path / "tsb"
+    genome.mkdir()
+    for chrom, size in (("1", 400), ("2", 1300)):
+        (genome / f"{chrom}.txt").write_bytes(bytes(size))  # all A
+    a = models.gene_index["ENSGA"]
+    oa = models.offsets[a]
+    _, _, _, idx_c, _ = _coding_site_table(models)
+    assert oa not in set(idx_c)
+    assert _routes(models, oa, "V", "mis", None) == []
+    monkeypatch.setattr(
+        channel_universe, "sigprofiler_genome_dir", lambda: genome
+    )
+    models._neighbour_cache = {}
+    _, _, _, idx_g, _ = _coding_site_table(models)
+    assert oa in set(idx_g)
+    assert len(idx_g) > len(idx_c)
+    # GA's ATG: A>G at its first base gives GTG (Val); with the
+    # genome's A before it, the pyrimidine-strand type is A[T>C]T.
+    assert _routes(models, oa, "V", "mis", None) == ["A[T>C]T"]

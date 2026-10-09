@@ -875,7 +875,9 @@ class MutationDataset:
         models = load_or_build_transcript_models()
         if params.get("territory", "mc3") == "mc3":
             coding_in, splice_in = territory_masks(
-                models, splice_padding=params.get("splice_padding", 0)
+                models,
+                splice_padding=params.get("splice_padding", 0),
+                exclude_repeats=params.get("exclude_repeats", False),
             )
         else:
             coding_in = splice_in = None
@@ -895,16 +897,90 @@ class MutationDataset:
                 self.generate_contexts_by_gene()
             else:
                 self.generate_contexts_by_gene(gene_universe=universe)
-        self.compute_gene_presence_silent()
-        self.compute_gene_counts_channels()
-        if self._variant_db is not None:
-            self.generate_variant_db()
-            self.compute_variants_present()
+        self._recompute_call_tables()
         n = int(db["channel"].eq("esyn").sum())
         logger.info(
             "Relabelled %d exon-end synonymous calls esyn.", n
         )
         return n
+
+    @record_call
+    def set_exclude_repeats(self, exclude=True):
+        """Move the territory off (or back onto) RepeatMasker regions.
+
+        Like :meth:`set_germline_mask`, QC on both sides: the call QC
+        drops every call in a repeat, so with ``exclude`` the
+        territory leaves those sites out too
+        (:func:`channel_universe.territory_masks`). Every call is
+        placed again (a call in a repeat, rare after the QC, leaves
+        the universe as ``outside_territory``), the opportunity tables
+        are rebuilt with the same mask and site weights, and every
+        table built from the calls is recomputed.
+
+        Returns
+        -------
+        pandas.Series
+            Calls per ``universe_reason`` after the change.
+        """
+        from .channel_universe import (
+            classify_calls,
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+
+        if not self.has_channel_universe():
+            raise ValueError(
+                "The repeat mask needs the channel universe; this "
+                "dataset was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        params["exclude_repeats"] = bool(exclude)
+        self._channel_universe = params
+        models = load_or_build_transcript_models()
+        if params.get("territory", "mc3") == "mc3":
+            coding_in, splice_in = territory_masks(
+                models,
+                splice_padding=params.get("splice_padding", 0),
+                exclude_repeats=bool(exclude),
+            )
+        else:
+            coding_in = splice_in = None
+        db = self._mutation_db.copy()
+        got = classify_calls(db, models, coding_in, splice_in)
+        for column in (
+            "channel",
+            "in_universe",
+            "universe_reason",
+            "transcript_id",
+            "routes",
+        ):
+            db[column] = got[column]
+        if "variant_maf" in db.columns:
+            db["variant"] = db["variant_maf"].where(
+                ~got["in_universe"], got["variant_label"]
+            )
+        self._mutation_db = db
+        self._classify_multi_base(models, coding_in, splice_in)
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+        self._recompute_call_tables()
+        return db["universe_reason"].value_counts()
+
+    def _recompute_call_tables(self):
+        """Rebuild every table derived from the calls that exists."""
+        if self._genes_present is not None:
+            self.compute_gene_presence()
+        if self._genes_present_non_silent is not None:
+            self.compute_gene_presence_non_silent()
+        self.compute_gene_presence_silent()
+        self.compute_gene_counts_channels()
+        if self._variant_db is not None:
+            self.generate_variant_db()
+            self.compute_variants_present()
 
     def set_site_weights(self, site_weights):
         """Set (or clear, with None) site weights on the opportunity.
@@ -965,7 +1041,9 @@ class MutationDataset:
         coding_in = None
         if params.get("territory", "mc3") == "mc3":
             coding_in, _ = territory_masks(
-                models, splice_padding=params.get("splice_padding", 0)
+                models,
+                splice_padding=params.get("splice_padding", 0),
+                exclude_repeats=params.get("exclude_repeats", False),
             )
         masked_keys = None
         if mask_af is not None:
@@ -1740,7 +1818,11 @@ class MutationDataset:
 
     @record_call
     def classify_mutation_db(
-        self, territory="mc3", splice_padding=0, germline_mask_af=None
+        self,
+        territory="mc3",
+        splice_padding=0,
+        germline_mask_af=None,
+        exclude_repeats=False,
     ):
         """Place every call in the channel universe.
 
@@ -1771,6 +1853,11 @@ class MutationDataset:
             allele are marked ``germline_masked`` and left out of the
             model's data, as the opportunity leaves out their alleles.
             See also :meth:`set_germline_mask`.
+        exclude_repeats : bool, default False
+            Leave RepeatMasker regions out of the territory, as the
+            call QC leaves their calls out
+            (:func:`channel_universe.territory_masks`). See also
+            :meth:`set_exclude_repeats`.
 
         Returns
         -------
@@ -1807,7 +1894,9 @@ class MutationDataset:
         models = load_or_build_transcript_models()
         if territory == "mc3":
             coding_in, splice_in = territory_masks(
-                models, splice_padding=splice_padding
+                models,
+                splice_padding=splice_padding,
+                exclude_repeats=exclude_repeats,
             )
         else:
             coding_in = splice_in = None
@@ -1839,6 +1928,7 @@ class MutationDataset:
                 if germline_mask_af is None
                 else float(germline_mask_af)
             ),
+            "exclude_repeats": bool(exclude_repeats),
         }
 
         self._mark_germline_masked_calls()
@@ -1939,6 +2029,9 @@ class MutationDataset:
                 coding_in, splice_in = territory_masks(
                     models,
                     splice_padding=params.get("splice_padding", 0),
+                    exclude_repeats=params.get(
+                        "exclude_repeats", False
+                    ),
                 )
             self._classify_multi_base(models, coding_in, splice_in)
         return self._multi_base_db["multi_base"].value_counts()
@@ -3228,6 +3321,7 @@ class MutationDataset:
             site_weights=SiteWeights.from_dict(
                 params.get("site_weights")
             ),
+            exclude_repeats=params.get("exclude_repeats", False),
         )
         self._contexts_by_gene = tables["contexts"]
         self._contexts_by_gene_syn = tables["syn"]
@@ -4668,7 +4762,9 @@ class Model:
         params = ds.channel_universe or {}
         models = load_or_build_transcript_models()
         coding_in, _ = territory_masks(
-            models, splice_padding=params.get("splice_padding", 0)
+            models,
+            splice_padding=params.get("splice_padding", 0),
+            exclude_repeats=params.get("exclude_repeats", False),
         )
         gene, types, _cons, idx, _ = _coding_site_table(
             models, coding_in

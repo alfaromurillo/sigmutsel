@@ -131,7 +131,7 @@ ACCEPTOR_MINUS3_COMPOSITION = {
 
 # Bumped whenever a change here alters the derived tables, so a cache
 # written by older code is never served.
-_BUILD_VERSION = 6
+_BUILD_VERSION = 7
 
 _BASES = "ACGT"
 _CODE = np.full(256, 4, dtype=np.int8)
@@ -632,6 +632,12 @@ class TranscriptModels:
         right = np.full(n, 4, dtype=np.int8)
         left[1:] = codes[:-1]
         right[:-1] = codes[1:]
+        # A gene's sequence has no neighbour outside itself: the flat
+        # array's next base belongs to another gene.
+        starts = self.offsets[: len(self.lengths)]
+        ends = starts + self.lengths - 1
+        left[starts] = 4
+        right[ends] = 4
         source = "cds"
         if genome_dir is not None:
             gp, g_of = self.gpos, self.gene_of
@@ -641,10 +647,20 @@ class TranscriptModels:
                 & (gp[:-1] >= 0)
                 & (np.abs(gp[1:] - gp[:-1]) != 1)
             )
+            # The CDS's own first and last bases: their outer neighbour
+            # is the UTR (or upstream) base, read from the genome too,
+            # so they are elements like any other position.
+            coding = gp >= 0
+            prev_coding = np.zeros(n, dtype=bool)
+            prev_coding[1:] = coding[:-1] & (g_of[1:] == g_of[:-1])
+            next_coding = np.zeros(n, dtype=bool)
+            next_coding[:-1] = coding[1:] & (g_of[:-1] == g_of[1:])
+            cds_first = np.flatnonzero(coding & ~prev_coding)
+            cds_last = np.flatnonzero(coding & ~next_coding)
             minus_gene = self.selection["strand"].to_numpy() == "-"
             for side, at_flat in (
-                ("before", junc),
-                ("after", junc + 1),
+                ("before", np.concatenate([junc, cds_last])),
+                ("after", np.concatenate([junc + 1, cds_first])),
             ):
                 g_minus = minus_gene[g_of[at_flat]]
                 step = np.where(g_minus, -1, 1) * (
@@ -747,9 +763,23 @@ def load_or_build_transcript_models(
 
 
 def territory_masks(
-    models, splice_padding=0, bed_path=None, chain_path=None
+    models,
+    splice_padding=0,
+    bed_path=None,
+    chain_path=None,
+    exclude_repeats=False,
 ):
-    """Which coding positions and splice sites lie in the MC3 territory.
+    """Which coding positions and splice sites lie in the territory.
+
+    The territory is where a call can be observed: the MC3 capture
+    territory and, with ``exclude_repeats``, outside every
+    RepeatMasker region. The call QC drops every call in a repeat
+    (:func:`qc.flag_repetitive_regions`), so a repeat site offers no
+    observable opportunity; leaving it in the territory made the
+    model expect calls that can never be seen (about 1.4% of coding
+    positions). Everything that reads the territory -- the
+    opportunity, variant routes, call classification, site rates --
+    then excludes those sites alike.
 
     Returns
     -------
@@ -757,6 +787,64 @@ def territory_masks(
         Boolean masks over ``models.codes`` (padding is outside) and
         over ``models.splice`` rows.
     """
+    coding_in, splice_in = _capture_territory_masks(
+        models, splice_padding, bed_path, chain_path
+    )
+    if exclude_repeats:
+        coding_rep, splice_rep = repeat_masks(models)
+        coding_in = coding_in & ~coding_rep
+        splice_in = splice_in & ~splice_rep
+    return coding_in, splice_in
+
+
+def repeat_masks(models, rmsk_path=None):
+    """Coding positions and splice sites inside a RepeatMasker region.
+
+    GRCh38 positions against UCSC's hg38 rmsk track, merged as the
+    call QC merges it (:func:`qc.load_repeat_intervals`). Cached next
+    to the transcript models.
+    """
+    from .liftover import in_intervals
+    from .qc import load_repeat_intervals
+    from .setup import download_repeatmasker_bed
+
+    rmsk_path = Path(rmsk_path or download_repeatmasker_bed("hg38"))
+    cache = None
+    if getattr(models, "directory", None) is not None:
+        key = _fingerprint(rmsk_path, rmsk_path, extra="repeats")
+        cache = Path(models.directory) / f"repeats_{key}.npz"
+        if cache.exists():
+            arrays = np.load(cache)
+            return arrays["coding_rep"], arrays["splice_rep"]
+    merged = load_repeat_intervals(rmsk_path)
+    # Accept either chromosome naming in the models.
+    merged.update(
+        {c.removeprefix("chr"): v for c, v in list(merged.items())}
+    )
+    coding = models.gpos >= 0
+    coding_rep = np.zeros(len(models.codes), dtype=bool)
+    coding_rep[coding] = in_intervals(
+        merged, models.chrom_of[coding], models.gpos[coding]
+    )
+    splice_chrom = models.selection["chrom"].to_numpy()[
+        models.splice["gene"].to_numpy()
+    ]
+    splice_rep = in_intervals(
+        merged, splice_chrom, models.splice["gpos"].to_numpy()
+    )
+    if cache is not None:
+        tmp = cache.with_name(f".{cache.stem}.{os.getpid()}.npz")
+        np.savez_compressed(
+            tmp, coding_rep=coding_rep, splice_rep=splice_rep
+        )
+        os.replace(tmp, cache)
+    return coding_rep, splice_rep
+
+
+def _capture_territory_masks(
+    models, splice_padding=0, bed_path=None, chain_path=None
+):
+    """The MC3 capture territory alone (see :func:`territory_masks`)."""
     from . import setup
     from .liftover import (
         in_intervals,
@@ -827,11 +915,13 @@ def territory_masks(
 def _coding_site_table(models, coding_in=None):
     """Per coding position: gene, type of each alt, channel of each alt.
 
-    Counted positions are exactly those
-    :func:`contexts_by_gene.compute_contexts_by_gene` counts -- every
-    centre position from 1 to ``len - 2`` of the (padded) sequence
-    whose trinucleotide window is pure ACGT -- restricted to the
-    territory when ``coding_in`` is given.
+    Counted positions: every position of the (padded) sequence whose
+    trinucleotide window is pure ACGT, restricted to the territory
+    when ``coding_in`` is given. A CDS's first and last bases count
+    when :meth:`TranscriptModels.neighbours` read their outer
+    neighbour from the genome; without a genome they have none, and
+    the count is :func:`contexts_by_gene.compute_contexts_by_gene`'s
+    (positions 1 to ``len - 2``).
 
     Returns ``(gene, types, channels)`` where ``types`` and
     ``channels`` are ``(n, 3)`` arrays over the three alternate bases,
@@ -844,7 +934,7 @@ def _coding_site_table(models, coding_in=None):
     n = len(codes)
     local = models.local
     length = models.lengths[models.gene_of]
-    centre = (local >= 1) & (local <= length - 2)
+    centre = (local >= 0) & (local <= length - 1)
     idx = np.flatnonzero(centre)
     nb_left, nb_right, _ = models.neighbours()
     left = nb_left[idx]
@@ -1181,6 +1271,7 @@ def channel_opportunity(
     models=None,
     germline_mask_af=None,
     site_weights=None,
+    exclude_repeats=False,
 ):
     """Cached channel opportunity tables, optionally subset to genes.
 
@@ -1207,6 +1298,9 @@ def channel_opportunity(
         alleles (GDC's masked MAFs). None applies no mask.
     site_weights : site_weights.SiteWeights, optional
         Per-cohort distance and strand factors of the opportunity.
+    exclude_repeats : bool
+        Leave RepeatMasker sites out of the territory
+        (:func:`territory_masks`).
 
     Returns
     -------
@@ -1237,6 +1331,8 @@ def channel_opportunity(
         tag += f"_{mask_label(germline_mask_af)}"
     if site_weights is not None:
         tag += f"_sw-{site_weights.label()}"
+    if exclude_repeats:
+        tag += "_norep"
     directory = cache_dir / f"opportunity_{tag}"
     names = list(CHANNELS) + ["contexts"]
     if (directory / "report.json").exists() and not force:
@@ -1248,7 +1344,9 @@ def channel_opportunity(
     else:
         if territory == "mc3":
             coding_in, splice_in = territory_masks(
-                models, splice_padding=splice_padding
+                models,
+                splice_padding=splice_padding,
+                exclude_repeats=exclude_repeats,
             )
         else:
             coding_in = splice_in = None
@@ -1285,7 +1383,9 @@ def channel_opportunity(
             )
             if splice_padding:
                 _, unpadded = territory_masks(
-                    models, splice_padding=0
+                    models,
+                    splice_padding=0,
+                    exclude_repeats=exclude_repeats,
                 )
                 report["splice_sites_in_unpadded_territory"] = int(
                     unpadded.sum()
@@ -1334,8 +1434,8 @@ def _routes(
     ``target`` is the alternate residue (``None`` for synonymous,
     which takes every synonymous substitution of the codon; ``syn``
     and ``esyn`` each take only their own sites). A route
-    whose site has an N in its window, sits at a block's first or
-    last base, or lies outside the territory is skipped -- it has no
+    whose site has an N in its window (a CDS end without the genome
+    included) or lies outside the territory is skipped -- it has no
     opportunity either.
     """
     codes = models.codes
@@ -1353,8 +1453,9 @@ def _routes(
     sites = []
     for q in range(3):
         i = codon_start + q
-        if i - 1 < lo or i + 1 >= hi:
+        if i < lo or i >= hi:
             continue
+        # A CDS end has a neighbour only when read from the genome.
         left, ref, right = nb_left[i], codes[i], nb_right[i]
         if max(left, ref, right) >= 4:
             continue

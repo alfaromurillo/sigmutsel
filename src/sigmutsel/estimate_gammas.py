@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 # from it (see _natural_gamma_ceiling).
 _CLIP_FLOOR = 1e-12
 
+# The declared robust likelihood (`u` in the article): every tumor
+# fails to carry the mutation with probability at least ABSENCE_FLOOR,
+# P(absent) = u + (1 - u) exp(-gamma mu), whatever its rate -- a tumor
+# that cannot or need not carry it (a subtype off the gene's pathway,
+# a hypermutator whose rate counts every site of an oncogene when
+# only its hotspots are selected). It replaces what the hard clip
+# above did silently: cap an absent tumor's evidence, here at
+# -log(u) = 6.9 nats instead of 27.6, with no kink for the sampler.
+# 0 restores the clip alone.
+ABSENCE_FLOOR = 1e-3
+
 # Floor on the per-tumor sigma of the log-mu cut prior (see
 # estimate_gamma_from_mus). Without it, a tumor whose posterior mu
 # draws happen to agree to numerical precision would collapse that
@@ -119,6 +130,7 @@ def presence_probability(
     mu,
     gene_tumor_dispersion=None,
     gene_tumor_shape=None,
+    absence_floor=0.0,
 ):
     """P(tumor carries the variant), given gamma and its rate.
 
@@ -142,6 +154,10 @@ def presence_probability(
     gene_tumor_shape : array, optional
         Per-tumor shape ``k_j``, which takes precedence over a
         scalar `phi`.
+    absence_floor : float, default 0.0
+        ``u``: the presence probability above is multiplied by
+        ``1 - u``, so a tumor is absent with probability at least
+        ``u`` however high its rate (:data:`ABSENCE_FLOOR`).
 
     Returns
     -------
@@ -179,7 +195,10 @@ def presence_probability(
             * tt.log1p(gamma * m_total / gene_tumor_dispersion)
         )
 
-    return tt.clip(1 - tt.exp(log_absent), _CLIP_FLOOR, ceiling)
+    present = -tt.expm1(log_absent)
+    if absence_floor:
+        present = (1 - absence_floor) * present
+    return tt.clip(present, _CLIP_FLOOR, ceiling)
 
 
 def estimate_gamma_from_mus(
@@ -206,6 +225,7 @@ def estimate_gamma_from_mus(
     gene_tumor_dispersion=None,
     gene_tumor_shape=None,
     presence_model=None,
+    absence_floor=ABSENCE_FLOOR,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -276,6 +296,10 @@ def estimate_gamma_from_mus(
         notes for what a replacement must leave alone -- everything
         around this call assumes gamma is the bounded scalar it was
         handed.
+    absence_floor : float, default ABSENCE_FLOOR
+        ``u`` of :func:`presence_probability` (:data:`ABSENCE_FLOOR`);
+        not passed to a custom ``presence_model``. Recorded in the
+        posterior's attrs.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -593,12 +617,21 @@ def estimate_gamma_from_mus(
                 else:
                     mu = mus_all
 
-                Ps = (presence_model or presence_probability)(
-                    gamma,
-                    mu,
-                    gene_tumor_dispersion=gene_tumor_dispersion,
-                    gene_tumor_shape=shapes_all,
-                )
+                if presence_model is None:
+                    Ps = presence_probability(
+                        gamma,
+                        mu,
+                        gene_tumor_dispersion=gene_tumor_dispersion,
+                        gene_tumor_shape=shapes_all,
+                        absence_floor=absence_floor,
+                    )
+                else:
+                    Ps = presence_model(
+                        gamma,
+                        mu,
+                        gene_tumor_dispersion=gene_tumor_dispersion,
+                        gene_tumor_shape=shapes_all,
+                    )
 
                 pm.Bernoulli(
                     name="variants_observed",
@@ -804,6 +837,9 @@ def estimate_gamma_from_mus(
                 # (only S1/i1/u1/.../f8) -- store as int.
                 results.posterior.attrs["likelihood_saturated"] = int(
                     likelihood_saturated
+                )
+                results.posterior.attrs["absence_floor"] = float(
+                    absence_floor if presence_model is None else 0.0
                 )
                 results.posterior.attrs["natural_gamma_ceiling"] = (
                     natural_ceiling

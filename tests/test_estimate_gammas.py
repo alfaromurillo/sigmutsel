@@ -1028,3 +1028,30 @@ def test_presence_model_replaces_the_link():
     assert float(replaced["gamma"]) == pytest.approx(
         10 * float(default["gamma"]), rel=0.05
     )
+
+
+def test_absence_floor_caps_an_absent_tumors_evidence():
+    """P(absent) >= u whatever the rate; u = 0 is the old link."""
+    from sigmutsel.estimate_gammas import (
+        _CLIP_FLOOR,
+        ABSENCE_FLOOR,
+        presence_probability,
+    )
+
+    mu = np.array([1e-4, 0.5, 50.0])
+    old = presence_probability(10.0, mu).eval()
+    np.testing.assert_allclose(
+        old,
+        np.clip(1 - np.exp(-10.0 * mu), _CLIP_FLOOR, 1 - _CLIP_FLOOR),
+    )
+    u = ABSENCE_FLOOR
+    new = presence_probability(10.0, mu, absence_floor=u).eval()
+    np.testing.assert_allclose(
+        new, (1 - u) * (1 - np.exp(-10.0 * mu))
+    )
+    # The hypermutator's absence costs -log(u), not 27.6 nats.
+    assert np.isclose(-np.log(1 - new[2]), -np.log(u))
+    shaped = presence_probability(
+        10.0, mu, gene_tumor_shape=np.ones(3), absence_floor=u
+    ).eval()
+    assert (1 - shaped >= u - 1e-15).all()

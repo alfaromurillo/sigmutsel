@@ -4961,6 +4961,7 @@ class Model:
         hold_out_multi_base=True,
         hold_out_homdel=True,
         channel=None,
+        absence_floor=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -5067,7 +5068,14 @@ class Model:
             ``"<gene_id>__<channel>"``. A gene gamma averages over every
             site of the channel, so for an oncogene report variant
             gammas; the channel gammas are for tumor suppressors and for
-            telling the two apart.
+            telling the two apart. ``"esyn"`` is the exon-end
+            synonymous channel.
+        absence_floor : float or None, default None
+            ``u``, the least probability that a tumor does not carry
+            the mutation whatever its rate: the declared robust
+            likelihood of :func:`.estimate_gammas.presence_probability`.
+            None uses :data:`.estimate_gammas.ABSENCE_FLOOR`; 0 keeps
+            only the numerical clip, as before it existed.
 
         Returns
         -------
@@ -5108,6 +5116,7 @@ class Model:
                 hold_out_same_gene_samples=hold_out_same_gene_samples,
                 hold_out_multi_base=hold_out_multi_base,
                 hold_out_homdel=hold_out_homdel,
+                absence_floor=absence_floor,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -5122,6 +5131,7 @@ class Model:
                 hold_out_multi_base=hold_out_multi_base,
                 hold_out_homdel=hold_out_homdel,
                 channel=channel or "nonsyn",
+                absence_floor=absence_floor,
             )
         else:
             raise ValueError(
@@ -5223,6 +5233,7 @@ class Model:
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        absence_floor=None,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5307,6 +5318,8 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
+        if absence_floor is not None:
+            extra["absence_floor"] = absence_floor
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
         phi = None
@@ -5443,6 +5456,7 @@ class Model:
         r_g_variant="none",
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=False,
+        absence_floor=None,
     ):
         """Estimate one gamma shared by several variants.
 
@@ -5544,6 +5558,8 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
+        if absence_floor is not None:
+            extra["absence_floor"] = absence_floor
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
 
@@ -5640,6 +5656,7 @@ class Model:
         hold_out_multi_base=True,
         hold_out_homdel=True,
         channel="nonsyn",
+        absence_floor=None,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5783,6 +5800,8 @@ class Model:
             if upper_bound_prior is None
             else {"upper_bound_prior": upper_bound_prior}
         )
+        if absence_floor is not None:
+            extra["absence_floor"] = absence_floor
         phi = self._resolve_gene_tumor_dispersion(
             gene_tumor_dispersion, gene_id, present_mask | absent_mask
         )

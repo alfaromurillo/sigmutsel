@@ -47,6 +47,12 @@ location_cosmic_cancer_gene_census = (
     DATA_DIR / "Cosmic_CancerGeneCensus_v101_GRCh38.tsv"
 )
 
+# IntOGen's compendium of mutational driver genes (release 2024-09-20,
+# CC0), one row per gene with its Ensembl id resolved through HGNC.
+location_intogen_driver_genes = (
+    DATA_DIR / "intogen_driver_genes_20240920.tsv"
+)
+
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
 location_gencode38_annotation = (
@@ -147,6 +153,7 @@ def list_data_files() -> dict[str, bool]:
         "hgnc_complete_set": location_hgnc_complete_set,
         "cancer_gene_census": location_cancer_gene_census,
         "cosmic_cancer_gene_census": location_cosmic_cancer_gene_census,
+        "intogen_driver_genes": location_intogen_driver_genes,
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,

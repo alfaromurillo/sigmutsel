@@ -12,6 +12,7 @@ These files are included in the package distribution:
 - `inclusion_signatures_matrix_by_cancer_type.txt` - Signatures to include by cancer type
 - `Census_allFri_May_30_16_47_00_2025.tsv` - Cancer Gene Census
 - `Cosmic_CancerGeneCensus_v101_GRCh38.tsv` - COSMIC Cancer Gene Census
+- `intogen_driver_genes_20240920.tsv` - IntOGen's compendium of mutational driver genes (release 2024-09-20, CC0; Martínez-Jiménez et al. 2020, Nat Rev Cancer), one row per gene with its Ensembl id resolved through HGNC; unioned with the Census as the known cancer genes that passenger-based fits exclude
 
 
 ### Large Files (Downloaded Separately)

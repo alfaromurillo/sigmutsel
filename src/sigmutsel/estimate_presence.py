@@ -15,7 +15,11 @@ import numpy as np
 import pandas as pd
 from Bio import SeqIO
 
-from .locations import location_cancer_gene_census, location_cds_fasta
+from .locations import (
+    location_cancer_gene_census,
+    location_cds_fasta,
+    location_intogen_driver_genes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,11 +214,71 @@ def filter_silent_variants(
     return variants_df.index[variants_df.index.isin(silent_in_db)]
 
 
+def cancer_gene_symbols():
+    """Symbols of every known cancer gene: the Cancer Gene Census
+    and IntOGen's compendium of mutational driver genes, unioned.
+
+    The Census is curated from the literature; IntOGen detects drivers
+    from the mutations of about 28,000 tumors by seven methods, and
+    adds genes the Census lacks (TOP2A, CD58, ...). A passenger is a
+    gene in neither: anything fitted on passengers (site weights, the
+    channel offset, the gene-tumor dispersion, a pooled spectrum) must
+    not see selection, so the wider exclusion is the safer one.
+    """
+    census = pd.read_csv(location_cancer_gene_census, sep="\t")
+    intogen = pd.read_csv(location_intogen_driver_genes, sep="\t")
+    return set(census["Gene Symbol"].dropna()) | set(
+        intogen["symbol"].dropna()
+    )
+
+
+def cancer_gene_ensembl_ids(strip_version=True):
+    """Ensembl gene ids of :func:`cancer_gene_symbols`'s genes.
+
+    The Census's ids come from an Ensembl column when it has one, else
+    from ``ENSG`` ids in its ``Synonyms``; IntOGen's were resolved
+    through HGNC when the table was built.
+    """
+    census = pd.read_csv(
+        location_cancer_gene_census, sep="\t", dtype=str
+    )
+    ens_candidates = [
+        c
+        for c in census.columns
+        if re.search(r"ensembl", c, flags=re.IGNORECASE)
+    ]
+    if ens_candidates:
+        ids = census[ens_candidates[0]].dropna().astype(str)
+    else:
+        if "Synonyms" not in census.columns:
+            raise KeyError(
+                "CGC lacks an Ensembl column and 'Synonyms'."
+            )
+        ids = (
+            census["Synonyms"]
+            .dropna()
+            .astype(str)
+            .str.findall(r"ENSG\d+(?:\.\d+)?")
+            .explode()
+            .dropna()
+        )
+    intogen = pd.read_csv(
+        location_intogen_driver_genes, sep="\t", dtype=str
+    )
+    ids = pd.concat(
+        [ids, intogen["ensembl_gene_id"].dropna().astype(str)]
+    )
+    if strip_version:
+        ids = ids.str.replace(r"\.\d+$", "", regex=True)
+    return set(ids.tolist())
+
+
 def filter_passenger_genes(db):
     """Return a list of passenger genes present in the mutation data.
 
-    Passenger genes are defined as those not in the cancer gene census
-    and with at least one variant annotated in the 'variant' column.
+    Passenger genes are defined as those not known cancer genes (the
+    Cancer Gene Census or IntOGen, :func:`cancer_gene_symbols`) and
+    with at least one variant annotated in the 'variant' column.
 
     Parameters
     ----------
@@ -227,9 +291,7 @@ def filter_passenger_genes(db):
         Array of passenger gene names.
 
     """
-    census = pd.read_csv(location_cancer_gene_census, sep="\t")
-
-    cancer_genes = census["Gene Symbol"].unique()
+    cancer_genes = list(cancer_gene_symbols())
 
     passenger_genes = db[
         ~db["gene"].isin(cancer_genes) & db["variant"].notna()
@@ -249,14 +311,15 @@ def filter_passenger_genes_ensembl(
     1) DataFrame mode
        - `db` is a DataFrame with columns 'ensembl_gene_id' and
          'variant'.
-       - Returns Ensembl IDs for genes that are **not** in the Cancer
-         Gene Census (CGC) (what we consider passenger genes) **and**
-         have at least one non-null entry in 'variant'.
+       - Returns Ensembl IDs for genes that are **not** known cancer
+         genes (the Cancer Gene Census or IntOGen,
+         :func:`cancer_gene_ensembl_ids`; what we consider passenger
+         genes) **and** have at least one non-null entry in 'variant'.
 
     2) Collection mode:
        - `db` is a sequence of Ensembl IDs (Index, list, Series, etc.).
-       - Returns the subset of those IDs in `db` that are **not** in
-         the CGC, that is those that we consider passenger. The
+       - Returns the subset of those IDs in `db` that are **not**
+         known cancer genes, that is those that we consider passenger. The
          'variant' criterion is not applied in this mode.
 
     Matching is done on Ensembl gene IDs (ENSG...). If *strip_version*
@@ -271,55 +334,24 @@ def filter_passenger_genes_ensembl(
         (collection mode).
     strip_version : bool, default True
         If True, drop the final '.number' version from Ensembl IDs in
-        both the CGC set and `db` before computing membership.
+        both the cancer-gene set and `db` before computing membership.
 
     Returns
     -------
     numpy.ndarray
         Ensembl IDs **as they appear in the input** that are classified
-        as passengers. In DataFrame mode, this means not in CGC and
-        with ≥1 variant. In collection mode, this means not in CGC.
+        as passengers. In DataFrame mode, this means not a known cancer
+        gene and with ≥1 variant. In collection mode, not a known
+        cancer gene.
 
     Notes
     -----
-    - Expects a module-level variable `location_cancer_gene_census`
-      that points to the CGC TSV file.
-    - Tries an explicit Ensembl column in the CGC (any column whose
-      name contains 'ensembl', case-insensitive). If none exists, it
-      extracts IDs from 'Synonyms' via the pattern
-      ``ENSG\\d+(?:\\.\\d+)?``.
+    See :func:`cancer_gene_ensembl_ids` for where each source's
+    Ensembl ids come from.
 
     """
-    # ---- Load CGC ---------------------------------------------------
-    census = pd.read_csv(
-        location_cancer_gene_census, sep="\t", dtype=str
-    )
-
-    ens_candidates = [
-        c
-        for c in census.columns
-        if re.search(r"ensembl", c, flags=re.IGNORECASE)
-    ]
-    if ens_candidates:
-        ens_col = ens_candidates[0]
-        cgc_ids = census[ens_col].dropna().astype(str)
-    else:
-        if "Synonyms" not in census.columns:
-            raise KeyError(
-                "CGC lacks an Ensembl column and 'Synonyms'."
-            )
-        cgc_ids = (
-            census["Synonyms"]
-            .dropna()
-            .astype(str)
-            .str.findall(r"ENSG\d+(?:\.\d+)?")
-            .explode()
-            .dropna()
-        )
-
-    if strip_version:
-        cgc_ids = cgc_ids.str.replace(r"\.\d+$", "", regex=True)
-    cgc_set = set(cgc_ids.tolist())
+    # ---- Known cancer genes: CGC and IntOGen ------------------------
+    cgc_set = cancer_gene_ensembl_ids(strip_version=strip_version)
 
     # ---- Collection mode --------------------------------------------
     if not isinstance(db, pd.DataFrame):
@@ -440,7 +472,4 @@ def filter_giant_non_driver_genes(
         if length >= threshold_bp
     }
 
-    census = pd.read_csv(location_cancer_gene_census, sep="\t")
-    cancer_genes = set(census["Gene Symbol"].unique())
-
-    return np.array(sorted(giant - cancer_genes))
+    return np.array(sorted(giant - cancer_gene_symbols()))

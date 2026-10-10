@@ -1535,10 +1535,12 @@ class MutationDataset:
         Parameters
         ----------
         location_gene_set : str, Path, or None, default None
-            Path to gene set file for gene name standardization.
-            If None (default), uses HGNC complete set from
-            locations.py for automatic gene name updates.
-            Set to a custom path to use a different gene set.
+            Path to a gene set file for gene name standardization
+            (e.g. ``locations.location_hgnc_complete_set``). If None
+            (default), gene names are kept as in the MAF files: unlike
+            :func:`load_maf_files.generate_compact_db`, whose default
+            is the HGNC complete set, this method passes None through,
+            which skips the update.
         channel_universe : bool, default True
             Classify the calls into the channel universe (SBS only).
             False keeps the pre-universe behaviour, where every call

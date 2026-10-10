@@ -9,6 +9,7 @@ recursive-include src/sigmutsel/data cosmic_signature_etiology.tsv
 recursive-include src/sigmutsel/data Census_allFri_May_30_16_47_00_2025.tsv
 recursive-include src/sigmutsel/data Cosmic_CancerGeneCensus_v101_GRCh38.tsv
 recursive-include src/sigmutsel/data intogen_driver_genes_20240920.tsv
+recursive-include src/sigmutsel/data aid_target_genes.tsv
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
 recursive-exclude src/sigmutsel/data *.fa

@@ -53,6 +53,10 @@ location_intogen_driver_genes = (
     DATA_DIR / "intogen_driver_genes_20240920.tsv"
 )
 
+# Genes targeted by activation-induced cytidine deaminase (AID): the
+# immunoglobulin loci and published aberrant-hypermutation targets.
+location_aid_target_genes = DATA_DIR / "aid_target_genes.tsv"
+
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
 location_gencode38_annotation = (
@@ -154,6 +158,7 @@ def list_data_files() -> dict[str, bool]:
         "cancer_gene_census": location_cancer_gene_census,
         "cosmic_cancer_gene_census": location_cosmic_cancer_gene_census,
         "intogen_driver_genes": location_intogen_driver_genes,
+        "aid_target_genes": location_aid_target_genes,
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,

@@ -13,6 +13,7 @@ These files are included in the package distribution:
 - `Census_allFri_May_30_16_47_00_2025.tsv` - Cancer Gene Census
 - `Cosmic_CancerGeneCensus_v101_GRCh38.tsv` - COSMIC Cancer Gene Census
 - `intogen_driver_genes_20240920.tsv` - IntOGen's compendium of mutational driver genes (release 2024-09-20, CC0; Martínez-Jiménez et al. 2020, Nat Rev Cancer), one row per gene with its Ensembl id resolved through HGNC; unioned with the Census as the known cancer genes that passenger-based fits exclude
+- `aid_target_genes.tsv` - genes targeted by activation-induced cytidine deaminase, which passenger-based fits also exclude: every GENCODE v38 gene of an `IG_*` biotype (the immunoglobulin loci, 414), IGLL5 (in the lambda locus; Kasar et al. 2015, Nat Commun), and the aberrant somatic hypermutation targets of Hadj Khodabakhshi et al. 2012 (Oncotarget), Table 1 (42 of 44; two GenBank transcript ids do not resolve), symbols updated to GENCODE v38 (HIST1H2AC -> H2AC6, LLT1 -> CLEC2D, LRMP -> IRAG2); columns `symbol`, `ensembl_gene_id`, `gene_type`, `source`
 
 
 ### Large Files (Downloaded Separately)

@@ -16,6 +16,7 @@ import pandas as pd
 from Bio import SeqIO
 
 from .locations import (
+    location_aid_target_genes,
     location_cancer_gene_census,
     location_cds_fasta,
     location_intogen_driver_genes,
@@ -273,12 +274,54 @@ def cancer_gene_ensembl_ids(strip_version=True):
     return set(ids.tolist())
 
 
+def aid_target_symbols():
+    """Symbols of the genes activation-induced cytidine deaminase targets.
+
+    The immunoglobulin loci (every GENCODE gene of an ``IG_*`` biotype,
+    and IGLL5) and published targets of aberrant somatic
+    hypermutation in lymphoma. These genes are not selected, but they
+    are not passengers either: in B-cell tumors AID mutates them far
+    more, and far more unevenly across tumors, than any per-gene and
+    per-tumor rate expresses, and that excess must not set what
+    passenger-based fits learn (the gene-tumor dispersion above all).
+    """
+    table = pd.read_csv(location_aid_target_genes, sep="\t")
+    return set(table["symbol"].dropna())
+
+
+def aid_target_ensembl_ids(strip_version=True):
+    """Ensembl gene ids of :func:`aid_target_symbols`'s genes."""
+    table = pd.read_csv(
+        location_aid_target_genes, sep="\t", dtype=str
+    )
+    ids = table["ensembl_gene_id"].dropna().astype(str)
+    if strip_version:
+        ids = ids.str.replace(r"\.\d+$", "", regex=True)
+    return set(ids.tolist())
+
+
+def non_passenger_symbols():
+    """Known cancer genes and AID targets: what passenger fits exclude.
+
+    :func:`cancer_gene_symbols` unioned with :func:`aid_target_symbols`.
+    """
+    return cancer_gene_symbols() | aid_target_symbols()
+
+
+def non_passenger_ensembl_ids(strip_version=True):
+    """Ensembl gene ids of :func:`non_passenger_symbols`'s genes."""
+    return cancer_gene_ensembl_ids(
+        strip_version=strip_version
+    ) | aid_target_ensembl_ids(strip_version=strip_version)
+
+
 def filter_passenger_genes(db):
     """Return a list of passenger genes present in the mutation data.
 
-    Passenger genes are defined as those not known cancer genes (the
-    Cancer Gene Census or IntOGen, :func:`cancer_gene_symbols`) and
-    with at least one variant annotated in the 'variant' column.
+    Passenger genes are defined as those neither known cancer genes
+    (the Cancer Gene Census or IntOGen) nor AID targets
+    (:func:`non_passenger_symbols`), and with at least one variant
+    annotated in the 'variant' column.
 
     Parameters
     ----------
@@ -291,7 +334,7 @@ def filter_passenger_genes(db):
         Array of passenger gene names.
 
     """
-    cancer_genes = list(cancer_gene_symbols())
+    cancer_genes = list(non_passenger_symbols())
 
     passenger_genes = db[
         ~db["gene"].isin(cancer_genes) & db["variant"].notna()
@@ -311,16 +354,18 @@ def filter_passenger_genes_ensembl(
     1) DataFrame mode
        - `db` is a DataFrame with columns 'ensembl_gene_id' and
          'variant'.
-       - Returns Ensembl IDs for genes that are **not** known cancer
-         genes (the Cancer Gene Census or IntOGen,
-         :func:`cancer_gene_ensembl_ids`; what we consider passenger
-         genes) **and** have at least one non-null entry in 'variant'.
+       - Returns Ensembl IDs for genes that are **neither** known
+         cancer genes (the Cancer Gene Census or IntOGen) **nor** AID
+         targets (:func:`non_passenger_ensembl_ids`; what we consider
+         passenger genes) **and** have at least one non-null entry in
+         'variant'.
 
     2) Collection mode:
        - `db` is a sequence of Ensembl IDs (Index, list, Series, etc.).
        - Returns the subset of those IDs in `db` that are **not**
-         known cancer genes, that is those that we consider passenger. The
-         'variant' criterion is not applied in this mode.
+         in :func:`non_passenger_ensembl_ids`, that is those that we
+         consider passenger. The 'variant' criterion is not applied in
+         this mode.
 
     Matching is done on Ensembl gene IDs (ENSG...). If *strip_version*
     is True, version suffixes ('.v') are removed on both sides before
@@ -334,24 +379,25 @@ def filter_passenger_genes_ensembl(
         (collection mode).
     strip_version : bool, default True
         If True, drop the final '.number' version from Ensembl IDs in
-        both the cancer-gene set and `db` before computing membership.
+        both the non-passenger set and `db` before computing membership.
 
     Returns
     -------
     numpy.ndarray
         Ensembl IDs **as they appear in the input** that are classified
-        as passengers. In DataFrame mode, this means not a known cancer
-        gene and with ≥1 variant. In collection mode, not a known
-        cancer gene.
+        as passengers. In DataFrame mode, this means neither a known
+        cancer gene nor an AID target, and with ≥1 variant. In
+        collection mode, neither.
 
     Notes
     -----
-    See :func:`cancer_gene_ensembl_ids` for where each source's
-    Ensembl ids come from.
+    See :func:`cancer_gene_ensembl_ids` and
+    :func:`aid_target_ensembl_ids` for where each source's Ensembl
+    ids come from.
 
     """
-    # ---- Known cancer genes: CGC and IntOGen ------------------------
-    cgc_set = cancer_gene_ensembl_ids(strip_version=strip_version)
+    # ---- Not passengers: CGC, IntOGen and AID targets -------------
+    cgc_set = non_passenger_ensembl_ids(strip_version=strip_version)
 
     # ---- Collection mode --------------------------------------------
     if not isinstance(db, pd.DataFrame):

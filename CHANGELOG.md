@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Indel hold-out for gamma: `MutationDataset.indel_db` (built from
+  the dataset's MAFs by `build_indel_db`, via
+  `load_maf_files.read_coding_indels`; manifest version 9) holds the
+  non-silent coding insertions and deletions, and
+  `estimate_gamma(hold_out_indel=True)` leaves a tumor with one in a
+  gene out of that gene's and its variants' absent sets, recorded as
+  `n_tumors_held_out_indel`. With the same-gene hold-out, a variant's
+  absent set is then cancereffectsizeR's, except that tumors whose
+  only hit in the gene is synonymous stay in.
+- `presence_clip` (`estimate_gamma_from_mus`, `Model.estimate_gamma`):
+  False scores the exact likelihood (`log_absence_probability`)
+  instead of clipping P(present) at 1e-12, which caps an absent
+  tumor's cost at 27.6 nats. With no dispersion, no mu cut and
+  `absence_floor=0` the likelihood is then cancereffectsizeR's
+  `sswm_lik`, and the MAP its maximum-likelihood estimate (tested in
+  `tests/test_ces_parity.py`).
 - Spectrum shrinkage (`spectrum_shrinkage`): each tumor's per-type
   spectrum is the signature reconstruction shrunk toward the
   cohort's passenger pool with a 10% share of SBS5 (`kappa_1`), then

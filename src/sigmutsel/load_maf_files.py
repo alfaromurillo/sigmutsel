@@ -1181,3 +1181,129 @@ def load_or_generate_compact_db(
             **kwargs,
         )
     return db
+
+
+# MAF classes of an insertion or deletion that changes the protein:
+# a frameshift, an in-frame change, or one that hits an essential
+# splice site, the stop codon or the start codon.
+INDEL_NON_SILENT_CLASSES = (
+    "Frame_Shift_Del",
+    "Frame_Shift_Ins",
+    "In_Frame_Del",
+    "In_Frame_Ins",
+    "Splice_Site",
+    "Nonsense_Mutation",
+    "Nonstop_Mutation",
+    "Translation_Start_Site",
+)
+
+_INDEL_MAF_COLUMNS = [
+    "Tumor_Sample_Barcode",
+    "Hugo_Symbol",
+    "Gene",
+    "Chromosome",
+    "Start_Position",
+    "Variant_Type",
+    "Variant_Classification",
+]
+
+
+def select_coding_indels(df):
+    """The non-silent coding indel rows of a MAF table."""
+    return df[
+        df["Variant_Type"].isin(["INS", "DEL"])
+        & df["Variant_Classification"].isin(INDEL_NON_SILENT_CLASSES)
+        & df["Hugo_Symbol"].ne("Unknown")
+        & df["Gene"].notna()
+    ]
+
+
+def _read_coding_indels_one(maf_file):
+    """Non-silent coding indels of one MAF file (or None)."""
+    try:
+        df = pd.read_csv(
+            maf_file,
+            sep="\t",
+            comment="#",
+            usecols=lambda c: c in _INDEL_MAF_COLUMNS,
+            low_memory=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to read {maf_file.name}: {e}")
+        return None
+    missing = set(_INDEL_MAF_COLUMNS) - set(df.columns)
+    if missing:
+        logger.warning(
+            f"{maf_file.name} lacks {sorted(missing)}; skipped."
+        )
+        return None
+    return select_coding_indels(df)
+
+
+def read_coding_indels(
+    maf_dir,
+    *,
+    location_gene_set=location_hgnc_complete_set,
+):
+    """Insertions and deletions that change a protein, from MAF files.
+
+    Every call with ``Variant_Type`` INS or DEL and a
+    ``Variant_Classification`` in :data:`INDEL_NON_SILENT_CLASSES`
+    (frameshifts, in-frame changes, and indels at essential splice
+    sites, stop or start codons), on the MAF's own gene. They are not
+    SBS calls and enter no rate: they are read only to tell which
+    tumors reached a gene by an indel, for the gamma hold-out
+    (:meth:`.models.MutationDataset.build_indel_db`). The call QC of
+    the SBS path (germline frequency, duplicates, multi-base merging)
+    is not applied; the MAFs' own filters are trusted.
+
+    Parameters
+    ----------
+    maf_dir : str or Path
+        Directory of ``.maf`` files, as for
+        :func:`load_validate_compact_all_maf_files_parallel`.
+    location_gene_set : str, Path or None
+        HGNC table for :func:`update_genes_with_gene_set`, so gene
+        identifiers match the SBS table's; None skips it.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per call: ``Tumor_Sample_Barcode``, ``gene``,
+        ``ensembl_gene_id``, ``Chromosome``, ``Start_Position``,
+        ``Variant_Type``, ``Variant_Classification``.
+    """
+    maf_dir = Path(maf_dir)
+    files = sorted(
+        f
+        for f in maf_dir.iterdir()
+        if f.is_file() and f.suffix == ".maf"
+    )
+    if not files:
+        raise ValueError("No .maf files found in directory.")
+    out_columns = [
+        "Tumor_Sample_Barcode",
+        "gene",
+        "ensembl_gene_id",
+        "Chromosome",
+        "Start_Position",
+        "Variant_Type",
+        "Variant_Classification",
+    ]
+    frames = [_read_coding_indels_one(f) for f in files]
+    frames = [f for f in frames if f is not None and not f.empty]
+    if not frames:
+        return pd.DataFrame(columns=out_columns)
+    db = pd.concat(frames, ignore_index=True)
+    db = db.rename(
+        columns={"Hugo_Symbol": "gene", "Gene": "ensembl_gene_id"}
+    )
+    if location_gene_set is not None:
+        db = update_genes_with_gene_set(location_gene_set, db)
+    logger.info(
+        "Coding indels: %d calls in %d tumors, from %d MAF files",
+        len(db),
+        db["Tumor_Sample_Barcode"].nunique(),
+        len(files),
+    )
+    return db[out_columns].reset_index(drop=True)

@@ -232,6 +232,7 @@ class MutationDataset:
     _sample_qc_flags: pd.DataFrame = None
     _multi_base_db: pd.DataFrame = None
     _homdel_db: pd.DataFrame = None
+    _indel_db: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -485,6 +486,12 @@ class MutationDataset:
                 "homdel_db.parquet",
                 "parquet",
             ),
+            (
+                "indel_db",
+                "_indel_db",
+                "indel_db.parquet",
+                "parquet",
+            ),
         ]
 
         saved_files = {}
@@ -550,8 +557,10 @@ class MutationDataset:
             # simply has no such hold-out. 7 -> adds homdel_db, the
             # (tumor, gene) pairs with a homozygous deletion. 8 -> adds
             # spectrum_shrinkage, the per-cohort kappas of
-            # :mod:`spectrum_shrinkage` (None: no shrinkage).
-            "version": 8,
+            # :mod:`spectrum_shrinkage` (None: no shrinkage). 9 -> adds
+            # indel_db, the non-silent coding indels kept for the
+            # gamma hold-out; a dataset without it holds out none.
+            "version": 9,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -784,6 +793,74 @@ class MutationDataset:
             return pd.Index([])
         rows = db[db["ensembl_gene_id"] == gene_id]
         return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    @property
+    def indel_db(self):
+        """Non-silent coding insertions and deletions (or None).
+
+        From :func:`.load_maf_files.read_coding_indels`, built by
+        :meth:`build_indel_db`. Not SBS calls: no rate, burden,
+        signature or presence table reads them; the gamma hold-out
+        does (:meth:`indel_hits`).
+        """
+        return self._indel_db
+
+    @indel_db.setter
+    def indel_db(self, value):
+        self._indel_db = value
+
+    def indel_hits(self, gene_id):
+        """Tumors with a non-silent coding indel in a gene.
+
+        Returns
+        -------
+        pandas.Index
+            Tumor barcodes; empty without :attr:`indel_db`.
+        """
+        db = self._indel_db
+        if db is None or db.empty:
+            return pd.Index([])
+        rows = db[db["ensembl_gene_id"] == gene_id]
+        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    @record_call
+    def build_indel_db(self, location_gene_set="default"):
+        """Read the non-silent coding indels of the dataset's MAFs.
+
+        The SBS build keeps single-base calls only, so a tumor whose
+        hit in a gene is a frameshift or an in-frame indel looks
+        unmutated there. This reads the same MAFs for those indels
+        (:func:`.load_maf_files.read_coding_indels`), keeps the
+        tumors the dataset has, and stores them in :attr:`indel_db`;
+        nothing else changes, so fitted models stay valid.
+
+        Parameters
+        ----------
+        location_gene_set : str, Path, None or "default"
+            HGNC table for the gene identifiers; ``"default"`` uses the
+            package's, as the SBS build does, and None keeps the MAF's.
+
+        Returns
+        -------
+        pandas.Series
+            Calls per ``Variant_Classification``.
+        """
+        from .load_maf_files import read_coding_indels
+
+        kwargs = (
+            {}
+            if location_gene_set == "default"
+            else {"location_gene_set": location_gene_set}
+        )
+        db = read_coding_indels(self.location_maf_files, **kwargs)
+        if self._mutation_db is not None:
+            db = db[
+                db["Tumor_Sample_Barcode"].isin(
+                    self._mutation_db["Tumor_Sample_Barcode"]
+                )
+            ]
+        self._indel_db = db.reset_index(drop=True)
+        return self._indel_db["Variant_Classification"].value_counts()
 
     def _split_multi_base(self):
         """Move the multi-base rows out of :attr:`mutation_db`."""
@@ -5100,8 +5177,10 @@ class Model:
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        hold_out_indel=True,
         channel=None,
         absence_floor=None,
+        presence_clip=True,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -5195,6 +5274,19 @@ class Model:
             and a tumor suppressor lost this way has met its pressure.
             Recorded as ``n_tumors_held_out_homdel``. Without
             :attr:`MutationDataset.homdel_db` it holds out nobody.
+        hold_out_indel : bool, default True
+            Genes and variants. Leave out of the "without" set every
+            tumor with a non-silent coding insertion or deletion in
+            the gene (:meth:`MutationDataset.indel_hits`): the rates
+            are single-base rates, and a tumor that reached the gene
+            by a frameshift or an in-frame indel has met its
+            pressure by an event they do not describe. With
+            ``hold_out_same_gene_samples`` this gives a variant the
+            same absent set as cancereffectsizeR's same-gene
+            hold-out, which reads every call in the gene, except that
+            a tumor whose only hit there is synonymous stays in.
+            Recorded as ``n_tumors_held_out_indel``. Without
+            :attr:`MutationDataset.indel_db` it holds out nobody.
         channel : str or None, default None
             Genes only, channel-split models only. None (or
             ``"nonsyn"``) is the gene gamma on its whole non-synonymous
@@ -5216,6 +5308,12 @@ class Model:
             likelihood of :func:`.estimate_gammas.presence_probability`.
             None uses :data:`.estimate_gammas.ABSENCE_FLOOR`; 0 keeps
             only the numerical clip, as before it existed.
+        presence_clip : bool, default True
+            The numerical clip on P(present) (see
+            :func:`.estimate_gammas.estimate_gamma_from_mus`). False
+            scores the exact likelihood: with
+            ``gene_tumor_dispersion=None``, ``use_mu_posterior=False``
+            and ``absence_floor=0`` it is cancereffectsizeR's.
 
         Returns
         -------
@@ -5256,7 +5354,9 @@ class Model:
                 hold_out_same_gene_samples=hold_out_same_gene_samples,
                 hold_out_multi_base=hold_out_multi_base,
                 hold_out_homdel=hold_out_homdel,
+                hold_out_indel=hold_out_indel,
                 absence_floor=absence_floor,
+                presence_clip=presence_clip,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -5270,8 +5370,10 @@ class Model:
                 gene_tumor_dispersion=gene_tumor_dispersion,
                 hold_out_multi_base=hold_out_multi_base,
                 hold_out_homdel=hold_out_homdel,
+                hold_out_indel=hold_out_indel,
                 channel=channel or "nonsyn",
                 absence_floor=absence_floor,
+                presence_clip=presence_clip,
             )
         else:
             raise ValueError(
@@ -5373,7 +5475,9 @@ class Model:
         hold_out_same_gene_samples=True,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        hold_out_indel=True,
         absence_floor=None,
+        presence_clip=True,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5413,7 +5517,7 @@ class Model:
             See :meth:`estimate_gamma`. Applied after the same-gene
             hold-out, so a tumor both would remove counts once, as
             same-gene.
-        hold_out_homdel : bool, default True
+        hold_out_homdel, hold_out_indel : bool, default True
             See :meth:`estimate_gamma`.
 
         Returns
@@ -5451,6 +5555,7 @@ class Model:
             absent_mask,
             multi_base=hold_out_multi_base,
             homdel=hold_out_homdel,
+            indel=hold_out_indel,
         )
 
         extra = (
@@ -5460,6 +5565,8 @@ class Model:
         )
         if absence_floor is not None:
             extra["absence_floor"] = absence_floor
+        if not presence_clip:
+            extra["presence_clip"] = False
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
         phi = None
@@ -5553,16 +5660,29 @@ class Model:
             return pd.Series(False, index=tumors)
         return pd.Series(tumors.isin(hits_of(gene_id)), index=tumors)
 
+    def _indel_mutated(self, gene_id, tumors):
+        """Whether each tumor has a non-silent coding indel in a gene.
+
+        From :meth:`MutationDataset.indel_hits`; all False for a
+        dataset without :attr:`MutationDataset.indel_db`.
+        """
+        hits_of = getattr(self.dataset, "indel_hits", None)
+        if hits_of is None:
+            return pd.Series(False, index=tumors)
+        return pd.Series(tumors.isin(hits_of(gene_id)), index=tumors)
+
     def _gene_hold_outs(
-        self, gene_id, absent_mask, multi_base, homdel
+        self, gene_id, absent_mask, multi_base, homdel, indel=False
     ):
         """Remove from the absent set the tumors a gene-level rule holds out.
 
         ``multi_base``: a non-silent doublet or other multi-base event
         in the gene. ``homdel``: a homozygous deletion of the gene --
         no point mutation can occur where the gene is gone, and a
-        tumor suppressor deleted this way has met its pressure. A
-        tumor both would remove counts once, as multi-base.
+        tumor suppressor deleted this way has met its pressure.
+        ``indel``: a non-silent coding insertion or deletion in the
+        gene. A tumor several rules would remove counts once, under
+        the first (multi-base, then homdel, then indel).
 
         Returns
         -------
@@ -5573,6 +5693,7 @@ class Model:
         for reason, on, lookup in (
             ("multi_base", multi_base, self._multi_base_mutated),
             ("homdel", homdel, self._homdel_mutated),
+            ("indel", indel, self._indel_mutated),
         ):
             n = 0
             if on:
@@ -5597,6 +5718,7 @@ class Model:
         gene_tumor_dispersion=None,
         hold_out_same_gene_samples=False,
         absence_floor=None,
+        presence_clip=True,
     ):
         """Estimate one gamma shared by several variants.
 
@@ -5700,6 +5822,8 @@ class Model:
         )
         if absence_floor is not None:
             extra["absence_floor"] = absence_floor
+        if not presence_clip:
+            extra["presence_clip"] = False
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
 
@@ -5795,8 +5919,10 @@ class Model:
         gene_tumor_dispersion=None,
         hold_out_multi_base=True,
         hold_out_homdel=True,
+        hold_out_indel=True,
         channel="nonsyn",
         absence_floor=None,
+        presence_clip=True,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5839,7 +5965,7 @@ class Model:
             ``use_mu_posterior=True``; ignored otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
             See :meth:`estimate_gamma`.
-        hold_out_multi_base, hold_out_homdel : bool, default True
+        hold_out_multi_base, hold_out_homdel, hold_out_indel : bool, default True
             See :meth:`estimate_gamma`.
         channel : str, default "nonsyn"
             See :meth:`estimate_gamma`.
@@ -5933,6 +6059,8 @@ class Model:
             and channel not in _SILENT_GAMMA_CHANNELS,
             homdel=hold_out_homdel
             and channel not in _SILENT_GAMMA_CHANNELS,
+            indel=hold_out_indel
+            and channel not in _SILENT_GAMMA_CHANNELS,
         )
 
         extra = (
@@ -5942,6 +6070,8 @@ class Model:
         )
         if absence_floor is not None:
             extra["absence_floor"] = absence_floor
+        if not presence_clip:
+            extra["presence_clip"] = False
         phi = self._resolve_gene_tumor_dispersion(
             gene_tumor_dispersion, gene_id, present_mask | absent_mask
         )
@@ -6037,7 +6167,8 @@ class Model:
         (``hold_out_multi_base``) together; they are in neither
         ``n_tumors_without`` nor ``n_tumors_excluded``.
         ``n_tumors_held_out_<reason>`` gives each gene-level hold-out's
-        part (``multi_base``, ``homdel``; see :meth:`_gene_hold_outs`).
+        part (``multi_base``, ``homdel``, ``indel``; see
+        :meth:`_gene_hold_outs`).
 
         ``n_tumors_without`` is the absent set handed to the fit.
         The fit then drops absent tumors whose rate is zero (they

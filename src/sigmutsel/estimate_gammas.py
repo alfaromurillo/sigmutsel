@@ -181,24 +181,59 @@ def presence_probability(
     """
     ceiling = 1 - _CLIP_FLOOR
 
-    if gene_tumor_shape is not None:
-        log_absent = -gene_tumor_shape * tt.log1p(
-            gamma * mu / gene_tumor_shape
-        )
-    elif gene_tumor_dispersion is None:
-        log_absent = -gamma * mu
-    else:
-        m_total = tt.sum(mu)
-        log_absent = (
-            -gene_tumor_dispersion
-            * (mu / m_total)
-            * tt.log1p(gamma * m_total / gene_tumor_dispersion)
-        )
-
+    log_absent = _log_absent_unfloored(
+        gamma, mu, gene_tumor_dispersion, gene_tumor_shape
+    )
     present = -tt.expm1(log_absent)
     if absence_floor:
         present = (1 - absence_floor) * present
     return tt.clip(present, _CLIP_FLOOR, ceiling)
+
+
+def _log_absent_unfloored(
+    gamma, mu, gene_tumor_dispersion, gene_tumor_shape
+):
+    """``log P(absent)`` of the link, before any floor or clip."""
+    if gene_tumor_shape is not None:
+        return -gene_tumor_shape * tt.log1p(
+            gamma * mu / gene_tumor_shape
+        )
+    if gene_tumor_dispersion is None:
+        return -gamma * mu
+    m_total = tt.sum(mu)
+    return (
+        -gene_tumor_dispersion
+        * (mu / m_total)
+        * tt.log1p(gamma * m_total / gene_tumor_dispersion)
+    )
+
+
+def log_absence_probability(
+    gamma,
+    mu,
+    gene_tumor_dispersion=None,
+    gene_tumor_shape=None,
+    absence_floor=0.0,
+):
+    """``log P(tumor lacks the variant)``, exactly, with no clip.
+
+    The same link as :func:`presence_probability` -- Poisson, or the
+    dispersed form, with the floor ``u`` when given: ``P(absent) = u +
+    (1 - u) P_0(absent)`` -- on the log scale and without the clip on
+    P(present). It is what ``estimate_gamma_from_mus(...,
+    presence_clip=False)`` scores: an absent tumor then costs its full
+    ``gamma mu`` (with ``u = 0``), as in cancereffectsizeR's
+    ``sswm_lik``, however large.
+    """
+    log_absent = _log_absent_unfloored(
+        gamma, mu, gene_tumor_dispersion, gene_tumor_shape
+    )
+    if absence_floor:
+        return tt.logaddexp(
+            np.log(absence_floor),
+            np.log1p(-absence_floor) + log_absent,
+        )
+    return tt.as_tensor_variable(log_absent)
 
 
 def estimate_gamma_from_mus(
@@ -226,6 +261,7 @@ def estimate_gamma_from_mus(
     gene_tumor_shape=None,
     presence_model=None,
     absence_floor=ABSENCE_FLOOR,
+    presence_clip=True,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -300,6 +336,16 @@ def estimate_gamma_from_mus(
         ``u`` of :func:`presence_probability` (:data:`ABSENCE_FLOOR`);
         not passed to a custom ``presence_model``. Recorded in the
         posterior's attrs.
+    presence_clip : bool, default True
+        Keep P(present) within ``_CLIP_FLOOR`` of 0 and 1, a numerical
+        guard that also caps an absent tumor's cost at -log(1e-12) =
+        27.6 nats. False scores the exact log-likelihood instead
+        (:func:`log_absence_probability`), so with no dispersion, no
+        cut and ``absence_floor=0`` the likelihood is
+        cancereffectsizeR's ``sswm_lik`` exactly, and the MAP
+        (``draws=1``) its maximum-likelihood estimate. Not available
+        with a custom ``presence_model``. Recorded in the posterior's
+        attrs.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -574,6 +620,17 @@ def estimate_gamma_from_mus(
     else:
         natural_ceiling = _natural_gamma_ceiling(mus_all)
 
+    if not presence_clip:
+        if presence_model is not None:
+            raise ValueError(
+                "presence_clip=False scores the built-in link exactly; "
+                "it cannot be combined with a custom presence_model."
+            )
+        if n_no > 0 and not absence_floor:
+            # Unclipped and unfloored, every absent tumor's cost keeps
+            # growing with gamma: the likelihood never goes flat.
+            natural_ceiling = np.inf
+
     if kwargs is None:
         kwargs = {}
 
@@ -617,29 +674,45 @@ def estimate_gamma_from_mus(
                 else:
                     mu = mus_all
 
-                if presence_model is None:
-                    Ps = presence_probability(
+                if not presence_clip:
+                    # Exact: carriers log(1 - P(absent)), absences
+                    # log P(absent), with no clip on either.
+                    log_absent = log_absence_probability(
                         gamma,
                         mu,
                         gene_tumor_dispersion=gene_tumor_dispersion,
                         gene_tumor_shape=shapes_all,
                         absence_floor=absence_floor,
                     )
-                else:
-                    Ps = presence_model(
-                        gamma,
-                        mu,
-                        gene_tumor_dispersion=gene_tumor_dispersion,
-                        gene_tumor_shape=shapes_all,
+                    pm.Potential(
+                        "variants_observed",
+                        tt.sum(tt.log1mexp(log_absent[:n_yes]))
+                        + tt.sum(log_absent[n_yes:]),
                     )
+                else:
+                    if presence_model is None:
+                        Ps = presence_probability(
+                            gamma,
+                            mu,
+                            gene_tumor_dispersion=gene_tumor_dispersion,
+                            gene_tumor_shape=shapes_all,
+                            absence_floor=absence_floor,
+                        )
+                    else:
+                        Ps = presence_model(
+                            gamma,
+                            mu,
+                            gene_tumor_dispersion=gene_tumor_dispersion,
+                            gene_tumor_shape=shapes_all,
+                        )
 
-                pm.Bernoulli(
-                    name="variants_observed",
-                    p=Ps,
-                    observed=np.concatenate(
-                        [np.ones(n_yes), np.zeros(n_no)]
-                    ),
-                )
+                    pm.Bernoulli(
+                        name="variants_observed",
+                        p=Ps,
+                        observed=np.concatenate(
+                            [np.ones(n_yes), np.zeros(n_no)]
+                        ),
+                    )
 
                 if draws == 1:
                     results = pm.find_MAP(
@@ -840,6 +913,9 @@ def estimate_gamma_from_mus(
                 )
                 results.posterior.attrs["absence_floor"] = float(
                     absence_floor if presence_model is None else 0.0
+                )
+                results.posterior.attrs["presence_clip"] = int(
+                    presence_clip
                 )
                 results.posterior.attrs["natural_gamma_ceiling"] = (
                     natural_ceiling

@@ -19,7 +19,9 @@ from .locations import (
     location_aid_target_genes,
     location_cancer_gene_census,
     location_cds_fasta,
+    location_histone_genes,
     location_intogen_driver_genes,
+    location_published_driver_genes,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,20 +218,27 @@ def filter_silent_variants(
 
 
 def cancer_gene_symbols():
-    """Symbols of every known cancer gene: the Cancer Gene Census
-    and IntOGen's compendium of mutational driver genes, unioned.
+    """Symbols of every known cancer gene: the Cancer Gene Census,
+    IntOGen's compendium of mutational driver genes and the driver
+    genes of three published screens, unioned.
 
     The Census is curated from the literature; IntOGen detects drivers
     from the mutations of about 28,000 tumors by seven methods, and
-    adds genes the Census lacks (TOP2A, CD58, ...). A passenger is a
-    gene in neither: anything fitted on passengers (site weights, the
-    channel offset, the gene-tumor dispersion, a pooled spectrum) must
-    not see selection, so the wider exclusion is the safer one.
+    adds genes the Census lacks (TOP2A, CD58, ...). The published
+    screens add drivers both miss: TCGA's PanCancer consensus (RHOB,
+    TAF1, IRF2, ...) and two lymphoma screens (the H1 linker histones,
+    CD70, ...); see ``data/README.md``. A passenger is a gene in none:
+    anything fitted on passengers (site weights, the channel offset,
+    the gene-tumor dispersion, a pooled spectrum) must not see
+    selection, so the wider exclusion is the safer one.
     """
     census = pd.read_csv(location_cancer_gene_census, sep="\t")
     intogen = pd.read_csv(location_intogen_driver_genes, sep="\t")
-    return set(census["Gene Symbol"].dropna()) | set(
-        intogen["symbol"].dropna()
+    published = pd.read_csv(location_published_driver_genes, sep="\t")
+    return (
+        set(census["Gene Symbol"].dropna())
+        | set(intogen["symbol"].dropna())
+        | set(published["symbol"].dropna())
     )
 
 
@@ -237,8 +246,8 @@ def cancer_gene_ensembl_ids(strip_version=True):
     """Ensembl gene ids of :func:`cancer_gene_symbols`'s genes.
 
     The Census's ids come from an Ensembl column when it has one, else
-    from ``ENSG`` ids in its ``Synonyms``; IntOGen's were resolved
-    through HGNC when the table was built.
+    from ``ENSG`` ids in its ``Synonyms``; IntOGen's and the published
+    screens' were resolved through HGNC when their tables were built.
     """
     census = pd.read_csv(
         location_cancer_gene_census, sep="\t", dtype=str
@@ -266,8 +275,15 @@ def cancer_gene_ensembl_ids(strip_version=True):
     intogen = pd.read_csv(
         location_intogen_driver_genes, sep="\t", dtype=str
     )
+    published = pd.read_csv(
+        location_published_driver_genes, sep="\t", dtype=str
+    )
     ids = pd.concat(
-        [ids, intogen["ensembl_gene_id"].dropna().astype(str)]
+        [
+            ids,
+            intogen["ensembl_gene_id"].dropna().astype(str),
+            published["ensembl_gene_id"].dropna().astype(str),
+        ]
     )
     if strip_version:
         ids = ids.str.replace(r"\.\d+$", "", regex=True)
@@ -300,28 +316,55 @@ def aid_target_ensembl_ids(strip_version=True):
     return set(ids.tolist())
 
 
-def non_passenger_symbols():
-    """Known cancer genes and AID targets: what passenger fits exclude.
+def histone_symbols():
+    """Symbols of every gene in HGNC's five histone gene groups.
 
-    :func:`cancer_gene_symbols` unioned with :func:`aid_target_symbols`.
+    Not passengers on two counts: mutated histones can be drivers
+    (oncohistones, the H1 linker histones in lymphoma), and the
+    clustered, near-identical copies mis-map.
     """
-    return cancer_gene_symbols() | aid_target_symbols()
+    table = pd.read_csv(location_histone_genes, sep="\t")
+    return set(table["symbol"].dropna())
+
+
+def histone_ensembl_ids(strip_version=True):
+    """Ensembl gene ids of :func:`histone_symbols`'s genes."""
+    table = pd.read_csv(location_histone_genes, sep="\t", dtype=str)
+    ids = table["ensembl_gene_id"].dropna().astype(str)
+    if strip_version:
+        ids = ids.str.replace(r"\.\d+$", "", regex=True)
+    return set(ids.tolist())
+
+
+def non_passenger_symbols():
+    """Everything passenger fits exclude.
+
+    :func:`cancer_gene_symbols`, :func:`aid_target_symbols` and
+    :func:`histone_symbols`, unioned.
+    """
+    return (
+        cancer_gene_symbols()
+        | aid_target_symbols()
+        | histone_symbols()
+    )
 
 
 def non_passenger_ensembl_ids(strip_version=True):
     """Ensembl gene ids of :func:`non_passenger_symbols`'s genes."""
-    return cancer_gene_ensembl_ids(
-        strip_version=strip_version
-    ) | aid_target_ensembl_ids(strip_version=strip_version)
+    return (
+        cancer_gene_ensembl_ids(strip_version=strip_version)
+        | aid_target_ensembl_ids(strip_version=strip_version)
+        | histone_ensembl_ids(strip_version=strip_version)
+    )
 
 
 def filter_passenger_genes(db):
     """Return a list of passenger genes present in the mutation data.
 
-    Passenger genes are defined as those neither known cancer genes
-    (the Cancer Gene Census or IntOGen) nor AID targets
-    (:func:`non_passenger_symbols`), and with at least one variant
-    annotated in the 'variant' column.
+    Passenger genes are defined as those not known cancer genes (the
+    Cancer Gene Census, IntOGen or published screens), AID targets or
+    histones (:func:`non_passenger_symbols`), and with at least one
+    variant annotated in the 'variant' column.
 
     Parameters
     ----------
@@ -354,9 +397,9 @@ def filter_passenger_genes_ensembl(
     1) DataFrame mode
        - `db` is a DataFrame with columns 'ensembl_gene_id' and
          'variant'.
-       - Returns Ensembl IDs for genes that are **neither** known
-         cancer genes (the Cancer Gene Census or IntOGen) **nor** AID
-         targets (:func:`non_passenger_ensembl_ids`; what we consider
+       - Returns Ensembl IDs for genes that are **not** known cancer
+         genes, AID targets or histones
+         (:func:`non_passenger_ensembl_ids`; what we consider
          passenger genes) **and** have at least one non-null entry in
          'variant'.
 
@@ -385,18 +428,18 @@ def filter_passenger_genes_ensembl(
     -------
     numpy.ndarray
         Ensembl IDs **as they appear in the input** that are classified
-        as passengers. In DataFrame mode, this means neither a known
-        cancer gene nor an AID target, and with ≥1 variant. In
-        collection mode, neither.
+        as passengers. In DataFrame mode, this means not in
+        :func:`non_passenger_ensembl_ids` and with ≥1 variant. In
+        collection mode, not in it.
 
     Notes
     -----
-    See :func:`cancer_gene_ensembl_ids` and
-    :func:`aid_target_ensembl_ids` for where each source's Ensembl
-    ids come from.
+    See :func:`cancer_gene_ensembl_ids`,
+    :func:`aid_target_ensembl_ids` and :func:`histone_ensembl_ids` for
+    where each source's Ensembl ids come from.
 
     """
-    # ---- Not passengers: CGC, IntOGen and AID targets -------------
+    # ---- Not passengers: cancer genes, AID targets, histones ------
     cgc_set = non_passenger_ensembl_ids(strip_version=strip_version)
 
     # ---- Collection mode --------------------------------------------

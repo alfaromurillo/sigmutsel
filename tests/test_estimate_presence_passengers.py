@@ -1,4 +1,4 @@
-"""Not passengers: the Cancer Gene Census, IntOGen and AID targets."""
+"""Not passengers: known cancer genes, AID targets and histones."""
 
 import pandas as pd
 
@@ -9,12 +9,14 @@ from sigmutsel.estimate_presence import (
     cancer_gene_symbols,
     filter_passenger_genes,
     filter_passenger_genes_ensembl,
+    histone_symbols,
     non_passenger_ensembl_ids,
     non_passenger_symbols,
 )
 from sigmutsel.locations import (
     location_aid_target_genes,
     location_intogen_driver_genes,
+    location_published_driver_genes,
 )
 
 
@@ -52,7 +54,7 @@ def test_aid_targets_are_not_passengers():
     assert {"ZFP36L1", "IRF8", "H2AC6", "CLEC2D"} <= aid
     # Cancer genes stay cancer genes; AID targets are added beside them.
     assert "IGHG1" not in cancer_gene_symbols()
-    assert non_passenger_symbols() == cancer_gene_symbols() | aid
+    assert aid <= non_passenger_symbols()
     ighg1 = table.set_index("symbol").at["IGHG1", "ensembl_gene_id"]
     assert ighg1 in aid_target_ensembl_ids()
     assert ighg1 in non_passenger_ensembl_ids()
@@ -61,5 +63,27 @@ def test_aid_targets_are_not_passengers():
     assert list(kept) == [ttn]
     db = pd.DataFrame(
         {"gene": ["IRF8", "TTN"], "variant": ["IRF8 x", "TTN y"]}
+    )
+    assert list(filter_passenger_genes(db)) == ["TTN"]
+
+
+def test_published_drivers_and_histones_are_not_passengers():
+    published = pd.read_csv(location_published_driver_genes, sep="\t")
+    assert published["ensembl_gene_id"].notna().all()
+    assert published["ensembl_gene_id"].is_unique
+    symbols = cancer_gene_symbols()
+    # In TCGA's PanCancer list or a lymphoma screen, not the Census.
+    assert {"RHOB", "TAF1", "IRF2", "CD70", "H1-4"} <= symbols
+    histones = histone_symbols()
+    assert {"H1-4", "H3C2", "H4C8", "H3-3A"} <= histones
+    assert non_passenger_symbols() == (
+        cancer_gene_symbols() | aid_target_symbols() | histones
+    )
+    rhob = published.set_index("symbol").at["RHOB", "ensembl_gene_id"]
+    ttn = "ENSG00000155657"
+    kept = filter_passenger_genes_ensembl(pd.Index([rhob, ttn]))
+    assert list(kept) == [ttn]
+    db = pd.DataFrame(
+        {"gene": ["H4C8", "TTN"], "variant": ["H4C8 x", "TTN y"]}
     )
     assert list(filter_passenger_genes(db)) == ["TTN"]

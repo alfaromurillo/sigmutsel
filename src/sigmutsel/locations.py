@@ -57,6 +57,15 @@ location_intogen_driver_genes = (
 # immunoglobulin loci and published aberrant-hypermutation targets.
 location_aid_target_genes = DATA_DIR / "aid_target_genes.tsv"
 
+# Driver genes of published exome-wide screens beyond the Census and
+# IntOGen: TCGA's PanCancer consensus and two lymphoma screens.
+location_published_driver_genes = (
+    DATA_DIR / "published_driver_genes.tsv"
+)
+
+# Every gene of HGNC's five histone gene groups (H1, H2A, H2B, H3, H4).
+location_histone_genes = DATA_DIR / "histone_genes.tsv"
+
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
 location_gencode38_annotation = (
@@ -159,6 +168,8 @@ def list_data_files() -> dict[str, bool]:
         "cosmic_cancer_gene_census": location_cosmic_cancer_gene_census,
         "intogen_driver_genes": location_intogen_driver_genes,
         "aid_target_genes": location_aid_target_genes,
+        "published_driver_genes": location_published_driver_genes,
+        "histone_genes": location_histone_genes,
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,

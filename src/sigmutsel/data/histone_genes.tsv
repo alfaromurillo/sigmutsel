@@ -1,0 +1,118 @@
+symbol	ensembl_gene_id	locus_type	gene_group
+CENPA	ENSG00000115163	gene with protein product	H3 histones
+H1-0	ENSG00000189060	gene with protein product	H1 histones
+H1-1	ENSG00000124610	gene with protein product	H1 histones
+H1-10	ENSG00000184897	gene with protein product	H1 histones
+H1-12P	ENSG00000216331	pseudogene	H1 histones
+H1-2	ENSG00000187837	gene with protein product	H1 histones
+H1-3	ENSG00000124575	gene with protein product	H1 histones
+H1-4	ENSG00000168298	gene with protein product	H1 histones
+H1-5	ENSG00000184357	gene with protein product	H1 histones
+H1-6	ENSG00000187475	gene with protein product	H1 histones
+H1-7	ENSG00000187166	gene with protein product	H1 histones
+H1-8	ENSG00000178804	gene with protein product	H1 histones
+H1-9P	ENSG00000188662	pseudogene	H1 histones
+H2AB1	ENSG00000274183	gene with protein product	H2A histones
+H2AB2	ENSG00000277858	gene with protein product	H2A histones
+H2AB3	ENSG00000277745	gene with protein product	H2A histones
+H2AC1	ENSG00000164508	gene with protein product	H2A histones
+H2AC10P	ENSG00000218690	pseudogene	H2A histones
+H2AC11	ENSG00000196787	gene with protein product	H2A histones
+H2AC12	ENSG00000274997	gene with protein product	H2A histones
+H2AC13	ENSG00000196747	gene with protein product	H2A histones
+H2AC14	ENSG00000276368	gene with protein product	H2A histones
+H2AC15	ENSG00000275221	gene with protein product	H2A histones
+H2AC16	ENSG00000276903	gene with protein product	H2A histones
+H2AC17	ENSG00000278677	gene with protein product	H2A histones
+H2AC18	ENSG00000288825	gene with protein product	H2A histones
+H2AC19	ENSG00000288859	gene with protein product	H2A histones
+H2AC20	ENSG00000184260	gene with protein product	H2A histones
+H2AC21	ENSG00000184270	gene with protein product	H2A histones
+H2AC25	ENSG00000181218	gene with protein product	H2A histones
+H2AC2P	ENSG00000216436	pseudogene	H2A histones
+H2AC3P	ENSG00000242387	pseudogene	H2A histones
+H2AC4	ENSG00000278463	gene with protein product	H2A histones
+H2AC5P	ENSG00000234816	pseudogene	H2A histones
+H2AC6	ENSG00000180573	gene with protein product	H2A histones
+H2AC7	ENSG00000196866	gene with protein product	H2A histones
+H2AC8	ENSG00000277075	gene with protein product	H2A histones
+H2AC9P	ENSG00000218281	pseudogene	H2A histones
+H2AJ	ENSG00000246705	gene with protein product	H2A histones
+H2AL1MP	ENSG00000285944	pseudogene	H2A histones
+H2AL1Q	ENSG00000249467	unknown	H2A histones
+H2AL3	ENSG00000229674	gene with protein product	H2A histones
+H2AP	ENSG00000187516	gene with protein product	H2A histones
+H2AQ1P	ENSG00000285989	pseudogene	H2A histones
+H2AX	ENSG00000188486	gene with protein product	H2A histones
+H2AZ1	ENSG00000164032	gene with protein product	H2A histones
+H2AZ2	ENSG00000105968	gene with protein product	H2A histones
+H2BC1	ENSG00000146047	gene with protein product	H2B histones
+H2BC10	ENSG00000278588	gene with protein product	H2B histones
+H2BC11	ENSG00000124635	gene with protein product	H2B histones
+H2BC12	ENSG00000197903	gene with protein product	H2B histones
+H2BC12L	ENSG00000234289	gene with protein product	H2B histones
+H2BC13	ENSG00000185130	gene with protein product	H2B histones
+H2BC14	ENSG00000273703	gene with protein product	H2B histones
+H2BC15	ENSG00000233822	gene with protein product	H2B histones
+H2BC16P	ENSG00000217646	pseudogene	H2B histones
+H2BC17	ENSG00000274641	gene with protein product	H2B histones
+H2BC18	ENSG00000203814	gene with protein product	H2B histones
+H2BC19P	ENSG00000220323	pseudogene	H2B histones
+H2BC20P	ENSG00000261716	pseudogene	H2B histones
+H2BC21	ENSG00000184678	gene with protein product	H2B histones
+H2BC26	ENSG00000196890	gene with protein product	H2B histones
+H2BC27P	ENSG00000181201	pseudogene	H2B histones
+H2BC2P	ENSG00000178762	pseudogene	H2B histones
+H2BC3	ENSG00000276410	gene with protein product	H2B histones
+H2BC4	ENSG00000180596	gene with protein product	H2B histones
+H2BC5	ENSG00000158373	gene with protein product	H2B histones
+H2BC6	ENSG00000274290	gene with protein product	H2B histones
+H2BC7	ENSG00000277224	gene with protein product	H2B histones
+H2BC8	ENSG00000273802	gene with protein product	H2B histones
+H2BC9	ENSG00000275713	gene with protein product	H2B histones
+H2BK1	ENSG00000285480	gene with protein product	H2B histones
+H2BL1P	ENSG00000223497	pseudogene	H2B histones
+H2BN1	ENSG00000290320	gene with protein product	H2B histones
+H2BW1	ENSG00000123569	gene with protein product	H2B histones
+H2BW2	ENSG00000101812	gene with protein product	H2B histones
+H2BW3P	ENSG00000235946	pseudogene	H2B histones
+H3-3A	ENSG00000163041	gene with protein product	H3 histones
+H3-3B	ENSG00000132475	gene with protein product	H3 histones
+H3-4	ENSG00000168148	gene with protein product	H3 histones
+H3-5	ENSG00000188375	gene with protein product	H3 histones
+H3-7	ENSG00000273213	gene with protein product	H3 histones
+H3C1	ENSG00000275714	gene with protein product	H3 histones
+H3C10	ENSG00000278828	gene with protein product	H3 histones
+H3C11	ENSG00000275379	gene with protein product	H3 histones
+H3C12	ENSG00000197153	gene with protein product	H3 histones
+H3C13	ENSG00000183598	gene with protein product	H3 histones
+H3C14	ENSG00000203811	gene with protein product	H3 histones
+H3C15	ENSG00000203852	gene with protein product	H3 histones
+H3C2	ENSG00000286522	gene with protein product	H3 histones
+H3C3	ENSG00000287080	gene with protein product	H3 histones
+H3C4	ENSG00000197409	gene with protein product	H3 histones
+H3C5P	ENSG00000277720	pseudogene	H3 histones
+H3C6	ENSG00000274750	gene with protein product	H3 histones
+H3C7	ENSG00000277775	gene with protein product	H3 histones
+H3C8	ENSG00000273983	gene with protein product	H3 histones
+H3C9P	ENSG00000220875	pseudogene	H3 histones
+H3Y1	ENSG00000269466	gene with protein product	H3 histones
+H3Y2	ENSG00000268799	gene with protein product	H3 histones
+H4C1	ENSG00000278637	gene with protein product	H4 histones
+H4C10P	ENSG00000217862	pseudogene	H4 histones
+H4C11	ENSG00000197238	gene with protein product	H4 histones
+H4C12	ENSG00000273542	gene with protein product	H4 histones
+H4C13	ENSG00000275126	gene with protein product	H4 histones
+H4C14	ENSG00000270882	gene with protein product	H4 histones
+H4C15	ENSG00000270276	gene with protein product	H4 histones
+H4C16	ENSG00000197837	gene with protein product	H4 histones
+H4C2	ENSG00000278705	gene with protein product	H4 histones
+H4C3	ENSG00000197061	gene with protein product	H4 histones
+H4C4	ENSG00000277157	gene with protein product	H4 histones
+H4C5	ENSG00000276966	gene with protein product	H4 histones
+H4C6	ENSG00000274618	gene with protein product	H4 histones
+H4C7	ENSG00000275663	gene with protein product	H4 histones
+H4C8	ENSG00000158406	gene with protein product	H4 histones
+H4C9	ENSG00000276180	gene with protein product	H4 histones
+MACROH2A1	ENSG00000113648	gene with protein product	H2A histones
+MACROH2A2	ENSG00000099284	gene with protein product	H2A histones

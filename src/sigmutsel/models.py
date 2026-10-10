@@ -228,6 +228,7 @@ class MutationDataset:
     _contexts_by_gene_esyn: pd.DataFrame = None
     _gene_transcripts: pd.DataFrame = None
     _channel_universe: dict | None = None
+    _spectrum_shrinkage: dict | None = None
     _sample_qc_flags: pd.DataFrame = None
     _multi_base_db: pd.DataFrame = None
     _homdel_db: pd.DataFrame = None
@@ -547,8 +548,10 @@ class MutationDataset:
             # single-base rows of doublets and other multi-base events,
             # kept aside for the gamma hold-out; a dataset without it
             # simply has no such hold-out. 7 -> adds homdel_db, the
-            # (tumor, gene) pairs with a homozygous deletion.
-            "version": 7,
+            # (tumor, gene) pairs with a homozygous deletion. 8 -> adds
+            # spectrum_shrinkage, the per-cohort kappas of
+            # :mod:`spectrum_shrinkage` (None: no shrinkage).
+            "version": 8,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -563,6 +566,7 @@ class MutationDataset:
                 self._contexts_by_gene_gene_universe
             ),
             "channel_universe": self._channel_universe,
+            "spectrum_shrinkage": self._spectrum_shrinkage,
             "signature_parameters": {
                 "reference_genome": self._signature_reference_genome,
                 "exome": self._signature_exome,
@@ -601,6 +605,9 @@ class MutationDataset:
             "contexts_by_gene_gene_universe", "own_cohort"
         )
         dataset._channel_universe = manifest.get("channel_universe")
+        dataset._spectrum_shrinkage = manifest.get(
+            "spectrum_shrinkage"
+        )
 
         for attr_name, info in manifest.get("files", {}).items():
             filename = info["filename"]
@@ -828,6 +835,32 @@ class MutationDataset:
     def germline_mask_af(self):
         """The germline mask's allele-frequency threshold, or None."""
         return (self._channel_universe or {}).get("germline_mask_af")
+
+    @property
+    def spectrum_shrinkage(self):
+        """The per-cohort spectrum shrinkage (:mod:`spectrum_shrinkage`).
+
+        A :class:`spectrum_shrinkage.SpectrumShrinkage`, or None.
+        :meth:`Model.compute_mu_taus` applies it unless told otherwise.
+        """
+        from .spectrum_shrinkage import SpectrumShrinkage
+
+        return SpectrumShrinkage.from_dict(self._spectrum_shrinkage)
+
+    def set_spectrum_shrinkage(self, shrinkage):
+        """Set (or clear, with None) the per-cohort spectrum shrinkage.
+
+        Like :meth:`set_site_weights`, a per-cohort parameter chosen
+        once and saved with the dataset; no table changes here, and
+        models built after it take it into their baselines. Accepts a
+        :class:`spectrum_shrinkage.SpectrumShrinkage` or its dict.
+        """
+        from .spectrum_shrinkage import SpectrumShrinkage
+
+        shrinkage = SpectrumShrinkage.from_dict(shrinkage)
+        self._spectrum_shrinkage = (
+            None if shrinkage is None else shrinkage.to_dict()
+        )
 
     @property
     def site_weights(self):
@@ -3760,6 +3793,7 @@ class Model:
     _rg_delta_intercept: float = None
     _baseline_germline_mask_af: float = None
     _baseline_site_weights: dict = None
+    _baseline_spectrum_shrinkage: dict = None
     _baseline_calls_masked: bool = None
     _rg_fit_rg: bool = True
     _rg_use_silent_channel: bool = True
@@ -3835,6 +3869,7 @@ class Model:
         self._rg_delta_intercept = None
         self._baseline_germline_mask_af = None
         self._baseline_site_weights = None
+        self._baseline_spectrum_shrinkage = None
         self._baseline_calls_masked = None
         self._rg_fit_rg = True
         self._rg_use_silent_channel = True
@@ -4708,6 +4743,15 @@ class Model:
         saved before masks existed).
         """
         return self._baseline_germline_mask_af
+
+    @property
+    def baseline_spectrum_shrinkage(self):
+        """Spectrum shrinkage (as a dict) the mu_taus were built with.
+
+        None: the signature reconstruction as is (or a model saved
+        before the shrinkage existed).
+        """
+        return self._baseline_spectrum_shrinkage
 
     @property
     def baseline_site_weights(self):
@@ -7388,6 +7432,9 @@ class Model:
             "rg_delta_intercept": self._rg_delta_intercept,
             "baseline_germline_mask_af": self._baseline_germline_mask_af,
             "baseline_site_weights": self._baseline_site_weights,
+            "baseline_spectrum_shrinkage": (
+                self._baseline_spectrum_shrinkage
+            ),
             "baseline_calls_masked": self._baseline_calls_masked,
             "fallback_shifts": (
                 None
@@ -7559,6 +7606,9 @@ class Model:
         )
         model._baseline_site_weights = manifest.get(
             "baseline_site_weights"
+        )
+        model._baseline_spectrum_shrinkage = manifest.get(
+            "baseline_spectrum_shrinkage"
         )
         model._baseline_calls_masked = manifest.get(
             "baseline_calls_masked"
@@ -7930,6 +7980,12 @@ class Model:
                 correction. No effect if L_low is None.
             - cut_at_L_low : bool, default False
                 Whether to hard clip burden estimates at L_low
+            - spectrum_shrinkage : SpectrumShrinkage, dict or None
+                Defaults to the dataset's
+                (:attr:`MutationDataset.spectrum_shrinkage`); pass
+                None to switch it off. Not applied with
+                ``separate_per_sigma``. Recorded as
+                :attr:`baseline_spectrum_shrinkage`.
 
         Returns
         -------
@@ -8058,6 +8114,31 @@ class Model:
             # Store L_low and L_high for use by other methods
             self._auto_mu_taus_kwargs["L_low"] = l_low
             self._auto_mu_taus_kwargs["L_high"] = l_high
+
+            # The dataset's per-cohort shrinkage, unless the caller
+            # passes one (None to switch it off).
+            from .spectrum_shrinkage import SpectrumShrinkage
+
+            if "spectrum_shrinkage" not in compute_kwargs:
+                compute_kwargs["spectrum_shrinkage"] = getattr(
+                    self.dataset, "spectrum_shrinkage", None
+                )
+            if (
+                separate_per_sigma
+                and compute_kwargs["spectrum_shrinkage"] is not None
+                and "spectrum_shrinkage" not in kwargs
+            ):
+                logger.warning(
+                    "The dataset's spectrum shrinkage is not applied to "
+                    "per-signature mu_taus (separate_per_sigma=True)."
+                )
+                compute_kwargs["spectrum_shrinkage"] = None
+            shrinkage = SpectrumShrinkage.from_dict(
+                compute_kwargs["spectrum_shrinkage"]
+            )
+            self._baseline_spectrum_shrinkage = (
+                None if shrinkage is None else shrinkage.to_dict()
+            )
 
             # Compute mutation burdens
             self._mu_taus = compute_mu_tau_per_tumor(

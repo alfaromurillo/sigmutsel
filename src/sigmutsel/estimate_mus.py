@@ -53,6 +53,56 @@ def _with_fallback(scaled, baseline, ids_all, fallback_log_scale):
     return scaled.loc[ids_all]
 
 
+def _shrunk_mu_taus(
+    db,
+    alphas,
+    sig_matrix,
+    full_sig_matrix,
+    assignments,
+    ell_hats,
+    params,
+):
+    """``ell_hat_j pi_jt`` with the shrunk spectra of :mod:`spectrum_shrinkage`."""
+    from .spectrum_shrinkage import (
+        SpectrumShrinkage,
+        passenger_calls,
+        shrink_spectra,
+        type_counts,
+    )
+
+    params = SpectrumShrinkage.from_dict(params)
+    if params.floor_signature not in full_sig_matrix.columns:
+        raise ValueError(
+            f"floor signature {params.floor_signature!r} is not in the "
+            "signature matrix"
+        )
+    types = sig_matrix.index
+    floor = full_sig_matrix[params.floor_signature].reindex(types)
+    n = (
+        assignments.reindex(index=alphas.index)
+        .sum(axis=1)
+        .fillna(0.0)
+        .astype(float)
+    )
+    calls = passenger_calls(db)
+    counts = type_counts(calls, alphas.index, types)
+    pi = shrink_spectra(
+        alphas,
+        sig_matrix,
+        n.to_numpy(),
+        counts,
+        floor.to_numpy(),
+        params,
+    )
+    logger.info(
+        "Spectrum shrinkage (%s) over %d tumors, %d passenger calls",
+        params.label(),
+        len(pi),
+        int(counts.to_numpy().sum()),
+    )
+    return pi.multiply(ell_hats, axis=0)
+
+
 def compute_mu_tau_per_tumor(
     db,
     location_signature_matrix,
@@ -61,6 +111,7 @@ def compute_mu_tau_per_tumor(
     L_high=None,
     cut_at_L_low=False,
     separate_per_sigma=False,
+    spectrum_shrinkage=None,
 ):
     r"""Compute per-tumor per-type baseline mutation rates.
 
@@ -113,6 +164,16 @@ def compute_mu_tau_per_tumor(
           signatures
         - True: Return dict mapping each signature to its
           contribution
+    spectrum_shrinkage : spectrum_shrinkage.SpectrumShrinkage, dict or None
+        Shrink each tumor's spectrum before multiplying by its burden
+        (:mod:`spectrum_shrinkage`): the signature spectrum toward the
+        cohort's passenger pool with a share of the floor signature
+        (``kappa_1``), then the tumor's own passenger counts toward
+        that (``kappa_2``). The floor signature must be in the
+        signature matrix. None (default) uses the signature
+        reconstruction as is. Cannot be combined with
+        ``separate_per_sigma``: the shrunk spectrum is no longer a sum
+        over signatures.
 
     Returns
     -------
@@ -170,12 +231,30 @@ def compute_mu_tau_per_tumor(
     )
 
     sig_matrix = load_signature_matrix(location_signature_matrix)
+    full_sig_matrix = sig_matrix
 
     # Filter sig_matrix to only include signatures in assignments
     # (in case assignments was filtered to exclude signatures)
     common_sigs = sig_matrix.columns.intersection(assignments.columns)
     sig_matrix = sig_matrix[common_sigs]
     alphas = alphas[common_sigs]
+
+    if spectrum_shrinkage is not None:
+        if separate_per_sigma:
+            raise ValueError(
+                "spectrum_shrinkage gives a spectrum that is not a sum "
+                "over signatures; it cannot be combined with "
+                "separate_per_sigma"
+            )
+        return _shrunk_mu_taus(
+            db,
+            alphas,
+            sig_matrix,
+            full_sig_matrix,
+            assignments,
+            ell_hats,
+            spectrum_shrinkage,
+        )
 
     if not separate_per_sigma:
         mus = alphas.dot(sig_matrix.T).multiply(ell_hats, axis=0)

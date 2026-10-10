@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Spectrum shrinkage (`spectrum_shrinkage`): each tumor's per-type
+  spectrum is the signature reconstruction shrunk toward the
+  cohort's passenger pool with a 10% share of SBS5 (`kappa_1`), then
+  the tumor's own passenger counts shrunk toward that (`kappa_2`).
+  Every type keeps a positive rate, and high-burden tumors follow
+  their own spectrum. The kappas are per-cohort parameters, chosen on
+  held-out mutations (`heldout_spectrum_scores`, `select_kappas`,
+  with a nested cross-validation over tumors that reports the
+  choice's optimism), stored with the dataset
+  (`MutationDataset.set_spectrum_shrinkage`, manifest version 8) and
+  applied by `Model.compute_mu_taus`
+  (`Model.baseline_spectrum_shrinkage` records them).
 - Genes with incomplete covariates get a rate instead of being
   dropped. With a PCA-reduced covariate matrix, such a gene is
   projected onto the complete genes' components from the covariates

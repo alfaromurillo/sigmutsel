@@ -824,7 +824,7 @@ class MutationDataset:
         return pd.Index(rows["Tumor_Sample_Barcode"].unique())
 
     @record_call
-    def build_indel_db(self, location_gene_set="default"):
+    def build_indel_db(self, location_gene_set=None):
         """Read the non-silent coding indels of the dataset's MAFs.
 
         The SBS build keeps single-base calls only, so a tumor whose
@@ -836,9 +836,13 @@ class MutationDataset:
 
         Parameters
         ----------
-        location_gene_set : str, Path, None or "default"
-            HGNC table for the gene identifiers; ``"default"`` uses the
-            package's, as the SBS build does, and None keeps the MAF's.
+        location_gene_set : str, Path, None or "default", default None
+            HGNC table for the gene identifiers. None (the default)
+            keeps the MAF's, as :meth:`generate_mutation_db` does by
+            default: the hold-out matches indels to genes by these
+            identifiers, so they must be the ones :attr:`mutation_db`
+            carries. ``"default"`` uses the package's HGNC table, for a
+            dataset whose mutation table was built with it.
 
         Returns
         -------

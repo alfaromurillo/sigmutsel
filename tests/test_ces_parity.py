@@ -262,3 +262,32 @@ def test_the_exact_likelihood_samples_and_says_so():
     assert out.posterior.attrs["presence_clip"] == 0
     mean = float(out.posterior["gamma"].mean())
     assert mean == pytest.approx(_sswm_mle(_YES, _NO), rel=0.3)
+
+
+def test_build_keeps_the_mafs_gene_ids_by_default(
+    tmp_path, monkeypatch
+):
+    # The hold-out matches indels to genes by id, so the indel table
+    # must carry the ids mutation_db does; generate_mutation_db keeps
+    # the MAF's by default, and so must build_indel_db.
+    import sigmutsel.load_maf_files as lmf
+
+    seen = {}
+
+    def fake(location, **kwargs):
+        seen.update(kwargs)
+        return pd.DataFrame(
+            {
+                "Tumor_Sample_Barcode": ["T1"],
+                "ensembl_gene_id": ["G1"],
+                "Variant_Classification": ["In_Frame_Del"],
+            }
+        )
+
+    monkeypatch.setattr(lmf, "read_coding_indels", fake)
+    ds = MutationDataset(location_maf_files=str(tmp_path))
+    ds.build_indel_db()
+    assert seen == {"location_gene_set": None}
+    seen.clear()
+    ds.build_indel_db(location_gene_set="default")
+    assert seen == {}  # the reader's own default, the HGNC table

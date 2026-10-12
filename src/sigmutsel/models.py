@@ -10476,6 +10476,13 @@ class Model:
         ``_rg_statistics``. ``include_fallback=True`` appends the
         covariate-less genes, whose expectation is their baseline
         scaled by :meth:`_fallback_eta` instead of ``e^{c.x_g}``.
+
+        The non-silent expectation carries the channel's
+        ``e^{delta_intercept}``, as the fitted likelihood does
+        (:meth:`channel_rg_log_likelihood_at_fit`), for every gene,
+        fallback genes included; the silent one never does. Without
+        it the production ``r_g`` was inflated by about ``e^delta``
+        wherever a gene had non-silent counts.
         """
         if self._rg_statistics is None or self._rg_theta is None:
             raise ValueError(
@@ -10511,6 +10518,10 @@ class Model:
                     expected_non_silent,
                     fallback["baseline_non_silent"] * factor,
                 ]
+            )
+        if self._rg_delta_intercept is not None:
+            expected_non_silent = expected_non_silent * np.exp(
+                self._rg_delta_intercept
             )
         return expected_silent, expected_non_silent
 

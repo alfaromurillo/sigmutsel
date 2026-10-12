@@ -4,16 +4,17 @@ The unified model this implements::
 
     r_g            ~ Gamma(θ, 1/θ)                    [one per gene]
     μ_g^(syn,j)    = μ̄_g^(syn,j)    × exp(c·x_g) × r_g
-    μ_g^(nonsyn,j) = μ̄_g^(nonsyn,j) × exp(c·x_g) × r_g
+    μ_g^(nonsyn,j) = μ̄_g^(nonsyn,j) × exp(c·x_g + δ) × r_g
     L = ∏_{g∈G} ∏_j Poisson(N_g^(syn,j);    μ_g^(syn,j))
       × ∏_{g∈P} ∏_j Poisson(N_g^(nonsyn,j); μ_g^(nonsyn,j))
 
 ``G`` is every gene (silent channel, drivers included), ``P`` the
-passenger genes (non-synonymous channel). ``r_g`` is **shared** across
-the two channels, and that sharing is the mechanism, not a
-simplification: a driver gene's non-synonymous counts are
-selection-contaminated by construction, so they could never identify a
-channel-specific ``r_g``; the shared one lets the driver's *silent*
+passenger genes (non-synonymous channel); ``δ`` is the
+non-synonymous channel's intercept offset (0 unless it is fitted).
+``r_g`` is **shared** across the two channels, and that sharing is
+the mechanism, not a simplification: a driver gene's non-synonymous
+counts are selection-contaminated by construction, so they could
+never identify a channel-specific ``r_g``; the shared one lets the driver's *silent*
 counts — clean and neutral in any gene — correct its own local rate,
 which then also scales its non-synonymous prediction.
 
@@ -122,7 +123,8 @@ def r_g_production(
         channel's gene set contribute 0.
     expected_silent, expected_non_silent : pandas.Series
         Per-gene covariate-scaled expectations ``Σ_j μ̄_g^j e^{c·x_g}``
-        for each channel, over the same samples.
+        for each channel, over the same samples; the non-silent one
+        times ``e^δ``.
     theta : float
         The fitted Gamma shape, shared across genes.
 

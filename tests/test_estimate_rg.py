@@ -814,6 +814,82 @@ def test_estimate_channel_rg_cov_effects_map(tmp_path):
     assert not np.allclose(production.values, evaluation.values)
 
 
+def _production_r_g_closed_form(model):
+    """``(theta + S_syn + S_nonsyn) / (theta + M_syn + M_nonsyn)``,
+    built from the fit's statistics, with the non-silent totals
+    scaled by ``e^{c.x_g + delta}`` and the silent by ``e^{c.x_g}``.
+    """
+    stats = model._rg_statistics
+    cov = model.cov_matrix.loc[stats["genes"]].to_numpy()
+    c = np.asarray(model.cov_effects)
+    eta = c[0] + cov @ c[1:]
+    delta = model._rg_delta_intercept
+    expected = stats["baseline_silent"].to_numpy() * np.exp(
+        eta
+    ) + stats["baseline_non_silent"].to_numpy() * np.exp(eta + delta)
+    counts = (
+        stats["counts_silent"].to_numpy()
+        + stats["counts_non_silent"].to_numpy()
+    )
+    theta = model.rg_theta
+    return pd.Series(
+        (theta + counts) / (theta + expected), index=stats["genes"]
+    )
+
+
+def test_production_r_g_carries_delta(tmp_path):
+    """The production r_g's non-silent expectation must carry the
+    channel's e^delta, as the fitted likelihood does. It used to
+    leave it out, inflating r_g by about e^delta wherever a gene has
+    non-silent counts. delta is set to a known, large value so the
+    two cannot agree by accident."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c="intercept"
+    )
+    model._rg_delta_intercept = 0.7
+    assert (model._rg_statistics["baseline_non_silent"] > 0).any()
+
+    expected = _production_r_g_closed_form(model)
+    production = model.compute_r_g_production()
+    np.testing.assert_allclose(
+        production.loc[expected.index].to_numpy(),
+        expected.to_numpy(),
+        rtol=1e-12,
+    )
+
+
+def test_production_r_g_draws_carry_delta(tmp_path):
+    """The production r_g draws (r_g_variant="production") come from
+    the same expectations: their mean is the closed form's."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c="intercept"
+    )
+    model._rg_delta_intercept = 0.7
+    gene = model._rg_statistics["genes"][0]
+    draws = model._r_g_draws_for_gene(
+        gene, "production", 200_000, np.random.default_rng(1)
+    )
+    expected = _production_r_g_closed_form(model)[gene]
+    assert np.mean(draws) == pytest.approx(expected, rel=1e-2)
+
+
+def test_evaluation_r_g_is_unchanged_by_delta(tmp_path):
+    """delta scales only the non-silent channel, which the evaluation
+    r_g never reads."""
+    model = _rg_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(
+        sample="MAP", separate_c="intercept"
+    )
+    model._rg_delta_intercept = 0.0
+    before = model.compute_r_g_for_evaluation()
+    model._rg_delta_intercept = 0.7
+    pd.testing.assert_series_equal(
+        model.compute_r_g_for_evaluation(), before
+    )
+
+
 def test_compute_mu_g_taus_matches_channel_nonsyn_total(tmp_path):
     """_compute_mu_g_taus (the basis for compute_mu_ms, i.e. every
     variant-level rate) must sum over types to exactly the

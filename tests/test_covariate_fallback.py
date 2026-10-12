@@ -236,6 +236,29 @@ def test_fallback_gene_gets_the_closed_form_r_g(tmp_path):
     )
 
 
+def test_fallback_gene_production_r_g_carries_delta(tmp_path):
+    """The production r_g of a fallback gene scales its non-silent
+    baseline by e^delta, as every other gene's does."""
+    model = _fallback_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    model._rg_delta_intercept = 0.7
+    theta = model.rg_theta
+    stats = model._rg_fallback_statistics
+    expected = (
+        theta
+        + stats["counts_silent"][_FALLBACK]
+        + stats["counts_non_silent"][_FALLBACK]
+    ) / (
+        theta
+        + stats["baseline_silent"][_FALLBACK]
+        + stats["baseline_non_silent"][_FALLBACK] * np.exp(0.7)
+    )
+    assert stats["baseline_non_silent"][_FALLBACK] > 0
+    assert model.compute_r_g_production()[_FALLBACK] == pytest.approx(
+        expected, rel=1e-12
+    )
+
+
 def test_fit_likelihood_is_over_the_fit_genes_only(tmp_path):
     """The fallback statistics are kept apart, so the fitted objective
     is still the one the fit maximised."""

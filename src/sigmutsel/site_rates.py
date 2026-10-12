@@ -439,8 +439,9 @@ class SiteRates:
             The gene rate correction in the multiplier. ``"evaluation"``
             (silent-channel ``r_g``, point estimate) is the one gamma
             uses; ``"none"`` reproduces ``mu_ms``. The production
-            ``r_g`` is not offered: its non-silent expectation omits
-            ``e^delta``.
+            ``r_g`` is not offered: it is informed by the non-silent
+            counts, so it absorbs selection, and no test covers it
+            here.
         transcript_models : TranscriptModels, optional
             Default: the cached models the dataset's opportunity uses.
         coding_in, splice_in : "dataset", None or boolean arrays
@@ -467,8 +468,8 @@ class SiteRates:
         if r_g not in ("evaluation", "none"):
             raise ValueError(
                 f"r_g must be 'evaluation' or 'none', got {r_g!r}. The "
-                "production r_g omits e^delta from its non-silent "
-                "expectation and is not offered here."
+                "production r_g is informed by the non-silent counts "
+                "and is not offered here."
             )
         dataset = model.dataset
         if not dataset.has_channel_universe():

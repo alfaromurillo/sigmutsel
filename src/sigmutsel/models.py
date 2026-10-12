@@ -5185,6 +5185,7 @@ class Model:
         channel=None,
         absence_floor=None,
         presence_clip=True,
+        spectrum_draws=False,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -5235,6 +5236,11 @@ class Model:
             ``"production"`` (both channels) partly absorbs selection
             itself and would bias gamma downward -- see
             :meth:`compute_mu_g_posterior_draws`.
+        spectrum_draws : bool, default False
+            With ``use_mu_posterior=True``, also draw each tumor's
+            spectrum from its hybrid spectrum's Dirichlet, so the cut
+            carries the spectrum's uncertainty into gamma (see
+            :meth:`compute_mu_g_posterior_draws`); ignored otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
             Gene-tumor dispersion in the presence likelihood (see
             :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``
@@ -5361,6 +5367,7 @@ class Model:
                 hold_out_indel=hold_out_indel,
                 absence_floor=absence_floor,
                 presence_clip=presence_clip,
+                spectrum_draws=spectrum_draws,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -5378,6 +5385,7 @@ class Model:
                 channel=channel or "nonsyn",
                 absence_floor=absence_floor,
                 presence_clip=presence_clip,
+                spectrum_draws=spectrum_draws,
             )
         else:
             raise ValueError(
@@ -5482,6 +5490,7 @@ class Model:
         hold_out_indel=True,
         absence_floor=None,
         presence_clip=True,
+        spectrum_draws=False,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5508,6 +5517,8 @@ class Model:
         r_g_variant : {"none", "production", "evaluation"}, default "none"
             Which ``r_g`` feeds the mu draws when
             ``use_mu_posterior=True``; ignored otherwise.
+        spectrum_draws : bool, default False
+            See :meth:`estimate_gamma`.
         gene_tumor_dispersion : None, float or "fitted", default None
             The variant's gene's ``phi`` (see :meth:`estimate_gamma`).
         hold_out_same_gene_samples : bool, default True
@@ -5591,7 +5602,9 @@ class Model:
                 )
         if use_mu_posterior:
             draws = self.compute_mu_m_posterior_draws(
-                variant, r_g_variant=r_g_variant
+                variant,
+                r_g_variant=r_g_variant,
+                spectrum_draws=spectrum_draws,
             )
             result = estimate_gamma_from_mus(
                 draws.loc[:, yes_ids].to_numpy(),
@@ -5927,6 +5940,7 @@ class Model:
         channel="nonsyn",
         absence_floor=None,
         presence_clip=True,
+        spectrum_draws=False,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -5967,6 +5981,8 @@ class Model:
         r_g_variant : {"none", "production", "evaluation"}, default "none"
             Which ``r_g`` feeds the mu draws when
             ``use_mu_posterior=True``; ignored otherwise.
+        spectrum_draws : bool, default False
+            See :meth:`estimate_gamma`.
         gene_tumor_dispersion : None, float or "fitted", default None
             See :meth:`estimate_gamma`.
         hold_out_multi_base, hold_out_homdel, hold_out_indel : bool, default True
@@ -6096,7 +6112,10 @@ class Model:
             )
         if use_mu_posterior:
             draws = self.compute_mu_g_posterior_draws(
-                gene_id, r_g_variant=r_g_variant, channel=channel
+                gene_id,
+                r_g_variant=r_g_variant,
+                channel=channel,
+                spectrum_draws=spectrum_draws,
             )
             result = estimate_gamma_from_mus(
                 draws.loc[
@@ -10597,6 +10616,7 @@ class Model:
         n_draws=None,
         rng=None,
         channel="nonsyn",
+        spectrum_draws=False,
     ):
         """Per-tumor mu posterior draws for one gene's non-silent rate.
 
@@ -10625,6 +10645,15 @@ class Model:
         practical simplification the module's r_g machinery already
         makes elsewhere, and keeps this cheap.
 
+        With ``spectrum_draws=True``, a third: each tumor's spectrum
+        is drawn from the Dirichlet whose mean is its hybrid spectrum,
+        ``Dirichlet(kappa_2 q_j + n_j)`` (:mod:`spectrum_shrinkage`),
+        independently per draw and tumor and paired draw by draw with
+        the two above, so the cut carries the spectrum's uncertainty
+        into gamma. ``r_g`` stays conditional on the point spectrum,
+        and the floored spectrum ``q_j`` is taken as known. Off by
+        default; with it off the draws are exactly as before.
+
         Parameters
         ----------
         gene : str
@@ -10650,6 +10679,10 @@ class Model:
             The gene's rate on one channel (:data:`GAMMA_CHANNELS`):
             the same covariate scale and ``r_g`` draws, on that
             channel's baseline; ``"syn"`` without ``delta_intercept``.
+        spectrum_draws : bool, default False
+            Draw each tumor's spectrum from its hybrid spectrum's
+            Dirichlet (above). Needs baselines built on the hybrid
+            spectrum; uses ``rng`` (a fresh generator if None).
 
         Returns
         -------
@@ -10716,10 +10749,25 @@ class Model:
         )
 
         baseline = self._channel_baseline(channel).loc[gene_id]
-        mu_draws = pd.DataFrame(
-            scale[:, None] * baseline.to_numpy()[None, :],
-            columns=baseline.index,
-        )
+        if spectrum_draws:
+            if rng is None:
+                rng = np.random.default_rng()
+            spectrum_baseline = self._spectrum_baseline_draws(
+                self._type_weights(
+                    self._channel_opportunity(channel), gene_id
+                ),
+                n_draws,
+                rng,
+            )[baseline.index]
+            mu_draws = pd.DataFrame(
+                scale[:, None] * spectrum_baseline.to_numpy(),
+                columns=baseline.index,
+            )
+        else:
+            mu_draws = pd.DataFrame(
+                scale[:, None] * baseline.to_numpy()[None, :],
+                columns=baseline.index,
+            )
 
         r_g_draws = self._r_g_draws_for_gene(
             gene_id, r_g_variant, n_draws, rng
@@ -10820,6 +10868,168 @@ class Model:
             eta = eta + delta_draws[draw_idx]
         return np.exp(eta), n_draws
 
+    def _channel_opportunity(self, channel):
+        """Opportunity table (genes x 96 types) of one gamma channel.
+
+        The table :meth:`_channel_baseline` builds that channel's
+        baseline from: ``syn`` and ``nonsyn`` are the dataset's own,
+        the parts are summed as :data:`GAMMA_CHANNELS` lists them.
+        """
+        if channel not in GAMMA_CHANNELS:
+            raise ValueError(
+                f"Unknown channel {channel!r}; expected one of "
+                f"{sorted(GAMMA_CHANNELS)}."
+            )
+        if channel == "syn":
+            return self.dataset.contexts_by_gene_syn
+        if channel == "nonsyn":
+            return self.dataset.contexts_by_gene_nonsyn
+        total = None
+        for part in GAMMA_CHANNELS[channel]:
+            table = getattr(
+                self.dataset, f"contexts_by_gene_{part}", None
+            )
+            if table is None:
+                raise ValueError(
+                    f"The dataset has no opportunity table for {part!r}."
+                )
+            total = (
+                table
+                if total is None
+                else total.add(table, fill_value=0.0)
+            )
+        return total
+
+    def _type_weights(self, channel_table, gene_id):
+        """Per-type weights ``w_tau`` of one gene on one channel.
+
+        The gene's channel baseline is linear in the type rates,
+        ``mu_bar^j_g = sum_tau w_tau mu_bar^j_tau``; the weights are
+        read off :func:`estimate_mus.compute_mu_g_channel_per_tumor`
+        applied to the identity, so they follow it exactly (the
+        denominators, the germline mask's ``type_opportunity``, and
+        tau-independence alike).
+        """
+        from .constants import canonical_types_order
+        from .estimate_mus import compute_mu_g_channel_per_tumor
+
+        identity = pd.DataFrame(
+            np.eye(len(canonical_types_order)),
+            index=canonical_types_order,
+            columns=canonical_types_order,
+        )
+        weights = compute_mu_g_channel_per_tumor(
+            mu_taus=identity,
+            channel_contexts_by_gene=channel_table,
+            contexts_by_gene=self.dataset.contexts_by_gene,
+            prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
+            type_opportunity=getattr(
+                self.dataset, "type_opportunity", None
+            ),
+        )
+        return weights.loc[gene_id]
+
+    def _spectrum_dirichlet(self):
+        """Each tumor's burden and hybrid-spectrum Dirichlet parameters.
+
+        The hybrid spectrum (:mod:`spectrum_shrinkage`)
+        ``pi_j = (n_j + kappa_2 q_j) / (n_j. + kappa_2)`` is the
+        posterior mean of ``Dirichlet(kappa_2 q_j + n_j)``, whose
+        parameters are therefore ``a_j = pi_j (n_j. + kappa_2)``:
+        ``pi_j`` is read off ``mu_taus`` (rows over their sums, the
+        burdens ``ell_j``) and ``n_j.`` recounted from the dataset's
+        passenger calls, as the baseline counted them. Since
+        ``a_j - n_j = kappa_2 q_j >= 0``, a negative difference
+        means the calls changed after the baselines were built, and
+        raises.
+
+        Returns ``(ell, dirichlet)``: a Series over tumors and a tumors x
+        types frame (NaN rows for a tumor with no rate). Cached for
+        the session.
+        """
+        cache = self.__dict__.get("_spectrum_dirichlet_cache")
+        if cache is not None:
+            return cache
+        from .constants import canonical_types_order
+        from .spectrum_shrinkage import (
+            SpectrumShrinkage,
+            passenger_calls,
+            type_counts,
+        )
+
+        shrinkage = SpectrumShrinkage.from_dict(
+            self._baseline_spectrum_shrinkage
+        )
+        if shrinkage is None or shrinkage.kappa_2 is None:
+            raise ValueError(
+                "Spectrum draws need baselines built on the hybrid "
+                "spectrum (a kappa_2); this model's are not."
+            )
+        if self._mu_taus is None or isinstance(self._mu_taus, dict):
+            raise ValueError(
+                "Spectrum draws need a signature-summed mu_taus."
+            )
+        mu_taus = self._mu_taus[canonical_types_order].astype(float)
+        ell = mu_taus.sum(axis=1)
+        pi = mu_taus.div(ell.where(ell > 0), axis=0)
+        counts = type_counts(
+            passenger_calls(self.dataset.mutation_db),
+            mu_taus.index,
+            canonical_types_order,
+        )
+        concentration = counts.sum(axis=1) + shrinkage.kappa_2
+        dirichlet = pi.mul(concentration, axis=0)
+        prior = (dirichlet - counts).to_numpy()
+        tolerance = 1e-6 * (1.0 + counts.to_numpy())
+        if (
+            prior[ell.to_numpy() > 0] < -tolerance[ell.to_numpy() > 0]
+        ).any():
+            raise ValueError(
+                "A tumor's passenger calls exceed its hybrid "
+                "spectrum's pseudo-counts: the calls changed after "
+                "the baselines were built. Recompute mu_taus first."
+            )
+        self.__dict__["_spectrum_dirichlet_cache"] = (ell, dirichlet)
+        return ell, dirichlet
+
+    def _spectrum_baseline_draws(self, weights, n_draws, rng):
+        """Baseline draws with each tumor's spectrum drawn.
+
+        ``sum_tau w_tau ell_j pi^(d)_jtau`` with ``pi^(d)_j ~
+        Dirichlet(a_j)`` (:meth:`_spectrum_dirichlet`), drawn
+        independently across tumors and draws. Exact, and cheap for a
+        variant: a Dirichlet is normalized Gamma variates, and the
+        types with no weight are pooled into one Gamma (the
+        Dirichlet's aggregation property), so only the weighted types
+        are drawn one by one.
+
+        Returns an ``(n_draws, n_tumors)`` frame, columns the tumors
+        of ``mu_taus``; zero for a tumor with no rate.
+        """
+        ell, dirichlet = self._spectrum_dirichlet()
+        w = (
+            weights.reindex(dirichlet.columns)
+            .fillna(0.0)
+            .to_numpy(float)
+        )
+        used = w != 0
+        a = dirichlet.to_numpy(float)
+        a_used = a[:, used]
+        a_rest = np.where(np.isnan(a), 0.0, a)[:, ~used].sum(axis=1)
+        w_used = w[used]
+        out = np.zeros((n_draws, len(dirichlet)))
+        for j, burden in enumerate(ell.to_numpy(float)):
+            if not burden > 0:
+                continue
+            g = rng.gamma(a_used[j], size=(n_draws, used.sum()))
+            rest = (
+                rng.gamma(a_rest[j], size=n_draws)
+                if a_rest[j] > 0
+                else 0.0
+            )
+            out[:, j] = burden * (g @ w_used) / (g.sum(axis=1) + rest)
+        return pd.DataFrame(out, columns=dirichlet.index)
+
     def _r_g_draws_for_gene(self, gene_id, r_g_variant, n_draws, rng):
         """``r_g`` draws for one gene, or ``None`` for ``"none"``.
 
@@ -10884,7 +11094,12 @@ class Model:
         return r_g_draws.to_numpy()
 
     def compute_mu_m_posterior_draws(
-        self, variant, r_g_variant="none", n_draws=None, rng=None
+        self,
+        variant,
+        r_g_variant="none",
+        n_draws=None,
+        rng=None,
+        spectrum_draws=False,
     ):
         """Per-tumor mu posterior draws for one variant's rate.
 
@@ -10914,8 +11129,10 @@ class Model:
         variant : str
             Variant identifier (e.g. ``"BRAF p.V600E"``), matching
             ``dataset.variant_db``'s index.
-        r_g_variant, n_draws, rng
-            As in :meth:`compute_mu_g_posterior_draws`.
+        r_g_variant, n_draws, rng, spectrum_draws
+            As in :meth:`compute_mu_g_posterior_draws`; with
+            ``spectrum_draws`` the variant's route types are drawn
+            jointly from each tumor's Dirichlet.
 
         Returns
         -------
@@ -11030,6 +11247,7 @@ class Model:
 
         total = None
         tumor_index = None
+        route_coefficients = {}
         for tau, weight in zip(mut_types, weights):
             context = extract_context(tau)
             if (
@@ -11054,6 +11272,9 @@ class Model:
                 ),
             )[tau].loc[gene_id]
 
+            route_coefficients[tau] = (
+                route_coefficients.get(tau, 0.0) + weight / n_context
+            )
             contribution = scale[:, None] * (
                 weight
                 * baseline_g_tau.to_numpy()[None, :]
@@ -11072,6 +11293,25 @@ class Model:
                 "resolved to a valid (gene, context) opportunity -- "
                 "cannot compute a rate."
             )
+
+        if spectrum_draws:
+            # The same sum, with each tumor's type rates drawn: the
+            # route's per-type weight is its gene's channel weight
+            # w_tau times the route's own weight over n_context.
+            if rng is None:
+                rng = np.random.default_rng()
+            type_weights = self._type_weights(channel_table, gene_id)
+            spectrum_baseline = self._spectrum_baseline_draws(
+                pd.Series(
+                    {
+                        tau: type_weights[tau] * coefficient
+                        for tau, coefficient in route_coefficients.items()
+                    }
+                ),
+                n_draws,
+                rng,
+            )[tumor_index]
+            total = scale[:, None] * spectrum_baseline.to_numpy()
 
         mu_draws = pd.DataFrame(total, columns=tumor_index)
 

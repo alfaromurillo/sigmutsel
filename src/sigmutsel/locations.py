@@ -66,6 +66,10 @@ location_published_driver_genes = (
 # Every gene of HGNC's five histone gene groups (H1, H2A, H2B, H3, H4).
 location_histone_genes = DATA_DIR / "histone_genes.tsv"
 
+# Genes prone to mapping and calling artifacts (FLAGS and a compiled
+# false-positive list), for flagging reported genes only.
+location_artifact_prone_genes = DATA_DIR / "artifact_prone_genes.tsv"
+
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
 location_gencode38_annotation = (
@@ -170,6 +174,7 @@ def list_data_files() -> dict[str, bool]:
         "aid_target_genes": location_aid_target_genes,
         "published_driver_genes": location_published_driver_genes,
         "histone_genes": location_histone_genes,
+        "artifact_prone_genes": location_artifact_prone_genes,
         "cds_fasta": location_cds_fasta,
         "gencode38_annotation": location_gencode38_annotation,
         "gencode19_annotation": location_gencode19_annotation,

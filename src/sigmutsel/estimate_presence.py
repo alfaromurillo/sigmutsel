@@ -17,6 +17,7 @@ from Bio import SeqIO
 
 from .locations import (
     location_aid_target_genes,
+    location_artifact_prone_genes,
     location_cancer_gene_census,
     location_cds_fasta,
     location_histone_genes,
@@ -330,6 +331,43 @@ def histone_symbols():
 def histone_ensembl_ids(strip_version=True):
     """Ensembl gene ids of :func:`histone_symbols`'s genes."""
     table = pd.read_csv(location_histone_genes, sep="\t", dtype=str)
+    ids = table["ensembl_gene_id"].dropna().astype(str)
+    if strip_version:
+        ids = ids.str.replace(r"\.\d+$", "", regex=True)
+    return set(ids.tolist())
+
+
+def artifact_prone_symbols():
+    """Symbols of genes prone to mapping and calling artifacts.
+
+    A flag for reports, and nothing else. The genes are FLAGS, the
+    100 genes most often mutated in public exomes (Shyr et al. 2014,
+    BMC Med Genomics), and the compiled false-positive genes of the
+    TCGA PanCancer driver consensus (Bailey et al. 2018, Cell, Table
+    S7): long, polymorphic or multi-copy genes whose recurrent calls
+    are often artifacts, or say little about selection. A gene's flag
+    asks that its calls be read with caution; it is not a verdict.
+    Several flagged genes are known drivers (KMT2C, KMT2D, BRCA2,
+    MLH1, FAT1, ...), and they stay non-passengers.
+
+    **Never use this set in a fit, a passenger set or a rate.**
+    :func:`non_passenger_symbols` and the passenger filters ignore it,
+    so a flagged gene that is not a known cancer gene stays a
+    passenger, its counts inform ``c``, ``delta``, ``theta`` and the
+    gene-tumor dispersion, and its rate is unchanged.
+    """
+    table = pd.read_csv(location_artifact_prone_genes, sep="\t")
+    return set(table["symbol"].dropna())
+
+
+def artifact_prone_ensembl_ids(strip_version=True):
+    """Ensembl gene ids of :func:`artifact_prone_symbols`'s genes.
+
+    The same flag-only rule applies.
+    """
+    table = pd.read_csv(
+        location_artifact_prone_genes, sep="\t", dtype=str
+    )
     ids = table["ensembl_gene_id"].dropna().astype(str)
     if strip_version:
         ids = ids.str.replace(r"\.\d+$", "", regex=True)

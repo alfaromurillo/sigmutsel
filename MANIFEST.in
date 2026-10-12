@@ -12,6 +12,7 @@ recursive-include src/sigmutsel/data intogen_driver_genes_20240920.tsv
 recursive-include src/sigmutsel/data aid_target_genes.tsv
 recursive-include src/sigmutsel/data published_driver_genes.tsv
 recursive-include src/sigmutsel/data histone_genes.tsv
+recursive-include src/sigmutsel/data artifact_prone_genes.tsv
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
 recursive-exclude src/sigmutsel/data *.fa

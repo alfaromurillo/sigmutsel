@@ -806,3 +806,156 @@ def plot_sig_decomposition_with_burden(
         plt.close("all")
 
     return fig
+
+
+SBS96_SUBSTITUTIONS = ("C>A", "C>G", "C>T", "T>A", "T>C", "T>G")
+
+# The colors conventionally used for the six substitution classes in
+# SBS96 profiles.
+SBS96_COLORS = {
+    "C>A": "#1696d2",
+    "C>G": "black",
+    "C>T": "#db2b27",
+    "T>A": "#bab0ac",
+    "T>C": "#73ae80",
+    "T>G": "#dcb0af",
+}
+
+
+def sbs96_order(types):
+    """Sort SBS96 mutation types by substitution, then by context.
+
+    Parameters
+    ----------
+    types : iterable of str
+        Mutation types written as ``"A[C>T]G"``.
+
+    Returns
+    -------
+    list of str
+        The same types, grouped by substitution in the order of
+        :data:`SBS96_SUBSTITUTIONS` and, within a group, sorted by
+        the 5' and then the 3' base.
+
+    Raises
+    ------
+    ValueError
+        If a type is not of the form ``"A[C>T]G"`` or its
+        substitution is not one of the six pyrimidine-based classes.
+    """
+    rank = {s: i for i, s in enumerate(SBS96_SUBSTITUTIONS)}
+    keys = []
+    for t in types:
+        if len(t) != 7 or t[1] != "[" or t[5] != "]":
+            raise ValueError(f"Not an SBS96 mutation type: {t!r}")
+        sub = t[2:5]
+        if sub not in rank:
+            raise ValueError(f"Unknown substitution in {t!r}")
+        keys.append((rank[sub], t[0], t[6], t))
+    return [k[-1] for k in sorted(keys)]
+
+
+def plot_signature_profile(
+    signature,
+    ax=None,
+    ylabel="Probability",
+    percent=True,
+    context_labels=True,
+    group_label_size=8,
+):
+    """Draw one SBS96 profile as bars, grouped by substitution.
+
+    Bars follow the usual SBS96 layout: six groups (C>A, C>G, C>T,
+    T>A, T>C, T>G), each shaded and labelled directly above its bars
+    in its own color, so no legend is needed. The axes carry no
+    title; a caption or the slide title names the signature.
+
+    Parameters
+    ----------
+    signature : pd.Series
+        Values for the 96 mutation types, indexed as ``"A[C>T]G"``
+        (a column of a COSMIC signature matrix, or a tumor's
+        spectrum). Any order; the bars are reordered.
+    ax : matplotlib.axes.Axes or None
+        Axes to draw into. A new figure is created when None.
+    ylabel : str, default "Probability"
+        Label of the vertical axis, so a caller can set it in any
+        language.
+    percent : bool, default True
+        Write the vertical ticks as percentages.
+    context_labels : bool, default True
+        Label each bar with its trinucleotide (e.g. ``ACG``). Turn off
+        for small panels, where they cannot be read.
+    group_label_size : float, default 8
+        Font size of the substitution labels above the groups.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes drawn into.
+
+    Raises
+    ------
+    ValueError
+        If ``signature`` does not hold exactly the 96 SBS96 types.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
+
+    order = sbs96_order(signature.index)
+    if len(order) != 96 or len(set(order)) != 96:
+        raise ValueError(
+            "signature must hold the 96 SBS96 types, got "
+            f"{len(set(order))} distinct"
+        )
+    values = signature.loc[order].to_numpy(dtype=float)
+    subs = [t[2:5] for t in order]
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6.4, 2.4))
+
+    x = range(96)
+    ax.bar(
+        x,
+        values,
+        width=0.8,
+        color=[SBS96_COLORS[s] for s in subs],
+    )
+    top = max(values.max(), 0) * 1.12 or 1.0
+    ax.set_ylim(0, top)
+    ax.set_xlim(-0.6, 95.6)
+
+    for i, sub in enumerate(SBS96_SUBSTITUTIONS):
+        lo, hi = 16 * i - 0.5, 16 * (i + 1) - 0.5
+        ax.axvspan(lo, hi, color=SBS96_COLORS[sub], alpha=0.08, lw=0)
+        ax.text(
+            (lo + hi) / 2,
+            top,
+            sub,
+            ha="center",
+            va="bottom",
+            fontsize=group_label_size,
+            fontweight="bold",
+            color=SBS96_COLORS[sub],
+        )
+
+    if context_labels:
+        ax.set_xticks(list(x))
+        ax.set_xticklabels(
+            [t[0] + t[2] + t[6] for t in order],
+            rotation=90,
+            fontsize=3,
+            family="monospace",
+        )
+    else:
+        ax.set_xticks([])
+
+    if percent:
+        ax.yaxis.set_major_formatter(
+            PercentFormatter(xmax=1, decimals=0)
+        )
+    ax.set_ylabel(ylabel)
+    ax.tick_params(direction="out")
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    return ax

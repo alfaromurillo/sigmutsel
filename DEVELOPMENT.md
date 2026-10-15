@@ -29,7 +29,7 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 | `provenance.py` | Package stamp and run history written into saved manifests |
 | `constants.py` | Central parameters (SBS96 types, chr list) |
 | `locations.py` | Data file paths; respects `SIGMUTSEL_DATA_DIR` |
-| `figures.py` | γ posterior scatter plots; **no titles** |
+| `figures.py` | γ posterior scatter plots, SBS96 profiles (`plot_signature_profile`); **no titles** |
 | `utils.py` | `run_pca_on_covariates`, `run_riemannian_stats_on_covariates` |
 
 ## Testing

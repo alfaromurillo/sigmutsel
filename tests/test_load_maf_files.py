@@ -7,6 +7,7 @@ mutation-type derivation (covered indirectly elsewhere).
 """
 
 import pandas as pd
+import pytest
 
 from sigmutsel.load_maf_files import compact_data
 
@@ -100,11 +101,49 @@ def test_multi_base_rows_are_kept_aside_when_asked(tmp_path):
     assert pd.isna(kinds[5000])
 
 
-# --- validators (pure DataFrame -> DataFrame) ------------------------------
+# --- validators and type builders (pure DataFrame -> DataFrame) ----------
 
 
 def _rows(*overrides):
     return pd.DataFrame([_valid_snv_row(**o) for o in overrides])
+
+
+def test_validate_chromosome_drops_unknown_names():
+    from sigmutsel.load_maf_files import validate_chromosome
+
+    df = _rows({}, {"Chromosome": "1"}, {"Chromosome": "chrUn_x"})
+    out = validate_chromosome(df)
+    assert out.index.tolist() == [0]
+
+
+def test_validate_alleles_snv_keeps_single_nucleotides():
+    from sigmutsel.load_maf_files import validate_alleles_snv
+
+    df = _rows(
+        {},
+        {"Reference_Allele": "c", "Tumor_Seq_Allele2": "t"},
+        {"Reference_Allele": "CA"},
+        {"Tumor_Seq_Allele2": "-"},
+        {"Tumor_Seq_Allele2": "N"},
+    )
+    out = validate_alleles_snv(df)
+    # Case-insensitive on the letters, one base on each side.
+    assert out.index.tolist() == [0, 1]
+
+
+def test_validate_context_snv_checks_length_and_letters():
+    from sigmutsel.load_maf_files import validate_context_snv
+
+    df = _rows(
+        {},
+        {"CONTEXT": "aaaaacaaaaa"},
+        {"CONTEXT": "AAAAACAAAA"},
+        {"CONTEXT": "AAAAACNAAAA"},
+    )
+    assert validate_context_snv(df).index.tolist() == [0, 1]
+    assert validate_context_snv(
+        df, context_length=10
+    ).index.tolist() == [2]
 
 
 def test_validate_context_snv_on_an_empty_frame():
@@ -114,3 +153,104 @@ def test_validate_context_snv_on_an_empty_frame():
     out = validate_context_snv(df)
     assert out.empty
     assert out.columns.tolist() == df.columns.tolist()
+
+
+def test_validate_reference_matches_context_centre():
+    from sigmutsel.load_maf_files import (
+        validate_reference_matches_context_snv,
+    )
+
+    df = _rows(
+        {},
+        {"Reference_Allele": "G"},
+        {"CONTEXT": "AAAACAAAA", "Reference_Allele": "C"},
+    )
+    assert validate_reference_matches_context_snv(
+        df
+    ).index.tolist() == [0]
+    # A 9-base context has its centre at index 4.
+    assert validate_reference_matches_context_snv(
+        df, context_length=9
+    ).index.tolist() == [2]
+
+
+def test_validate_full_applies_every_check():
+    from sigmutsel.load_maf_files import validate_full
+
+    df = _rows(
+        {},
+        {"Chromosome": "chrM2"},
+        {"Tumor_Seq_Allele2": "TT"},
+        {"CONTEXT": "AAAAACAAAAN"},
+        {"Reference_Allele": "A", "Tumor_Seq_Allele2": "G"},
+    )
+    assert validate_full(df).index.tolist() == [0]
+    # Indels skip the SNV checks: only the chromosome is checked.
+    assert validate_full(df, variant_type="ID").index.tolist() == [
+        0,
+        2,
+        3,
+        4,
+    ]
+
+
+def test_create_mutation_type_column_snp_is_pyrimidine_centred():
+    from sigmutsel.load_maf_files import (
+        create_mutation_type_column,
+        create_mutation_type_column_snp,
+    )
+
+    df = _rows(
+        {"CONTEXT": "AAAAGCTAAAA", "Reference_Allele": "C"},
+        # Purine reference: the same event on the other strand.
+        {
+            "CONTEXT": "TTTTAGCTTTT",
+            "Reference_Allele": "G",
+            "Tumor_Seq_Allele2": "A",
+        },
+        {
+            "CONTEXT": "CCCCATGCCCC",
+            "Reference_Allele": "T",
+            "Tumor_Seq_Allele2": "G",
+        },
+    )
+    out = create_mutation_type_column_snp(df)
+    assert out["type"].tolist() == ["G[C>T]T", "G[C>T]T", "A[T>G]G"]
+    assert "type" not in df.columns  # works on a copy
+    for alias in ("SNP", "sbs", "RNA-SBS"):
+        assert (
+            create_mutation_type_column(df, variant_type=alias)[
+                "type"
+            ]
+            .eq(out["type"])
+            .all()
+        )
+
+
+def test_reduce_context_to_trinucleotides():
+    from sigmutsel.load_maf_files import (
+        reduce_context_to_trinucleotides,
+    )
+
+    df = _rows({"CONTEXT": "AAAAGCTAAAA"}, {"CONTEXT": "ACGTACGTACG"})
+    out = reduce_context_to_trinucleotides(df)
+    assert out["context"].tolist() == ["GCT", "ACG"]
+    assert reduce_context_to_trinucleotides(
+        df.assign(CONTEXT=["AGCTA", "CGTAC"]), context_length=5
+    )["context"].tolist() == ["GCT", "GTA"]
+    assert "context" not in df.columns
+
+
+def test_filter_db_resolves_signature_class_aliases():
+    from sigmutsel.load_maf_files import filter_db
+
+    df = pd.DataFrame(
+        {"Variant_Type": ["SNP", "DEL", "INS", "DNP", "SNP"]}
+    )
+    assert filter_db(df).index.tolist() == [0, 4]
+    assert filter_db(df, "sbs").index.tolist() == [0, 4]
+    assert filter_db(df, "ID").index.tolist() == [1, 2]
+    assert filter_db(df, "indel").index.tolist() == [1, 2]
+    assert filter_db(df, "DBS").empty  # DBS maps to DBP, not DNP
+    with pytest.raises(KeyError, match="Variant_Type"):
+        filter_db(df.rename(columns={"Variant_Type": "vt"}))

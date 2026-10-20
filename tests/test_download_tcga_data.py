@@ -2,7 +2,12 @@
 
 import gzip
 
-from sigmutsel.download_tcga_data import process_tcga_maf_downloads
+from sigmutsel.download_tcga_data import (
+    _extract_maf,
+    process_tcga_maf_downloads,
+)
+
+_MAF_BYTES = b"#version 2.4\nHugo_Symbol\tChromosome\nTP53\tchr17\n"
 
 
 def _bundle(root, name, *, annotations=True, logs=True, n_maf=1):
@@ -39,3 +44,31 @@ def test_bundle_without_a_single_maf_is_skipped(tmp_path):
     _bundle(tmp, "two", n_maf=2)
     assert not process_tcga_maf_downloads(tmp, out)
     assert not out.exists() or not any(out.iterdir())
+
+
+def test_extract_maf_writes_uncompressed_bytes(tmp_path):
+    archive = tmp_path / "aliquot.wxs.maf.gz"
+    with gzip.open(archive, "wb") as fh:
+        fh.write(_MAF_BYTES)
+    dest = tmp_path / "nested" / "out"  # created on demand
+
+    _extract_maf(archive, dest)
+
+    assert [p.name for p in dest.iterdir()] == ["aliquot.wxs.maf"]
+    assert (dest / "aliquot.wxs.maf").read_bytes() == _MAF_BYTES
+    assert archive.exists()  # the archive is left in place
+
+
+def test_extract_maf_overwrites_existing_output(tmp_path):
+    archive = tmp_path / "a.maf.gz"
+    with gzip.open(archive, "wb") as fh:
+        fh.write(_MAF_BYTES)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "a.maf").write_bytes(
+        b"stale content that is longer\n" * 9
+    )
+
+    _extract_maf(archive, dest)
+
+    assert (dest / "a.maf").read_bytes() == _MAF_BYTES

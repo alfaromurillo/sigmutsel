@@ -63,15 +63,16 @@ def filter_db(db, variant_type="SNP"):
         'Variant_Type' column.
 
     variant_type : str or list
-        Type(s) of mutation to filter to, so far 'SNP' or 'ID' are
-        supported. If multiple types, give them as a list,
-        e.g. ['INS', 'DEL'].
+        Type(s) of mutation to filter to, case-insensitive. The
+        COSMIC classes 'SBS' (or 'RNA-SBS'), 'DBS' and 'ID' (or
+        'INDEL') map to 'SNP', 'DBP' and ['INS', 'DEL']. If multiple
+        types, give them as a list, e.g. ['INS', 'DEL'].
 
     Returns
     -------
     pd.DataFrame
-        Filtered DataFrame containing only single-nucleotide variants
-        (rows where 'Variant_Type' == 'SNP').
+        A copy of the rows whose 'Variant_Type' is one of the
+        requested types.
 
     Raises
     ------
@@ -87,20 +88,32 @@ def filter_db(db, variant_type="SNP"):
             "Input DataFrame must contain 'Variant_Type' column."
         )
 
-    variant_type = variant_type.upper()
+    if isinstance(variant_type, (list, tuple)):
+        types = []
+        for one in variant_type:
+            resolved = _resolve_variant_type(one)
+            types.extend(
+                resolved if isinstance(resolved, list) else [resolved]
+            )
+        return db[db["Variant_Type"].isin(types)].copy()
 
-    # Handle COSMIC signature class aliases
-    if variant_type in ("SBS", "RNA-SBS"):
-        variant_type = "SNP"
-    elif variant_type == "DBS":
-        variant_type = "DBP"
-    elif (variant_type == "INDEL") or (variant_type == "ID"):
-        variant_type = ["INS", "DEL"]
-
+    variant_type = _resolve_variant_type(variant_type)
     if isinstance(variant_type, list):
         return db[db["Variant_Type"].isin(variant_type)].copy()
     else:
         return db[db["Variant_Type"] == variant_type].copy()
+
+
+def _resolve_variant_type(variant_type):
+    """Upper-case one variant type and map COSMIC class aliases."""
+    variant_type = variant_type.upper()
+    if variant_type in ("SBS", "RNA-SBS"):
+        return "SNP"
+    if variant_type == "DBS":
+        return "DBP"
+    if variant_type in ("INDEL", "ID"):
+        return ["INS", "DEL"]
+    return variant_type
 
 
 def validate_chromosome(df):

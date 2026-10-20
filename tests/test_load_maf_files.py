@@ -256,6 +256,23 @@ def test_filter_db_resolves_signature_class_aliases():
         filter_db(df.rename(columns={"Variant_Type": "vt"}))
 
 
+def test_filter_db_accepts_a_list_of_types():
+    from sigmutsel.load_maf_files import filter_db
+
+    df = pd.DataFrame(
+        {"Variant_Type": ["SNP", "DEL", "INS", "DNP", "SNP"]}
+    )
+    assert filter_db(df, ["INS", "DEL"]).index.tolist() == [1, 2]
+    assert filter_db(df, ["snp", "dnp"]).index.tolist() == [0, 3, 4]
+    assert filter_db(df, ("SBS", "indel")).index.tolist() == [
+        0,
+        1,
+        2,
+        4,
+    ]
+    assert filter_db(df, []).empty
+
+
 def _write_seqinfo(path, rows):
     path.write_text(
         "".join("\t".join(map(str, r)) + "\n" for r in rows)

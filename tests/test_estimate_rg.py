@@ -352,6 +352,7 @@ def test_mu_g_posterior_draws_requires_a_fit(tmp_path):
         model.compute_mu_g_posterior_draws("ENSG_A")
 
 
+@pytest.mark.slow
 def test_mu_g_posterior_draws_shape_positivity_and_columns(tmp_path):
     model = _rg_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="full")
@@ -365,6 +366,7 @@ def test_mu_g_posterior_draws_shape_positivity_and_columns(tmp_path):
     assert (draws.to_numpy() > 0).all()
 
 
+@pytest.mark.slow
 def test_mu_g_posterior_draws_evaluation_r_g_close_to_point_estimate(
     tmp_path,
 ):
@@ -390,6 +392,7 @@ def test_mu_g_posterior_draws_evaluation_r_g_close_to_point_estimate(
     assert abs(ratio - point_r_g) < 0.1
 
 
+@pytest.mark.slow
 def test_mu_g_posterior_draws_n_draws_exceeds_available_raises(
     tmp_path,
 ):
@@ -406,6 +409,7 @@ def test_mu_g_posterior_draws_n_draws_exceeds_available_raises(
         )
 
 
+@pytest.mark.slow
 def test_mu_g_posterior_draws_unknown_gene_raises(tmp_path):
     model = _rg_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="full")
@@ -452,6 +456,7 @@ def _fitted_model_with_variants(tmp_path):
     return model
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_shape_positivity_and_matches_point(
     tmp_path,
 ):
@@ -476,6 +481,7 @@ def test_mu_m_posterior_draws_shape_positivity_and_matches_point(
     np.testing.assert_allclose(geo_mean, point.to_numpy(), rtol=0.2)
 
 
+@pytest.mark.slow
 def test_compute_mu_ms_divides_by_the_nonsyn_opportunities(tmp_path):
     """A channel model's variant rate is its gene's non-syn type rate
     over the non-syn opportunities of that type, not over every
@@ -495,6 +501,7 @@ def test_compute_mu_ms_divides_by_the_nonsyn_opportunities(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_carry_the_route_weights(tmp_path):
     """Draws and mu_ms weight each route by its site weight alike.
 
@@ -564,6 +571,7 @@ def _model_with_a_silent_variant(tmp_path):
     return model, tau
 
 
+@pytest.mark.slow
 def test_compute_mu_ms_gives_a_silent_variant_the_syn_channel(
     tmp_path,
 ):
@@ -585,6 +593,7 @@ def test_compute_mu_ms_gives_a_silent_variant_the_syn_channel(
     )
 
 
+@pytest.mark.slow
 def test_silent_and_nonsyn_sites_differ_only_by_delta(tmp_path):
     """Under tau-dependent p_gtau one opportunity is one opportunity:
     two sites of the same type in one gene carry the same rate,
@@ -599,6 +608,7 @@ def test_silent_and_nonsyn_sites_differ_only_by_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_silent_variant_draws_centre_on_mu_ms_without_delta(tmp_path):
     model, _ = _model_with_a_silent_variant(tmp_path)
     silent = model.compute_mu_m_posterior_draws(
@@ -632,6 +642,7 @@ def test_silent_variant_labels_read_the_classification(tmp_path):
     assert found["esyn"] == set()
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(
     tmp_path,
 ):
@@ -643,6 +654,7 @@ def test_mu_m_posterior_draws_multitype_variant_is_positive_finite(
     assert (draws.to_numpy() > 0).all()
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_evaluation_r_g_scales_relative_to_none(
     tmp_path,
 ):
@@ -674,12 +686,14 @@ def test_mu_m_posterior_draws_requires_channel_split(tmp_path):
         model.compute_mu_m_posterior_draws("VAR1")
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_unknown_variant_raises(tmp_path):
     model = _fitted_model_with_variants(tmp_path)
     with pytest.raises(ValueError, match="not found"):
         model.compute_mu_m_posterior_draws("NOT_A_VARIANT")
 
 
+@pytest.mark.slow
 def test_mu_m_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
     model = _fitted_model_with_variants(tmp_path)
     with pytest.raises(ValueError, match="r_g_variant"):
@@ -701,6 +715,7 @@ def test_mu_m_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
 # --- checked above.
 
 
+@pytest.mark.slow
 def test_estimate_gamma_gene_use_mu_posterior_masks_2d_draws(
     tmp_path,
 ):
@@ -755,6 +770,7 @@ def test_estimate_gamma_gene_use_mu_posterior_requires_non_silent(
         )
 
 
+@pytest.mark.slow
 def test_estimate_gamma_variant_use_mu_posterior_masks_2d_draws(
     tmp_path,
 ):
@@ -800,6 +816,7 @@ def test_estimate_gamma_variant_use_mu_posterior_masks_2d_draws(
     )
 
 
+@pytest.mark.slow
 def test_estimate_channel_rg_cov_effects_map(tmp_path):
     model = _rg_model(tmp_path)
     result = model.estimate_channel_rg_cov_effects(sample="MAP")
@@ -837,6 +854,7 @@ def _production_r_g_closed_form(model):
     )
 
 
+@pytest.mark.slow
 def test_production_r_g_carries_delta(tmp_path):
     """The production r_g's non-silent expectation must carry the
     channel's e^delta, as the fitted likelihood does. It used to
@@ -859,6 +877,7 @@ def test_production_r_g_carries_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_production_r_g_draws_carry_delta(tmp_path):
     """The production r_g draws (r_g_variant="production") come from
     the same expectations: their mean is the closed form's."""
@@ -875,6 +894,7 @@ def test_production_r_g_draws_carry_delta(tmp_path):
     assert np.mean(draws) == pytest.approx(expected, rel=1e-2)
 
 
+@pytest.mark.slow
 def test_evaluation_r_g_is_unchanged_by_delta(tmp_path):
     """delta scales only the non-silent channel, which the evaluation
     r_g never reads."""
@@ -890,6 +910,7 @@ def test_evaluation_r_g_is_unchanged_by_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_compute_mu_g_taus_matches_channel_nonsyn_total(tmp_path):
     """_compute_mu_g_taus (the basis for compute_mu_ms, i.e. every
     variant-level rate) must sum over types to exactly the
@@ -933,6 +954,7 @@ def test_r_g_before_fitting_raises(tmp_path):
         model.compute_r_g_production()
 
 
+@pytest.mark.slow
 def test_drivers_toggle_changes_gene_set(tmp_path):
     """include_drivers=False restricts the silent channel to the
     passenger set, so fewer genes get an r_g."""
@@ -949,6 +971,7 @@ def test_drivers_toggle_changes_gene_set(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_rg_statistics_align_with_counts(tmp_path):
     """The per-gene sufficient statistics must be the actual row sums
     of the count matrices -- everything downstream trusts them."""
@@ -978,6 +1001,7 @@ def test_rg_gene_array_mismatch_raises():
         )
 
 
+@pytest.mark.slow
 def test_gene_scaling_applies_r_g_and_is_not_stored(tmp_path):
     """A gene_scaling'd R² is returned but never stored -- it depends
     on which r_g the caller chose, so it must not be readable as the
@@ -998,6 +1022,7 @@ def test_gene_scaling_applies_r_g_and_is_not_stored(tmp_path):
     assert model.passenger_genes_r2_non_silent_counts == stored
 
 
+@pytest.mark.slow
 def test_gene_scaling_of_ones_is_a_no_op(tmp_path):
     model = _rg_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="MAP")
@@ -1055,6 +1080,7 @@ def test_separate_c_actually_differs_when_etas_differ():
     assert separate != shared
 
 
+@pytest.mark.slow
 def test_separate_c_fit_shape_and_storage(tmp_path):
     """separate_c lands in channel_cov_effects, never in
     cov_effects -- nothing downstream may read a (2, n) array as
@@ -1069,6 +1095,7 @@ def test_separate_c_fit_shape_and_storage(tmp_path):
     assert np.isfinite(model.rg_theta)
 
 
+@pytest.mark.slow
 def test_separate_c_beats_or_matches_shared_in_likelihood(tmp_path):
     """The separate fit maximises over a superset of the shared
     fit's parameter space, so its log-likelihood cannot be lower
@@ -1089,6 +1116,7 @@ def test_separate_c_beats_or_matches_shared_in_likelihood(tmp_path):
     assert ll_separate >= ll_shared - 1e-6
 
 
+@pytest.mark.slow
 def test_channel_cov_effects_raises_without_separate_fit(tmp_path):
     model = _rg_model(tmp_path)
     model.estimate_channel_rg_cov_effects(
@@ -1104,6 +1132,7 @@ def test_log_likelihood_at_fit_requires_a_fit(tmp_path):
         model.channel_rg_log_likelihood_at_fit()
 
 
+@pytest.mark.slow
 def test_intercept_mode_is_between_shared_and_separate(tmp_path):
     """The three c parameterisations are nested, so their maximised
     log-likelihoods must be ordered shared <= intercept <= separate.
@@ -1121,6 +1150,7 @@ def test_intercept_mode_is_between_shared_and_separate(tmp_path):
     assert lls["intercept"] <= lls["True"] + 1e-6
 
 
+@pytest.mark.slow
 def test_intercept_mode_keeps_shared_c_shape(tmp_path):
     """`intercept` shares the slopes, so `c` stays 1-D and the
     downstream mu_gs recomputation is still meaningful."""
@@ -1141,6 +1171,7 @@ def test_unknown_separate_c_raises(tmp_path):
         )
 
 
+@pytest.mark.slow
 def test_intercept_delta_reaches_the_nonsyn_channel_rates(tmp_path):
     """The fitted per-channel intercept must actually be applied
     downstream. It lives outside `cov_effects`, so it is easy to
@@ -1166,6 +1197,7 @@ def test_intercept_delta_reaches_the_nonsyn_channel_rates(tmp_path):
     assert np.allclose(ratio, np.exp(delta))
 
 
+@pytest.mark.slow
 def test_intercept_is_the_default(tmp_path):
     """The default carries a fitted per-channel intercept, because a
     shared one leaves the channels miscalibrated by 13-18%."""
@@ -1175,6 +1207,7 @@ def test_intercept_is_the_default(tmp_path):
     assert model._rg_delta_intercept is not None
 
 
+@pytest.mark.slow
 def test_rg_fit_survives_save_and_load(tmp_path):
     """The r_g fit is not recoverable from the saved rate matrices,
     so it must be persisted explicitly. Without it a reloaded model
@@ -1212,6 +1245,7 @@ def test_rg_fit_survives_save_and_load(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_cov_effects_posteriors_survive_save_and_load(tmp_path):
     """A sample="full" fit's posterior must round-trip too, not just
     the MAP-derived scalars above -- without it, a model reloaded in
@@ -1242,6 +1276,7 @@ def test_cov_effects_posteriors_survive_save_and_load(tmp_path):
     pd.testing.assert_frame_equal(before, after)
 
 
+@pytest.mark.slow
 def test_cov_effects_posteriors_can_be_resaved_after_load(tmp_path):
     """A model with a sample="full" fit, saved and reloaded, must be
     saveable again without refitting -- e.g. after adding a gamma

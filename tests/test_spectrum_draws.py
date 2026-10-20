@@ -78,6 +78,7 @@ def _dirichlet_moments(model, pi, weights):
     return ell * mean, ell**2 * var
 
 
+@pytest.mark.slow
 def test_draws_follow_the_dirichlet(tmp_path):
     """Mean = the hybrid spectrum's baseline (to Monte Carlo error),
     variance = the Dirichlet's, for a gene's channel weights."""
@@ -100,6 +101,7 @@ def test_draws_follow_the_dirichlet(tmp_path):
     np.testing.assert_allclose(draws.var(axis=0), var, rtol=0.03)
 
 
+@pytest.mark.slow
 def test_many_calls_barely_vary_few_vary_as_the_dirichlet_says(
     tmp_path,
 ):
@@ -121,6 +123,7 @@ def test_many_calls_barely_vary_few_vary_as_the_dirichlet_says(
     )
 
 
+@pytest.mark.slow
 def test_gene_draws_are_paired_and_centred(tmp_path):
     """On the full path the spectrum factor multiplies each covariate
     draw: on / off is the spectrum draw over the baseline, mean 1."""
@@ -142,6 +145,7 @@ def test_gene_draws_are_paired_and_centred(tmp_path):
     assert ratio[:, list(off.columns).index("T2")].std() > 0
 
 
+@pytest.mark.slow
 def test_variant_draws_are_centred_on_the_point_rate(tmp_path):
     """A multi-type variant: its route types are drawn jointly, and
     the draws average to the option-off draws."""
@@ -162,6 +166,7 @@ def test_variant_draws_are_centred_on_the_point_rate(tmp_path):
     assert ratio[:, t2].std() > 5 * ratio[:, t1].std()
 
 
+@pytest.mark.slow
 def test_option_off_is_unchanged_bit_for_bit(tmp_path):
     """Off (the default) is exactly the covariate draws times the
     point baseline, as before the option existed."""
@@ -189,6 +194,7 @@ def test_option_off_is_unchanged_bit_for_bit(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_estimate_gamma_passes_the_option(tmp_path, monkeypatch):
     model, _ = _hybrid_model(tmp_path)
     seen = {}
@@ -219,6 +225,7 @@ def test_estimate_gamma_passes_the_option(tmp_path, monkeypatch):
     assert seen["spectrum_draws"] is True
 
 
+@pytest.mark.slow
 def test_needs_the_hybrid_spectrum(tmp_path):
     model, _ = _hybrid_model(tmp_path)
     model._baseline_spectrum_shrinkage = SpectrumShrinkage(
@@ -230,6 +237,7 @@ def test_needs_the_hybrid_spectrum(tmp_path):
         )
 
 
+@pytest.mark.slow
 def test_refuses_calls_changed_after_the_baselines(tmp_path):
     """More passenger calls of a type than the hybrid's pseudo-counts
     allow: the dataset no longer matches mu_taus."""

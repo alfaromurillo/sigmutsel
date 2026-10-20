@@ -81,6 +81,7 @@ def test_fit_phi_recovers_a_planted_value():
     assert 25 < phi < 65
 
 
+@pytest.mark.slow
 def test_trend_recovers_a_planted_slope():
     """phi rising with a gene's count is recovered as a slope."""
     rng = np.random.default_rng(2)
@@ -133,6 +134,7 @@ def test_per_gene_phi_array_matches_scalar_calls():
     np.testing.assert_allclose(got, want, atol=1e-10)
 
 
+@pytest.mark.slow
 def test_negative_slope_is_floored():
     """phi falling with count, as sparse high-count strata produce."""
     rng = np.random.default_rng(5)
@@ -148,6 +150,7 @@ def test_negative_slope_is_floored():
     assert trend["slope"] == 0.0
 
 
+@pytest.mark.slow
 def test_no_dispersion_switches_itself_off():
     """Multinomial data: the held-out check must not keep a finite phi,
     so gamma falls back to the dispersion-free likelihood."""
@@ -163,6 +166,7 @@ def test_no_dispersion_switches_itself_off():
     assert phi_for_count(trend, 10) == np.inf
 
 
+@pytest.mark.slow
 def test_real_dispersion_passes_the_held_out_check():
     rng = np.random.default_rng(7)
     n_genes = 8000

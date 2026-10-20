@@ -35,13 +35,28 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 ## Testing
 
 ```bash
-pytest tests/                       # all tests
+pytest                              # all tests (what CI runs)
+pytest -m "not slow"                # fast loop, about 40 s
 pytest tests/test_smoke_imports.py  # import sanity only — no deep
                                      # coverage of estimate_mus.py /
                                      # models.py math, so verify
                                      # correctness-critical changes
                                      # with your own synthetic checks
 ```
+
+The full suite takes about 5 minutes. `slow` (registered in
+`pyproject.toml`, which also sets `--strict-markers`) marks the tests
+that took a second or more on a warm cache -- the model fits:
+covariate-effect and `r_g` fits, gamma MCMC, the model ladder and the
+spectrum draws. They are most of the suite's time and one in seven of
+its tests. Mark a new test `@pytest.mark.slow` if it fits a model and
+takes about a second or more. The first run on a fresh machine is
+slower, while PyTensor and numba fill their compile caches.
+
+`tests/conftest.py` holds two autouse fixtures: tests never read an
+installed reference genome, and PyMC runs its chains in-process
+(`cores=1`), since forking a process that JAX has made
+multi-threaded can deadlock. The draws are the same either way.
 
 ## `Model` internals
 

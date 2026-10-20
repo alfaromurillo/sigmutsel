@@ -39,6 +39,7 @@ def test_natural_gamma_ceiling_matches_smallest_mu():
     assert ceiling == expected
 
 
+@pytest.mark.slow
 def test_cap_keeps_estimate_stable_across_seeds():
     """Without a natural cap, a weakly-identified gamma can land on
     very different values depending on the random seed once the
@@ -66,6 +67,7 @@ def test_cap_keeps_estimate_stable_across_seeds():
     assert max(means) / min(means) < 1.5
 
 
+@pytest.mark.slow
 def test_saturated_flag_and_bound_recorded_in_attrs():
     constants.random_seed = 0
     result = estimate_gamma_from_mus(
@@ -91,6 +93,7 @@ def test_saturated_flag_and_bound_recorded_in_attrs():
     )
 
 
+@pytest.mark.slow
 def test_well_identified_gamma_is_not_capped():
     """A variant/gene with a well-separated, tiny-scale mu (mirrors
     real per-tumor variant rates, e.g. KRAS p.G12D) should have a
@@ -232,6 +235,7 @@ def _lognormal_draws(point_mus, sigma, n_draws, rng):
     )
 
 
+@pytest.mark.slow
 def test_2d_near_point_mass_matches_1d_estimate():
     """Near-zero mu uncertainty (2-D input, tiny spread) should
     reproduce roughly the same gamma estimate as the 1-D (mu-known)
@@ -264,6 +268,7 @@ def test_2d_near_point_mass_matches_1d_estimate():
     assert max(mean_1d, mean_2d) / min(mean_1d, mean_2d) < 1.5
 
 
+@pytest.mark.slow
 def test_wider_mu_uncertainty_widens_gamma_posterior():
     """More spread in the mu posterior draws should propagate into a
     wider gamma posterior, not just a shifted mean -- the whole point
@@ -596,6 +601,7 @@ def test_gene_tumor_dispersion_map_matches_grid():
     assert float(disp["gamma"]) == pytest.approx(g_grid, rel=0.01)
 
 
+@pytest.mark.slow
 def test_gene_tumor_dispersion_recovers_planted_gamma():
     """Across replicates simulated under the dispersion model, the
     dispersion-aware MLE recovers the planted gamma and the
@@ -624,6 +630,7 @@ def test_gene_tumor_dispersion_large_phi_matches_default():
     )
 
 
+@pytest.mark.slow
 def test_gene_tumor_dispersion_with_mu_posterior_cut_samples():
     """The production path: 2-D mu draws (the mu-posterior cut, so mu
     is a latent vector whose total M is a random variable) together
@@ -703,6 +710,7 @@ def test_gene_tumor_shape_argument_errors():
         )
 
 
+@pytest.mark.slow
 def test_variant_inheriting_gene_dispersion_recovers_gamma():
     """A variant sharing its gene's per-tumor multiplier: the shaped
     likelihood recovers gamma across replicates and the plain one is
@@ -739,6 +747,7 @@ def test_variant_inheriting_gene_dispersion_recovers_gamma():
     assert np.median(plain) < np.median(shaped)
 
 
+@pytest.mark.slow
 def test_cut_drops_absent_tumors_with_zero_rate():
     """A tumor with rate 0 lacks the mutation with probability 1 for
     every gamma, so adding such tumors must leave the estimate alone

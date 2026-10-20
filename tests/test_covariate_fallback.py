@@ -134,6 +134,7 @@ def test_no_covariates_means_no_fallback(tmp_path):
     assert len(model.covariate_fallback_genes) == 0
 
 
+@pytest.mark.slow
 def test_fallback_gene_is_not_in_the_fit_but_has_statistics(tmp_path):
     """Fit c and theta on complete cases, predict for everyone."""
     model = _fallback_model(tmp_path)
@@ -143,6 +144,7 @@ def test_fallback_gene_is_not_in_the_fit_but_has_statistics(tmp_path):
     assert model.n_in_cov_effects_estimation == 2
 
 
+@pytest.mark.slow
 def test_fit_is_unchanged_by_the_fallback_gene(tmp_path):
     """The fallback gene's data must not reach c: fitting with it as a
     fallback gene equals fitting without the gene at all."""
@@ -161,6 +163,7 @@ def test_fit_is_unchanged_by_the_fallback_gene(tmp_path):
     assert with_gene.rg_theta == pytest.approx(without.rg_theta)
 
 
+@pytest.mark.slow
 def test_channel_rates_include_the_fallback_gene_with_delta(tmp_path):
     model = _fallback_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="MAP")
@@ -182,6 +185,7 @@ def test_channel_rates_include_the_fallback_gene_with_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_variant_path_carries_delta_for_the_fallback_gene(tmp_path):
     """Regression: _compute_mu_g_taus appended covariate-less genes
     AFTER applying delta, so their non-synonymous variants had none.
@@ -205,6 +209,7 @@ def test_variant_path_carries_delta_for_the_fallback_gene(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_merged_rates_include_the_fallback_gene(tmp_path):
     model = _fallback_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="MAP")
@@ -214,6 +219,7 @@ def test_merged_rates_include_the_fallback_gene(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_fallback_gene_gets_the_closed_form_r_g(tmp_path):
     """r_g for a fallback gene is the same conjugate posterior mean
     as anyone's, with its baseline as the expectation."""
@@ -236,6 +242,7 @@ def test_fallback_gene_gets_the_closed_form_r_g(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_fallback_gene_production_r_g_carries_delta(tmp_path):
     """The production r_g of a fallback gene scales its non-silent
     baseline by e^delta, as every other gene's does."""
@@ -259,6 +266,7 @@ def test_fallback_gene_production_r_g_carries_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_fit_likelihood_is_over_the_fit_genes_only(tmp_path):
     """The fallback statistics are kept apart, so the fitted objective
     is still the one the fit maximised."""
@@ -271,6 +279,7 @@ def test_fit_likelihood_is_over_the_fit_genes_only(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_posterior_draws_for_a_fallback_gene(tmp_path):
     model = _fallback_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="full")
@@ -299,6 +308,7 @@ def test_posterior_draws_for_a_fallback_gene(tmp_path):
     assert (evaluation.to_numpy() > 0).all()
 
 
+@pytest.mark.slow
 def test_old_model_without_fallback_statistics_explains_itself(
     tmp_path,
 ):
@@ -329,6 +339,7 @@ def _fake_gamma(monkeypatch, captured):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "gene, flag",
     [(_FALLBACK, 1), ("ENSG_A", 0)],
@@ -353,6 +364,7 @@ def test_gene_gamma_is_marked(tmp_path, monkeypatch, gene, flag):
     assert np.isfinite(captured["yes"]).all()
 
 
+@pytest.mark.slow
 def test_fallback_statistics_survive_save_and_load(tmp_path):
     model = _fallback_model(tmp_path / "work")
     model.dataset.save_dataset(tmp_path / "ds")
@@ -467,6 +479,7 @@ def test_pca_fallback_projection_and_indicators(tmp_path):
     assert ind["b"] == 1.0 and ind["a"] == 0.0
 
 
+@pytest.mark.slow
 def test_pca_fallback_rate_is_projection_plus_shift_plus_delta(
     tmp_path,
 ):
@@ -500,6 +513,7 @@ def test_pca_fallback_rate_is_projection_plus_shift_plus_delta(
     )
 
 
+@pytest.mark.slow
 def test_pca_fallback_leaves_complete_genes_alone(tmp_path):
     """Fitting the shifts must not move a complete gene's rate."""
     model = _pca_fallback_model(tmp_path)
@@ -529,6 +543,7 @@ def test_pca_fallback_zero_column_matrix_uses_intercept(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_pca_fallback_draws_match_the_point_rate(tmp_path):
     model = _pca_fallback_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="full")
@@ -543,6 +558,7 @@ def test_pca_fallback_draws_match_the_point_rate(tmp_path):
     assert abs(ratio.mean()) < 3 * ratio.std() + 1e-6
 
 
+@pytest.mark.slow
 def test_pca_fallback_survives_save_and_load(tmp_path):
     model = _pca_fallback_model(tmp_path / "work")
     model.dataset.save_dataset(tmp_path / "ds")
@@ -566,6 +582,7 @@ def test_pca_fallback_survives_save_and_load(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_gamma_names_the_missing_blocks(tmp_path, monkeypatch):
     model = _pca_fallback_model(tmp_path)
     model.estimate_channel_rg_cov_effects(sample="MAP")

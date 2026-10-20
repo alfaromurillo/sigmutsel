@@ -449,6 +449,7 @@ def _arm_scorer(case):
     return fit_and_score, zero_cov
 
 
+@pytest.mark.slow
 def test_nested_arms_0_to_3_are_ordered_in_likelihood():
     """0 <= 1 <= {2a, 2b} <= 3 at their own maxima, on one data set.
 
@@ -482,6 +483,7 @@ def test_nested_arms_0_to_3_are_ordered_in_likelihood():
     assert arm_3 > arm_0 + 1.0
 
 
+@pytest.mark.slow
 def test_arm_4_beats_arm_3_when_the_data_carry_real_r_g():
     """The r_g step is checked on dispersed data on purpose.
 
@@ -643,6 +645,7 @@ def test_model_no_rg_arm_survives_save_and_load(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_posterior_carries_the_pinned_intercept_as_c():
     """``sample="full"`` reads ``c`` back by name, so with the
     intercept pinned -- where ``c`` is a Deterministic rather than a
@@ -671,6 +674,7 @@ def test_posterior_carries_the_pinned_intercept_as_c():
     assert "log_theta" not in result.posterior
 
 
+@pytest.mark.slow
 def test_map_fit_clears_a_previous_posterior(tmp_path):
     """Sweeping the arms in one process must not let a MAP arm be
     scored against the previous arm's posterior draws. Nothing warns
@@ -689,6 +693,7 @@ def test_map_fit_clears_a_previous_posterior(tmp_path):
     assert not model.has_cov_effects_posteriors()
 
 
+@pytest.mark.slow
 def test_integer_sample_is_the_number_of_draws(tmp_path):
     """An integer `sample` must give that many draws, not 4000.
 
@@ -716,6 +721,7 @@ def test_fewer_draws_than_chains_raises(tmp_path):
         )
 
 
+@pytest.mark.slow
 def test_full_and_map_are_unchanged(tmp_path):
     """The two string modes production uses must not move."""
     import arviz as az
@@ -733,6 +739,7 @@ def test_full_and_map_are_unchanged(tmp_path):
     assert model.cov_effects_posteriors is None
 
 
+@pytest.mark.slow
 def test_map_fit_records_optimiser_diagnostics(tmp_path):
     """A MAP fit has no chains, so nothing ever said whether the
     optimiser reached a mode -- which is the gap every nc was
@@ -751,6 +758,7 @@ def test_map_fit_records_optimiser_diagnostics(tmp_path):
     assert diag["map_nit"] >= 0
 
 
+@pytest.mark.slow
 def test_mcmc_fit_has_no_map_diagnostics(tmp_path):
     """They would be stale from an earlier MAP fit otherwise."""
     model = _rg_model(tmp_path)

@@ -328,6 +328,7 @@ def test_compute_channel_mu_gs_rejects_unknown_channel(tmp_path):
         model.compute_channel_mu_gs("silent")
 
 
+@pytest.mark.slow
 def test_estimate_channel_cov_effects_map(tmp_path):
     """The joint fit runs and returns one shared coefficient vector
     (intercept + 1 covariate), not one per channel."""
@@ -340,6 +341,7 @@ def test_estimate_channel_cov_effects_map(tmp_path):
     assert model.passenger_genes_r2 is not None
 
 
+@pytest.mark.slow
 def test_estimate_channel_cov_effects_drivers_toggle(tmp_path):
     """include_drivers only changes the silent channel's gene set;
     both settings must fit and report the passenger-channel count."""
@@ -425,6 +427,7 @@ def test_passenger_genes_r2_rejects_unknown_target(tmp_path):
         model.estimate_passenger_genes_r2(target="silent")
 
 
+@pytest.mark.slow
 def test_passenger_genes_r2_rejects_nan_rates(tmp_path):
     """A NaN rate fails silently under pandas' NaN-skipping .sum()
     (the gene is scored as expecting 0), so it must raise instead --
@@ -580,6 +583,7 @@ def test_count_target_r2_has_no_censoring(tmp_path):
     assert model.passenger_genes_r2_non_silent_counts == r2
 
 
+@pytest.mark.slow
 def test_count_target_stored_separately(tmp_path):
     """Three targets, three attributes -- no call can overwrite
     another's number."""

@@ -76,7 +76,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = ["-v", "--strict-markers", "--tb=short"]
 markers = [
-    "slow: takes more than about 10 s (model fits, MCMC, SigProfiler); deselect with -m 'not slow'",
+    "slow: fits a model and takes about 1 s or more; deselect with -m 'not slow'",
 ]
 
 [tool.setuptools_scm]

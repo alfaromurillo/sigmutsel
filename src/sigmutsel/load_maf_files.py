@@ -208,10 +208,13 @@ def validate_context_snv(df, *, context_length=11):
     valid characters: {'A', 'C', 'G', 'T'}.
     """
     is_valid_length = df["CONTEXT"].str.len() == context_length
+    # astype(bool): on an empty frame apply keeps the str dtype, and
+    # '&' between bool and str is deprecated in pandas.
     is_valid_chars = (
         df["CONTEXT"]
         .str.upper()
         .apply(lambda s: set(s).issubset(nucleotides))
+        .astype(bool)
     )
 
     is_valid_context = is_valid_length & is_valid_chars

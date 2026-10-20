@@ -98,3 +98,19 @@ def test_multi_base_rows_are_kept_aside_when_asked(tmp_path):
     assert kinds[1000] == kinds[1001] == "dbs"
     assert kinds[3000] == kinds[3002] == "mnv"
     assert pd.isna(kinds[5000])
+
+
+# --- validators (pure DataFrame -> DataFrame) ------------------------------
+
+
+def _rows(*overrides):
+    return pd.DataFrame([_valid_snv_row(**o) for o in overrides])
+
+
+def test_validate_context_snv_on_an_empty_frame():
+    from sigmutsel.load_maf_files import validate_context_snv
+
+    df = _rows({}).iloc[:0]
+    out = validate_context_snv(df)
+    assert out.empty
+    assert out.columns.tolist() == df.columns.tolist()

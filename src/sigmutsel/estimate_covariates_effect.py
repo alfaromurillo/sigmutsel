@@ -22,6 +22,7 @@ import pymc.sampling.jax as pmjax
 import pytensor.tensor as tt
 
 from . import constants
+from ._arviz_compat import InferenceData
 from .estimate_presence import filter_passenger_genes_ensembl
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def estimate_covariates_effect(
     chains: int = 4,
     save_path: str | Path | None = None,
     kwargs: dict | None = None,
-) -> az.InferenceData | dict:
+) -> InferenceData | dict:
     """Estimate covariate effects (with intercept) in a Bernoulli model.
 
     Builds a per-gene linear predictor:
@@ -316,7 +317,7 @@ def estimate_channel_covariates_effect(
     chains: int = 4,
     save_path: str | Path | None = None,
     kwargs: dict | None = None,
-) -> az.InferenceData | dict:
+) -> InferenceData | dict:
     """Fit one shared ``c`` against two consequence channels jointly.
 
     The two-channel counterpart of
@@ -547,7 +548,7 @@ def estimate_all_cov_effects(
     ) = 1.5,
     save_results: str | bool = True,
     results_dir: str | Path | None = None,
-) -> dict[tuple[str, ...], np.ndarray | az.InferenceData]:
+) -> dict[tuple[str, ...], np.ndarray | InferenceData]:
     """Estimate covariate-effect over all (or selected) covariates.
 
     For each chosen subset_size `k` and each `k`-combination of
@@ -959,7 +960,7 @@ def load_or_estimate_all_cov_effects(
     save_results: str | bool = True,
     results_dir: str | Path | None = None,
     force_generation: bool = False,
-) -> dict[tuple[str, ...], np.ndarray | az.InferenceData]:
+) -> dict[tuple[str, ...], np.ndarray | InferenceData]:
     """
     Load or estimate covariate effects with caching support.
 

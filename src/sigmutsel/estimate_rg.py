@@ -88,7 +88,6 @@ channel's terms, leaving a single-channel Poisson GLM with offset
 import logging
 from pathlib import Path
 
-import arviz as az
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -96,6 +95,7 @@ import pymc.sampling.jax as pmjax
 import pytensor.tensor as tt
 
 from . import constants
+from ._arviz_compat import InferenceData
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +508,7 @@ def estimate_channel_rg_effect(
     use_silent_channel: bool = True,
     save_path: str | Path | None = None,
     kwargs: dict | None = None,
-) -> az.InferenceData | dict:
+) -> InferenceData | dict:
     """Fit shared ``c`` and ``θ`` with ``r_g`` marginalized out.
 
     All arrays are per-gene and aligned over the silent channel's gene

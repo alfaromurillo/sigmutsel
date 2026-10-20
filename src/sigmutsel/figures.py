@@ -9,6 +9,7 @@ expected vs. observed mutation burden comparisons.
 import arviz as az
 import pandas as pd
 
+from ._arviz_compat import InferenceData
 from .locations import location_cosmic_cancer_gene_census
 
 oncogenes = pd.read_csv(location_cosmic_cancer_gene_census, sep="\t")
@@ -17,7 +18,7 @@ oncogenes = sorted(oncogenes["GENE_SYMBOL"].unique())
 
 
 def plot_posteriors_vs_counts(
-    results: dict[str, "az.InferenceData"],
+    results: dict[str, InferenceData],
     counts: dict[str, int],
     passenger_genes: set[str],
     *,

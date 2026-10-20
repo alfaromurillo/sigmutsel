@@ -1,5 +1,7 @@
 """Tests for split_maf_file.split_maf_file."""
 
+import os
+
 import pytest
 
 from sigmutsel.split_maf_file import split_maf_file
@@ -94,17 +96,27 @@ def test_skip_if_files_already_present(maf_file, tmp_path):
 def test_force_generation_overwrites(maf_file, tmp_path):
     out_dir = tmp_path / "split"
     split_maf_file(maf_file, out_dir)
+    fresh = {f.name: f.read_text() for f in out_dir.glob("*.maf")}
 
-    mtimes_before = {
-        f.name: f.stat().st_mtime for f in out_dir.glob("*.maf")
-    }
+    # Make every previous file distinguishable from a rewrite by
+    # content and by a planted mtime, rather than relying on the
+    # clock advancing between the two splits (it need not, under
+    # load or on a coarse-mtime filesystem).
+    stale_mtime = 1_000_000_000
+    for name in fresh:
+        f = out_dir / name
+        f.write_text("stale\n")
+        os.utime(f, (stale_mtime, stale_mtime))
+    (out_dir / "LEFTOVER.maf").write_text("stale\n")
 
     split_maf_file(maf_file, out_dir, force_generation=True)
 
-    mtimes_after = {
-        f.name: f.stat().st_mtime for f in out_dir.glob("*.maf")
-    }
-    assert mtimes_before != mtimes_after
+    after = {f.name: f.read_text() for f in out_dir.glob("*.maf")}
+    assert after == fresh
+    assert all(
+        (out_dir / name).stat().st_mtime != stale_mtime
+        for name in fresh
+    )
 
 
 def test_missing_barcode_column_raises(tmp_path):

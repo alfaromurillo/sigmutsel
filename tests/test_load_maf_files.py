@@ -254,3 +254,66 @@ def test_filter_db_resolves_signature_class_aliases():
     assert filter_db(df, "DBS").empty  # DBS maps to DBP, not DNP
     with pytest.raises(KeyError, match="Variant_Type"):
         filter_db(df.rename(columns={"Variant_Type": "vt"}))
+
+
+def _write_seqinfo(path, rows):
+    path.write_text(
+        "".join("\t".join(map(str, r)) + "\n" for r in rows)
+    )
+
+
+def test_create_mutation_type_column_id_matches_shifted_indels(
+    tmp_path,
+):
+    from sigmutsel.load_maf_files import (
+        build_id83_lookup,
+        create_mutation_type_column,
+    )
+
+    # SigProfilerMatrixGenerator's seqinfo layout: sample, chromosome
+    # number, position, strand-prefixed ID83 label, ref, alt, strand.
+    _write_seqinfo(
+        tmp_path / "1_seqinfo.txt",
+        [
+            ("S1", 1, 100, "U:1:Del:C:4", "AC", "A", 0),
+            ("S1", 1, 100, "U:1:Del:C:4", "AC", "A", 0),  # duplicate
+            (
+                "S2",
+                1,
+                500,
+                "T:1:Ins:T:0",
+                "A",
+                "AT",
+                1,
+            ),  # other sample
+        ],
+    )
+    _write_seqinfo(
+        tmp_path / "7_seqinfo.txt",
+        # The anchor base before the indel: one left of the MAF.
+        [("S1", 7, 299, "T:2:Del:R:0", "ATG", "A", 1)],
+    )
+    (tmp_path / "notes.txt").write_text("not a seqinfo file\n")
+
+    lookup = build_id83_lookup(tmp_path)
+    assert sorted(lookup["Chromosome"]) == ["chr1", "chr1", "chr7"]
+    assert len(lookup) == 3  # the duplicate line counts once
+
+    maf = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1", "S1", "S1"],
+            "Chromosome": ["chr1", "chr7", "chr1"],
+            "Start_Position": [100, 300, 900],
+            "Hugo_Symbol": ["A", "B", "C"],
+        },
+        index=[10, 11, 12],
+    )
+    out = create_mutation_type_column(
+        maf, variant_type="indel", seqinfo_dir=tmp_path
+    )
+
+    # Exact match, a match one base to the left, and no match.
+    assert out["type"].tolist()[:2] == ["1:Del:C:4", "2:Del:R:0"]
+    assert pd.isna(out["type"].iloc[2])
+    assert out.columns.tolist() == [*maf.columns, "type"]
+    assert out["Start_Position"].tolist() == [100, 300, 900]

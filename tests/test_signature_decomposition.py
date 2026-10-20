@@ -14,6 +14,7 @@ from sigmutsel.constants import canonical_types_order
 from sigmutsel.signature_decomposition import (
     _expand_subvariants,
     _match_cancer_type_rows,
+    _normalize_signature_group_arg,
     _signatures_from_rows,
     _write_filtered_signature_database,
     build_sbs96_matrix_from_mutation_db,
@@ -398,3 +399,21 @@ def test_write_filtered_signature_database_creates_parent_dirs(
     out = tmp_path / "nested" / "dir" / "filtered.txt"
     _write_filtered_signature_database(base, ["SBS1"], out)
     assert out.exists()
+
+
+# --- _normalize_signature_group_arg ------------------------------------
+
+
+def test_normalize_signature_group_arg():
+    default = "cancer_type_table.tsv"
+    assert _normalize_signature_group_arg(None, default) is None
+    # A cancer type alone is read against the default table...
+    assert _normalize_signature_group_arg("LUAD", default) == (
+        default,
+        "LUAD",
+    )
+    # ...a (table, cancer type) pair and a signature list pass through.
+    pair = ("other_table.tsv", "SKCM")
+    assert _normalize_signature_group_arg(pair, default) is pair
+    sigs = ["SBS1", "SBS5"]
+    assert _normalize_signature_group_arg(sigs, default) is sigs

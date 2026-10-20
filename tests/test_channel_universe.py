@@ -18,6 +18,7 @@ import pytest
 from sigmutsel.channel_universe import (
     CHANNELS,
     TranscriptModels,
+    _fingerprint,
     _routes,
     classify_calls,
     compute_channel_opportunity,
@@ -1293,3 +1294,35 @@ def test_cds_ends_are_elements_with_a_genome(
     # GA's ATG: A>G at its first base gives GTG (Val); with the
     # genome's A before it, the pyrimidine-strand type is A[T>C]T.
     assert _routes(models, oa, "V", "mis", None) == ["A[T>C]T"]
+
+
+# --- _fingerprint (cache keys) -------------------------------------------
+
+
+def test_fingerprint_is_a_stable_key_of_names_sizes_and_extra(
+    tmp_path,
+):
+    a = tmp_path / "a.gtf"
+    b = tmp_path / "b.fa"
+    a.write_text("12345")
+    b.write_text("xy")
+    key = _fingerprint(a, b)
+
+    assert len(key) == 12
+    assert int(key, 16) >= 0  # hexadecimal
+    assert _fingerprint(str(a), str(b)) == key
+    # The same names and sizes elsewhere give the same key.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.gtf").write_text("abcde")
+    (other / "b.fa").write_text("zz")
+    assert _fingerprint(other / "a.gtf", other / "b.fa") == key
+
+    # Order, size, name and the extra tag each change it.
+    assert _fingerprint(b, a) != key
+    assert _fingerprint(a, b, extra="repeats") != key
+    b.write_text("xyz")
+    longer = _fingerprint(a, b)
+    assert longer != key
+    renamed = b.rename(tmp_path / "c.fa")
+    assert _fingerprint(a, renamed) != longer

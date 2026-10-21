@@ -9,11 +9,13 @@ sample.
 
 """
 
+import inspect
 import logging
 
 import arviz as az
 import numpy as np
 import pymc as pm
+import pytensor
 import pytensor.tensor as tt
 
 from . import constants
@@ -44,6 +46,215 @@ ABSENCE_FLOOR = 1e-3
 # "mu known exactly" behavior for that one tumor, rather than
 # reflecting genuinely tight (but nonzero) mu uncertainty.
 _MIN_LOG_MU_SIGMA = 1e-3
+
+# How the mu-posterior cut carries the stage-1 rate draws into gamma
+# (see estimate_gamma_from_mus): "independent" moment-matches one
+# lognormal per tumor, "shared" adds one latent for what every tumor's
+# draw shares, "draws" uses the draws themselves (the exact cut).
+MU_UNCERTAINTY_MODES = ("independent", "shared", "draws")
+
+# Priors on gamma (see estimate_gamma_from_mus): "uniform" is
+# Uniform(0, bound), the prior cancereffectsizeR parity is checked
+# with; "jeffreys" is p(gamma) proportional to gamma^(-1/2) on (0,
+# bound]; "loguniform" is p(gamma) proportional to 1/gamma on [lower,
+# bound], lower = _loguniform_lower(...).
+GAMMA_PRIORS = ("uniform", "jeffreys", "loguniform")
+
+# Lowest gamma the "draws" grid reaches below the prior bound, as a
+# fraction of it, for the priors that put mass all the way to 0:
+# below it a Uniform prior holds a 1e-14 share of its mass and a
+# Jeffreys-type one a 1e-7 share, so nothing the grid misses matters.
+_GRID_FLOOR = 1e-14
+
+
+def _loguniform_lower(upper_bound_prior, current_bound):
+    """Lower end of the log-uniform prior's support.
+
+    ``1 / upper_bound_prior`` (the support is symmetric in log gamma
+    around 1 for the requested bound), kept at least six orders of
+    magnitude below the bound actually in use, which the natural
+    ceiling can pull far down.
+    """
+    return min(1.0 / float(upper_bound_prior), current_bound * 1e-6)
+
+
+def _resolve_mu_uncertainty(mu_uncertainty, shared_mu_uncertainty):
+    """The cut's mode, from the new argument or the old boolean."""
+    if mu_uncertainty is None:
+        return "shared" if shared_mu_uncertainty else "independent"
+    if mu_uncertainty not in MU_UNCERTAINTY_MODES:
+        raise ValueError(
+            f"mu_uncertainty must be one of {MU_UNCERTAINTY_MODES}; "
+            f"got {mu_uncertainty!r}."
+        )
+    if shared_mu_uncertainty and mu_uncertainty != "shared":
+        raise ValueError(
+            "shared_mu_uncertainty=True is mu_uncertainty='shared'; it "
+            f"cannot be combined with mu_uncertainty={mu_uncertainty!r}."
+        )
+    return mu_uncertainty
+
+
+def _gamma_prior_rv(gamma_prior, current_bound, upper_bound_prior):
+    """The gamma random variable, inside the active model context.
+
+    A Uniform carries the support (so the bound expansion and the
+    natural ceiling read it as before) and a Potential turns it into
+    the requested density.
+    """
+    if gamma_prior == "loguniform":
+        lower = _loguniform_lower(upper_bound_prior, current_bound)
+        gamma = pm.Uniform(
+            name="gamma", lower=lower, upper=current_bound
+        )
+        pm.Potential("gamma_prior", -tt.log(gamma))
+        return gamma
+    gamma = pm.Uniform(name="gamma", lower=0, upper=current_bound)
+    if gamma_prior == "jeffreys":
+        pm.Potential("gamma_prior", -0.5 * tt.log(gamma))
+    return gamma
+
+
+def _log_prior_on_log_gamma(u, gamma_prior):
+    """log p(log gamma), up to a constant, on the grid ``u``.
+
+    The density of ``u = log gamma`` is p(gamma) gamma: u for the
+    Uniform, u / 2 for the Jeffreys-type prior, 0 for the log-uniform.
+    """
+    if gamma_prior == "uniform":
+        return u
+    if gamma_prior == "jeffreys":
+        return 0.5 * u
+    return np.zeros_like(u)
+
+
+def _compile_draws_loglik(
+    n_yes,
+    gene_tumor_dispersion,
+    shapes_all,
+    absence_floor,
+    presence_clip,
+):
+    """log p(y | gamma, mu) for a grid of gamma and a batch of draws.
+
+    Returns ``f(gamma_grid, mu_batch)`` -> ``(batch, grid)``, built
+    from the same link functions as the MCMC fit
+    (:func:`presence_probability`, :func:`log_absence_probability`),
+    so the two paths score one likelihood: the Bernoulli with the clip,
+    or the exact log-likelihood with ``presence_clip=False``.
+    """
+    grid = tt.dvector("gamma_grid")
+    batch = tt.dmatrix("mu_batch")
+    gamma = grid[None, :, None]
+    mu = batch[:, None, :]
+    shapes = (
+        None
+        if shapes_all is None
+        else tt.as_tensor_variable(np.asarray(shapes_all, float))[
+            None, None, :
+        ]
+    )
+    if presence_clip:
+        p = presence_probability(
+            gamma,
+            mu,
+            gene_tumor_dispersion=gene_tumor_dispersion,
+            gene_tumor_shape=shapes,
+            absence_floor=absence_floor,
+        )
+        loglik = tt.sum(tt.log(p[:, :, :n_yes]), axis=-1) + tt.sum(
+            tt.log1p(-p[:, :, n_yes:]), axis=-1
+        )
+    else:
+        log_absent = log_absence_probability(
+            gamma,
+            mu,
+            gene_tumor_dispersion=gene_tumor_dispersion,
+            gene_tumor_shape=shapes,
+            absence_floor=absence_floor,
+        )
+        loglik = tt.sum(
+            tt.log1mexp(log_absent[:, :, :n_yes]), axis=-1
+        ) + tt.sum(log_absent[:, :, n_yes:], axis=-1)
+    return pytensor.function([grid, batch], loglik)
+
+
+def _draws_loglik(f, grid, mu_draws, max_cells=2e7):
+    """``f`` over every draw, in batches of at most ``max_cells``."""
+    n_draws, n_tumors = mu_draws.shape
+    batch = max(1, int(max_cells // max(1, len(grid) * n_tumors)))
+    out = np.empty((n_draws, len(grid)))
+    gamma_grid = np.exp(grid)
+    for start in range(0, n_draws, batch):
+        out[start : start + batch] = f(
+            gamma_grid, mu_draws[start : start + batch]
+        )
+    return out
+
+
+def _cut_posterior_on_grid(
+    f,
+    mu_draws,
+    lower,
+    upper,
+    gamma_prior,
+    n_grid,
+    n_coarse=128,
+    coarse_draws=256,
+):
+    """The exact cut posterior of log gamma, on a grid.
+
+    For each stage-1 draw, the conditional posterior of log gamma
+    given that draw's rates, normalised; then their average over the
+    draws. A coarse grid over the whole support, on at most
+    ``coarse_draws`` of the draws, finds where any of them has mass
+    (within 30 nats of its own peak); the fine grid of ``n_grid``
+    points covers that region, on every draw.
+    """
+    coarse = np.linspace(np.log(lower), np.log(upper), n_coarse)
+    pick = np.unique(
+        np.linspace(0, len(mu_draws) - 1, coarse_draws).astype(int)
+    )
+    lp = _draws_loglik(f, coarse, mu_draws[pick])
+    lp += _log_prior_on_log_gamma(coarse, gamma_prior)[None, :]
+    keep = (lp - lp.max(axis=1, keepdims=True) > -30).any(axis=0)
+    idx = np.flatnonzero(keep)
+    lo = coarse[max(idx.min() - 2, 0)]
+    hi = coarse[min(idx.max() + 2, n_coarse - 1)]
+    grid = np.linspace(lo, hi, n_grid)
+    lp = _draws_loglik(f, grid, mu_draws)
+    lp += _log_prior_on_log_gamma(grid, gamma_prior)[None, :]
+    w = np.exp(lp - lp.max(axis=1, keepdims=True))
+    w /= np.trapezoid(w, grid, axis=1)[:, None]
+    return grid, w.mean(axis=0)
+
+
+def _sample_grid_density(grid, density, n, rng):
+    """``n`` draws of log gamma from a density tabulated on ``grid``."""
+    cdf = np.concatenate(
+        [
+            [0.0],
+            np.cumsum(
+                0.5 * (density[1:] + density[:-1]) * np.diff(grid)
+            ),
+        ]
+    )
+    cdf /= cdf[-1]
+    return np.interp(rng.random(n), cdf, grid)
+
+
+def _posterior_from_gamma_draws(values, chains):
+    """Gamma draws as an InferenceData/DataTree like pm.sample's."""
+    chains = max(1, int(chains))
+    per_chain = len(values) // chains
+    data = {
+        "gamma": values[: chains * per_chain].reshape(
+            chains, per_chain
+        )
+    }
+    if "data" in inspect.signature(az.from_dict).parameters:
+        return az.from_dict({"posterior": data})
+    return az.from_dict(posterior=data)
 
 
 def _natural_gamma_ceiling(mus_all, clip_floor=_CLIP_FLOOR):
@@ -200,7 +411,7 @@ def _log_absent_unfloored(
         )
     if gene_tumor_dispersion is None:
         return -gamma * mu
-    m_total = tt.sum(mu)
+    m_total = tt.sum(mu, axis=-1, keepdims=True)
     return (
         -gene_tumor_dispersion
         * (mu / m_total)
@@ -263,6 +474,9 @@ def estimate_gamma_from_mus(
     absence_floor=ABSENCE_FLOOR,
     presence_clip=True,
     shared_mu_uncertainty=False,
+    mu_uncertainty=None,
+    gamma_prior="uniform",
+    n_grid=256,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -365,6 +579,44 @@ def estimate_gamma_from_mus(
         draws of :meth:`.models.Model.compute_mu_g_posterior_draws`
         without spectrum draws -- this is the stage-1 posterior
         exactly, as a lognormal. Recorded in the posterior's attrs.
+        The same as ``mu_uncertainty="shared"``, kept as an alias.
+
+    mu_uncertainty : {"independent", "shared", "draws"} or None
+        How the cut carries the stage-1 draws into gamma; ``None``
+        reads ``shared_mu_uncertainty`` (so the default is today's
+        "independent"). "independent" and "shared" are the latent
+        forms above. "draws" is the exact cut (Plummer 2015):
+        ``p(gamma | y) = mean over draws d of p(gamma | y, mu^(d))``,
+        each draw's whole rate vector used as it is, correlations
+        between tumors included, and the presence data never
+        reweighting the draws. gamma is one-dimensional, so this needs
+        no MCMC: each draw's conditional posterior of ``log gamma`` is
+        evaluated on a grid (the same likelihood as the MCMC fit,
+        built from :func:`presence_probability` /
+        :func:`log_absence_probability`), normalised, averaged over
+        the draws, and ``draws`` values are sampled from the mixture.
+        With 1-D mus it is the same grid with mu known exactly. Not
+        with a custom ``presence_model`` or ``draws=1``. Recorded in
+        the posterior's attrs (``mu_uncertainty``).
+
+    gamma_prior : {"uniform", "jeffreys", "loguniform"}, default "uniform"
+        Prior on gamma. "uniform" is ``Uniform(0, bound)``, as before
+        (with ``presence_clip=False``, ``absence_floor=0`` and no cut,
+        the MAP is cancereffectsizeR's estimate). "jeffreys" is
+        ``p(gamma) ~ gamma^(-1/2)`` on ``(0, bound]``, the Jeffreys
+        prior of a Poisson rate; "loguniform" is ``p(gamma) ~ 1/gamma``
+        on ``[min(1 / upper_bound_prior, bound * 1e-6), bound]``. While
+        presences are rare, ``P(present) ~ gamma mu`` and the
+        likelihood behaves like ``gamma^n exp(-gamma S)`` (``n``
+        carriers), so a prior ``gamma^(a - 1)`` gives a posterior close
+        to Gamma(n + a, S): shape ``n + 1`` for the Uniform -- one
+        presence more than the data, which calls a gene with few
+        expected mutations "selected" too often -- ``n + 1/2`` for the
+        Jeffreys-type prior and ``n`` for the log-uniform. Recorded in
+        the posterior's attrs.
+
+    n_grid : int, default 256
+        Fine-grid points for ``mu_uncertainty="draws"``.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -523,7 +775,36 @@ def estimate_gamma_from_mus(
     vs. evaluation ``r_g`` split (see :mod:`.estimate_rg`) exists to
     avoid.
 
+    Strictly, the latent forms ("independent", "shared") are only
+    approximately a cut. A latent's prior is the stage-1 posterior,
+    but the presence likelihood still reweights it through each
+    value's normalising constant ``int p(y | gamma, mu) p(gamma)
+    dgamma``. For a shared scale ``s`` under the Uniform prior that
+    constant grows as ``exp(-s)``, which tilts the scale down and
+    raises gamma by about ``exp(var(s))`` (by half that under the
+    Jeffreys-type prior; not at all under the log-uniform, whose
+    constant does not depend on ``s``). ``mu_uncertainty="draws"`` is
+    the exact cut: every draw is a whole rate vector and each keeps its
+    weight. The "independent" form also averages a shared scale away
+    over the tumors, so gamma keeps almost none of its uncertainty.
+
     """
+    mu_uncertainty = _resolve_mu_uncertainty(
+        mu_uncertainty, shared_mu_uncertainty
+    )
+    if gamma_prior not in GAMMA_PRIORS:
+        raise ValueError(
+            f"gamma_prior must be one of {GAMMA_PRIORS}; got "
+            f"{gamma_prior!r}."
+        )
+    if mu_uncertainty == "draws" and (
+        presence_model is not None or draws == 1
+    ):
+        raise ValueError(
+            "mu_uncertainty='draws' needs the built-in link and "
+            "posterior draws (draws > 1)."
+        )
+    shared_mu_uncertainty = mu_uncertainty == "shared"
     mus_yes_arr = np.asarray(mus_yes, dtype=float)
     mus_no_arr = np.asarray(mus_no, dtype=float)
     if mus_yes_arr.ndim not in (1, 2) or mus_no_arr.ndim not in (
@@ -684,12 +965,38 @@ def estimate_gamma_from_mus(
             current_bound,
         )
         current_bound = natural_ceiling
+    if mu_uncertainty == "draws":
+        mu_draws = (
+            np.exp(log_mu_draws) if use_mu_prior else mus_all[None, :]
+        )
+        return _estimate_gamma_on_grid(
+            mu_draws,
+            n_yes,
+            current_bound=current_bound,
+            upper_bound_prior=upper_bound_prior,
+            natural_ceiling=natural_ceiling,
+            gamma_prior=gamma_prior,
+            gene_tumor_dispersion=gene_tumor_dispersion,
+            shapes_all=shapes_all,
+            absence_floor=absence_floor,
+            presence_clip=presence_clip,
+            n_grid=n_grid,
+            draws=draws,
+            chains=chains,
+            auto_expand_bound=auto_expand_bound,
+            max_bound_expansions=max_bound_expansions,
+            expand_factor=expand_factor,
+            saturation_ratio=saturation_ratio,
+            cap_at_natural_ceiling=cap_at_natural_ceiling,
+            n_zero_rate_absent=n_zero_rate_absent,
+            use_mu_prior=use_mu_prior,
+        )
     current_kwargs = dict(kwargs)
     while attempt <= max_retries:
         try:
             with pm.Model():
-                gamma = pm.Uniform(
-                    name="gamma", lower=0, upper=current_bound
+                gamma = _gamma_prior_rv(
+                    gamma_prior, current_bound, upper_bound_prior
                 )
 
                 if use_mu_prior:
@@ -974,6 +1281,10 @@ def estimate_gamma_from_mus(
                 results.posterior.attrs["shared_mu_uncertainty"] = (
                     int(bool(shared_mu_uncertainty) and use_mu_prior)
                 )
+                results.posterior.attrs["mu_uncertainty"] = (
+                    mu_uncertainty if use_mu_prior else "none"
+                )
+                results.posterior.attrs["gamma_prior"] = gamma_prior
                 results.posterior.attrs["natural_gamma_ceiling"] = (
                     natural_ceiling
                 )
@@ -999,6 +1310,106 @@ def estimate_gamma_from_mus(
         f"Sampling failed after {max_retries} attempts "
         "Try setting a smaller upper_bound_prior manually."
     )
+
+
+def _estimate_gamma_on_grid(
+    mu_draws,
+    n_yes,
+    *,
+    current_bound,
+    upper_bound_prior,
+    natural_ceiling,
+    gamma_prior,
+    gene_tumor_dispersion,
+    shapes_all,
+    absence_floor,
+    presence_clip,
+    n_grid,
+    draws,
+    chains,
+    auto_expand_bound,
+    max_bound_expansions,
+    expand_factor,
+    saturation_ratio,
+    cap_at_natural_ceiling,
+    n_zero_rate_absent,
+    use_mu_prior,
+):
+    """The exact cut (``mu_uncertainty="draws"``) of estimate_gamma_from_mus.
+
+    Same bound handling as the MCMC path: the bound starts at the
+    natural ceiling's cap, expands while the posterior mean sits above
+    ``saturation_ratio`` of it, and a mean still there at the natural
+    ceiling marks the result ``likelihood_saturated``.
+    """
+    f = _compile_draws_loglik(
+        n_yes,
+        gene_tumor_dispersion,
+        shapes_all,
+        absence_floor,
+        presence_clip,
+    )
+    rng = np.random.default_rng(constants.random_seed)
+    expansions = 0
+    likelihood_saturated = False
+    while True:
+        lower = (
+            _loguniform_lower(upper_bound_prior, current_bound)
+            if gamma_prior == "loguniform"
+            else current_bound * _GRID_FLOOR
+        )
+        grid, density = _cut_posterior_on_grid(
+            f, mu_draws, lower, current_bound, gamma_prior, n_grid
+        )
+        values = np.exp(
+            _sample_grid_density(grid, density, draws, rng)
+        )
+        gamma_point = float(values.mean())
+        looks_bound_limited = (
+            auto_expand_bound
+            and gamma_point > saturation_ratio * current_bound
+        )
+        if (
+            looks_bound_limited
+            and cap_at_natural_ceiling
+            and current_bound >= natural_ceiling
+        ):
+            likelihood_saturated = True
+        elif (
+            looks_bound_limited and expansions < max_bound_expansions
+        ):
+            current_bound *= expand_factor
+            if cap_at_natural_ceiling:
+                current_bound = min(current_bound, natural_ceiling)
+            expansions += 1
+            continue
+        elif looks_bound_limited:
+            logger.warning(
+                "Posterior for gamma (mean %.3g) still looks "
+                "bound-limited against the prior upper bound %.3g "
+                "after %d expansion(s).",
+                gamma_point,
+                current_bound,
+                expansions,
+            )
+        break
+    results = _posterior_from_gamma_draws(values, chains)
+    attrs = results.posterior.attrs
+    attrs["final_upper_bound_prior"] = current_bound
+    attrs["bound_expansions"] = expansions
+    attrs["convergence_retries"] = 0
+    attrs["likelihood_saturated"] = int(likelihood_saturated)
+    attrs["absence_floor"] = float(absence_floor)
+    attrs["presence_clip"] = int(presence_clip)
+    attrs["shared_mu_uncertainty"] = 0
+    attrs["mu_uncertainty"] = "draws" if use_mu_prior else "none"
+    attrs["gamma_prior"] = gamma_prior
+    attrs["grid_points"] = int(n_grid)
+    attrs["grid_log_gamma_range"] = [float(grid[0]), float(grid[-1])]
+    attrs["mu_draws_used"] = int(mu_draws.shape[0])
+    attrs["natural_gamma_ceiling"] = natural_ceiling
+    attrs["n_zero_rate_absent_dropped"] = n_zero_rate_absent
+    return results
 
 
 def summarize_gamma(result, prob=0.89):

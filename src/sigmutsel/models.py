@@ -3860,6 +3860,32 @@ def _aggregate_signature_dict(
     return aggregated
 
 
+def _cut_kwargs(
+    use_mu_posterior,
+    shared_mu_uncertainty,
+    mu_uncertainty,
+    gamma_prior,
+):
+    """estimate_gamma_from_mus arguments for the cut mode and the prior.
+
+    Only what differs from that function's defaults is passed, so a
+    call with every default reaches it exactly as before. "shared" is
+    a form of the cut and needs ``use_mu_posterior``; "draws" also
+    runs on point rates (the grid with mu known).
+    """
+    from .estimate_gammas import _resolve_mu_uncertainty
+
+    mode = _resolve_mu_uncertainty(
+        mu_uncertainty, shared_mu_uncertainty
+    )
+    extra = {}
+    if mode == "draws" or (mode == "shared" and use_mu_posterior):
+        extra["mu_uncertainty"] = mode
+    if gamma_prior != "uniform":
+        extra["gamma_prior"] = gamma_prior
+    return extra
+
+
 @dataclass(repr=False, init=False)
 class Model:
     """Signature based, mutation and selection model.
@@ -5302,6 +5328,8 @@ class Model:
         presence_clip=True,
         spectrum_draws=False,
         shared_mu_uncertainty=False,
+        mu_uncertainty=None,
+        gamma_prior="uniform",
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -5363,7 +5391,19 @@ class Model:
             latent instead of one independent latent per tumor, which
             averages it away (see
             :func:`.estimate_gammas.estimate_gamma_from_mus`); ignored
-            otherwise.
+            otherwise. The same as ``mu_uncertainty="shared"``.
+        mu_uncertainty : {"independent", "shared", "draws"} or None
+            How the cut carries the rate draws into gamma (see
+            :func:`.estimate_gammas.estimate_gamma_from_mus`): one
+            lognormal per tumor, plus a shared latent, or the draws
+            themselves (the exact cut, on a grid, no MCMC). ``None``
+            reads ``shared_mu_uncertainty``. "draws" without
+            ``use_mu_posterior`` is the grid with the point rates.
+        gamma_prior : {"uniform", "jeffreys", "loguniform"}
+            Prior on gamma (see
+            :func:`.estimate_gammas.estimate_gamma_from_mus`); the
+            default "uniform" is the one cancereffectsizeR parity is
+            checked with.
         gene_tumor_dispersion : None, float or "fitted", default None
             Gene-tumor dispersion in the presence likelihood (see
             :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``
@@ -5492,6 +5532,8 @@ class Model:
                 presence_clip=presence_clip,
                 spectrum_draws=spectrum_draws,
                 shared_mu_uncertainty=shared_mu_uncertainty,
+                mu_uncertainty=mu_uncertainty,
+                gamma_prior=gamma_prior,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -5511,6 +5553,8 @@ class Model:
                 presence_clip=presence_clip,
                 spectrum_draws=spectrum_draws,
                 shared_mu_uncertainty=shared_mu_uncertainty,
+                mu_uncertainty=mu_uncertainty,
+                gamma_prior=gamma_prior,
             )
         else:
             raise ValueError(
@@ -5617,6 +5661,8 @@ class Model:
         presence_clip=True,
         spectrum_draws=False,
         shared_mu_uncertainty=False,
+        mu_uncertainty=None,
+        gamma_prior="uniform",
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5708,8 +5754,14 @@ class Model:
             extra["absence_floor"] = absence_floor
         if not presence_clip:
             extra["presence_clip"] = False
-        if shared_mu_uncertainty and use_mu_posterior:
-            extra["shared_mu_uncertainty"] = True
+        extra.update(
+            _cut_kwargs(
+                use_mu_posterior,
+                shared_mu_uncertainty,
+                mu_uncertainty,
+                gamma_prior,
+            )
+        )
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
         phi = None
@@ -6070,6 +6122,8 @@ class Model:
         presence_clip=True,
         spectrum_draws=False,
         shared_mu_uncertainty=False,
+        mu_uncertainty=None,
+        gamma_prior="uniform",
     ):
         """Estimate selection coefficient for a gene.
 
@@ -6221,8 +6275,14 @@ class Model:
             extra["absence_floor"] = absence_floor
         if not presence_clip:
             extra["presence_clip"] = False
-        if shared_mu_uncertainty and use_mu_posterior:
-            extra["shared_mu_uncertainty"] = True
+        extra.update(
+            _cut_kwargs(
+                use_mu_posterior,
+                shared_mu_uncertainty,
+                mu_uncertainty,
+                gamma_prior,
+            )
+        )
         phi = self._resolve_gene_tumor_dispersion(
             gene_tumor_dispersion, gene_id, present_mask | absent_mask
         )

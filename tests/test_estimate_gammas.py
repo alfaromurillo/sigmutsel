@@ -1122,3 +1122,253 @@ def test_estimate_gamma_forwards_shared_mu_uncertainty(monkeypatch):
         shared_mu_uncertainty=True,
     )
     assert captured["shared_mu_uncertainty"] is True
+
+
+def _factored_draws(seed=3, n_tumors=400, n_draws=1000, scale_sd=0.3):
+    """Draws that factor as a per-draw scale times a fixed baseline.
+
+    The structure of a gene's cut draws without spectrum draws: the
+    covariate scale and r_g multiply every tumor's rate alike.
+    """
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(0.02, 0.06, n_tumors)
+    present = rng.random(n_tumors) < 1 - np.exp(-2 * base)
+    scale = np.exp(rng.normal(0.0, scale_sd, n_draws))
+    return scale[:, None] * base[None, :], present
+
+
+def _log_gamma_draws(result):
+    return np.log(np.asarray(result.posterior["gamma"]).ravel())
+
+
+def test_draws_cut_is_the_analytic_mixture_with_no_carriers():
+    """No carrier, exact likelihood, no floor: each draw's posterior is
+    gamma ~ Exponential(S_d) (Uniform prior) or Gamma(1/2, S_d)
+    (Jeffreys-type), S_d = sum of the draw's rates; the cut is their
+    equal-weight mixture."""
+    from scipy import stats
+
+    rng = np.random.default_rng(5)
+    totals = rng.lognormal(np.log(20.0), 0.4, 300)
+    mus = totals[:, None] / 50 * np.ones((300, 50))
+    constants.random_seed = 5
+    for prior, shape in (("uniform", 1.0), ("jeffreys", 0.5)):
+        result = estimate_gamma_from_mus(
+            np.empty((300, 0)),
+            mus,
+            draws=20000,
+            chains=4,
+            upper_bound_prior=1e3,
+            absence_floor=0.0,
+            presence_clip=False,
+            mu_uncertainty="draws",
+            gamma_prior=prior,
+        )
+        values = np.asarray(result.posterior["gamma"]).ravel()
+
+        def cdf(x, shape=shape):
+            return stats.gamma.cdf(
+                x[:, None], shape, scale=1 / totals[None, :]
+            ).mean(axis=1)
+
+        ks = stats.kstest(values, cdf).statistic
+        assert ks < 0.015, (prior, ks)
+        assert result.posterior.attrs["mu_uncertainty"] == "draws"
+        assert result.posterior.attrs["gamma_prior"] == prior
+    constants.random_seed = None
+
+
+def test_draws_cut_converges_in_the_grid():
+    draws, present = _factored_draws()
+    constants.random_seed = 3
+    q = {}
+    for n_grid in (256, 2048):
+        r = estimate_gamma_from_mus(
+            draws[:, present],
+            draws[:, ~present],
+            draws=20000,
+            upper_bound_prior=100,
+            mu_uncertainty="draws",
+            n_grid=n_grid,
+        )
+        q[n_grid] = np.quantile(
+            _log_gamma_draws(r), [0.055, 0.5, 0.945]
+        )
+    constants.random_seed = None
+    assert np.allclose(q[256], q[2048], atol=0.01)
+
+
+def test_draws_cut_keeps_the_shared_scale():
+    """The exact cut keeps a shared scale's uncertainty in gamma: sd of
+    log gamma at least the scale's own sd (0.3)."""
+    draws, present = _factored_draws()
+    constants.random_seed = 3
+    r = estimate_gamma_from_mus(
+        draws[:, present],
+        draws[:, ~present],
+        draws=8000,
+        upper_bound_prior=100,
+        mu_uncertainty="draws",
+    )
+    constants.random_seed = None
+    assert _log_gamma_draws(r).std() > 0.29
+
+
+@pytest.mark.slow
+def test_shared_latent_matches_the_draws_cut_under_a_loguniform_prior():
+    """For a shared scale, the shared latent is the exact cut when the
+    prior on gamma is log-uniform; under the Uniform prior the latent
+    form lets the presences reweight the scale (each draw's posterior
+    normaliser grows as exp(-s)), which raises gamma by about
+    exp(sd^2) -- the reason the forms differ."""
+    draws, present = _factored_draws()
+    kw = {
+        "draws": 8000,
+        "burn": 1000,
+        "chains": 4,
+        "upper_bound_prior": 100,
+        "auto_raise_target_accept": False,
+    }
+    constants.random_seed = 3
+    fits = {
+        (mode, prior): _log_gamma_draws(
+            estimate_gamma_from_mus(
+                draws[:, present],
+                draws[:, ~present],
+                mu_uncertainty=mode,
+                gamma_prior=prior,
+                **kw,
+            )
+        )
+        for mode in ("shared", "draws")
+        for prior in ("loguniform", "uniform")
+    }
+    constants.random_seed = None
+    for p in (0.055, 0.5, 0.945):
+        assert np.isclose(
+            np.quantile(fits["shared", "loguniform"], p),
+            np.quantile(fits["draws", "loguniform"], p),
+            atol=0.03,
+        )
+    tilt = np.median(fits["shared", "uniform"]) - np.median(
+        fits["draws", "uniform"]
+    )
+    assert np.isclose(tilt, 0.3**2, atol=0.03)
+
+
+@pytest.mark.slow
+def test_priors_agree_between_mcmc_and_the_grid():
+    """Point rates, a few carriers: every prior gives the same posterior
+    by MCMC and on the grid."""
+    rng = np.random.default_rng(11)
+    mu = rng.uniform(0.01, 0.05, 300)
+    present = rng.random(300) < 1 - np.exp(-3 * mu)
+    constants.random_seed = 11
+    for prior in ("uniform", "jeffreys", "loguniform"):
+        kw = {"upper_bound_prior": 100, "gamma_prior": prior}
+        mcmc = estimate_gamma_from_mus(
+            mu[present],
+            mu[~present],
+            draws=8000,
+            burn=1000,
+            chains=4,
+            auto_raise_target_accept=False,
+            **kw,
+        )
+        grid = estimate_gamma_from_mus(
+            mu[present],
+            mu[~present],
+            draws=8000,
+            mu_uncertainty="draws",
+            **kw,
+        )
+        for p in (0.055, 0.5, 0.945):
+            assert np.isclose(
+                np.quantile(_log_gamma_draws(mcmc), p),
+                np.quantile(_log_gamma_draws(grid), p),
+                atol=0.04,
+            ), (prior, p)
+        assert grid.posterior.attrs["mu_uncertainty"] == "none"
+    constants.random_seed = None
+
+
+def test_priors_order_the_posterior_as_their_shapes_say():
+    """Few carriers: the Uniform prior (shape n + 1) sits above the
+    Jeffreys-type (n + 1/2), which sits above the log-uniform (n)."""
+    rng = np.random.default_rng(2)
+    mu = rng.uniform(0.01, 0.03, 200)
+    present = np.zeros(200, bool)
+    present[:3] = True
+    constants.random_seed = 2
+    med = {
+        prior: np.median(
+            np.asarray(
+                estimate_gamma_from_mus(
+                    mu[present],
+                    mu[~present],
+                    draws=8000,
+                    upper_bound_prior=1e3,
+                    mu_uncertainty="draws",
+                    gamma_prior=prior,
+                ).posterior["gamma"]
+            )
+        )
+        for prior in ("uniform", "jeffreys", "loguniform")
+    }
+    constants.random_seed = None
+    assert med["uniform"] > med["jeffreys"] > med["loguniform"]
+
+
+def test_mu_uncertainty_and_prior_arguments_are_checked():
+    mus = np.full((10, 3), 0.1)
+    with pytest.raises(ValueError, match="mu_uncertainty"):
+        estimate_gamma_from_mus(mus, mus, mu_uncertainty="joint")
+    with pytest.raises(ValueError, match="gamma_prior"):
+        estimate_gamma_from_mus(mus, mus, gamma_prior="flat")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        estimate_gamma_from_mus(
+            mus,
+            mus,
+            shared_mu_uncertainty=True,
+            mu_uncertainty="draws",
+        )
+    with pytest.raises(ValueError, match="draws > 1"):
+        estimate_gamma_from_mus(
+            mus, mus, mu_uncertainty="draws", draws=1
+        )
+
+
+def test_cut_kwargs_pass_only_what_differs_from_the_defaults():
+    from sigmutsel.models import _cut_kwargs
+
+    assert _cut_kwargs(True, False, None, "uniform") == {}
+    assert _cut_kwargs(False, True, None, "uniform") == {}
+    assert _cut_kwargs(True, True, None, "uniform") == {
+        "mu_uncertainty": "shared"
+    }
+    assert _cut_kwargs(False, False, "draws", "jeffreys") == {
+        "mu_uncertainty": "draws",
+        "gamma_prior": "jeffreys",
+    }
+
+
+def test_estimate_gamma_forwards_mu_uncertainty_and_prior(
+    monkeypatch,
+):
+    model = _model_stub_for_forwarding()
+    captured = {}
+
+    def fake(item, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(model, "_estimate_gamma_gene", fake)
+    model.estimate_gamma(
+        "GENE1",
+        level="gene",
+        use_mu_posterior=True,
+        mu_uncertainty="draws",
+        gamma_prior="loguniform",
+    )
+    assert captured["mu_uncertainty"] == "draws"
+    assert captured["gamma_prior"] == "loguniform"

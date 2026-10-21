@@ -477,6 +477,7 @@ def estimate_gamma_from_mus(
     mu_uncertainty=None,
     gamma_prior="uniform",
     n_grid=256,
+    max_mu_draws=1000,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -617,6 +618,12 @@ def estimate_gamma_from_mus(
 
     n_grid : int, default 256
         Fine-grid points for ``mu_uncertainty="draws"``.
+    max_mu_draws : int or None, default 1000
+        With ``mu_uncertainty="draws"``, use at most this many of the
+        stage-1 draws, evenly spaced (the cost is draws x grid x
+        tumors; a production gene has 4,000 draws). Thinning only adds
+        Monte Carlo error to the mixture; ``None`` uses every draw.
+        The number used is recorded (``mu_draws_used``).
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -969,6 +976,14 @@ def estimate_gamma_from_mus(
         mu_draws = (
             np.exp(log_mu_draws) if use_mu_prior else mus_all[None, :]
         )
+        if max_mu_draws is not None and len(mu_draws) > max_mu_draws:
+            mu_draws = mu_draws[
+                np.unique(
+                    np.linspace(
+                        0, len(mu_draws) - 1, max_mu_draws
+                    ).astype(int)
+                )
+            ]
         return _estimate_gamma_on_grid(
             mu_draws,
             n_yes,

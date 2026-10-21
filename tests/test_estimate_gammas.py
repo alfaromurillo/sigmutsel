@@ -1372,3 +1372,22 @@ def test_estimate_gamma_forwards_mu_uncertainty_and_prior(
     )
     assert captured["mu_uncertainty"] == "draws"
     assert captured["gamma_prior"] == "loguniform"
+
+
+def test_draws_cut_thinning_only_adds_monte_carlo_error():
+    draws, present = _factored_draws(n_draws=4000)
+    constants.random_seed = 3
+    q = {}
+    for cap in (None, 1000):
+        r = estimate_gamma_from_mus(
+            draws[:, present],
+            draws[:, ~present],
+            draws=20000,
+            upper_bound_prior=100,
+            mu_uncertainty="draws",
+            max_mu_draws=cap,
+        )
+        q[cap] = np.quantile(_log_gamma_draws(r), [0.055, 0.5, 0.945])
+        assert r.posterior.attrs["mu_draws_used"] == (cap or 4000)
+    constants.random_seed = None
+    assert np.allclose(q[None], q[1000], atol=0.03)

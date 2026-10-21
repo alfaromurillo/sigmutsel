@@ -333,9 +333,11 @@ def download_liftover_chain(force: bool = False) -> Path:
 
 
 def download_repeatmasker_bed(
-    genome_build: str = "hg38", force: bool = False
+    genome_build: str = "hg38",
+    force: bool = False,
+    full: bool = False,
 ) -> Path:
-    """Download UCSC's RepeatMasker (rmsk) track.
+    """The RepeatMasker regions the call QC and the territory use.
 
     Parameters
     ----------
@@ -346,20 +348,24 @@ def download_repeatmasker_bed(
         callers working against hg19 coordinates directly.
     force : bool, default False
         If True, download even if the file exists.
+    full : bool, default False
+        hg38 only. If True, UCSC's full rmsk table (149 MB, every
+        column); otherwise the full table if it is already present,
+        else the distributed table of merged intervals (17 MB; see
+        :mod:`repeatmasker`), which gives the same intervals. hg19
+        always takes the full table.
 
     Returns
     -------
     Path
-        Path to the downloaded ``rmsk.<build>.txt.gz`` file. This is
-        UCSC's raw tab-separated rmsk table dump (not a BED file) --
-        see :func:`qc.load_repeat_intervals` for parsing it into
-        per-chromosome intervals.
+        Either UCSC's raw tab-separated ``rmsk.<build>.txt.gz`` dump
+        or the distributed BED (``repeatmasker.DISTRIBUTED_NAME``).
+        :func:`qc.load_repeat_intervals` reads both.
 
     Notes
     -----
-    Kept gzipped -- hg38's rmsk table is genome-wide (millions of
-    rows); pandas reads a ``.gz`` file directly, so there's no need
-    to decompress it to disk.
+    Kept compressed: pandas reads ``.gz`` and ``.xz`` files directly,
+    so there's no need to decompress them to disk.
     """
     if genome_build not in ("hg38", "hg19"):
         raise ValueError(
@@ -367,12 +373,6 @@ def download_repeatmasker_bed(
         )
     filename = f"rmsk.{genome_build}.txt.gz"
     dest = DATA_DIR / filename
-
-    if dest.exists() and not force:
-        logger.info(
-            f"RepeatMasker ({genome_build}) already exists at {dest}"
-        )
-        return dest
 
     # Same shared-cache convention as download_gencode_gtf/
     # download_wes_target_bed: a filesystem convention, not an
@@ -393,6 +393,34 @@ def download_repeatmasker_bed(
         )
         / filename
     )
+
+    if genome_build == "hg38" and not full:
+        if not force and dest.exists():
+            logger.info(
+                f"Using the full RepeatMasker table at {dest}"
+            )
+            return dest
+        if not force and shared.exists():
+            logger.info(
+                f"Reusing the full RepeatMasker table at {shared}"
+            )
+            shutil.copyfile(shared, dest)
+            return dest
+        from sigmutsel.repeatmasker import (
+            DISTRIBUTED_NAME,
+            download_distributed_table,
+        )
+
+        return download_distributed_table(
+            DATA_DIR / DISTRIBUTED_NAME, force=force
+        )
+
+    if dest.exists() and not force:
+        logger.info(
+            f"RepeatMasker ({genome_build}) already exists at {dest}"
+        )
+        return dest
+
     if shared.exists():
         logger.info(
             f"Reusing RepeatMasker ({genome_build}) already at {shared}"
@@ -607,6 +635,13 @@ def download_all(
             force=force
         )
 
+        # RepeatMasker intervals (hg38, merged, for the call QC and
+        # the territory)
+        logger.info("\n8. RepeatMasker intervals (hg38, 17 MB)")
+        downloaded["repeatmasker"] = download_repeatmasker_bed(
+            "hg38", force=force
+        )
+
         logger.info("\n" + "=" * 60)
         logger.info("All reference files downloaded successfully!")
         logger.info("=" * 60)
@@ -701,6 +736,14 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--repeatmasker-full",
+        action="store_true",
+        help=(
+            "Also download UCSC's full hg38 rmsk table (149 MB, every "
+            "column); the default merged intervals give the same QC"
+        ),
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         help="Custom data directory (default: package data dir)",
@@ -726,6 +769,10 @@ Examples:
             decompress_fasta=not args.keep_fasta_compressed,
             keep_gtf_compressed=not args.decompress_gtf,
         )
+        if args.repeatmasker_full:
+            download_repeatmasker_bed(
+                "hg38", force=args.force, full=True
+            )
         if args.germline_mask_full:
             logger.warning(
                 "Building the full gnomAD SNV table streams about 92 GB."

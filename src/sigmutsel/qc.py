@@ -303,13 +303,17 @@ def detect_mnv_dbs(df):
 
 
 def load_repeat_intervals(rmsk_path):
-    """Load a downloaded rmsk table into merged per-chromosome intervals.
+    """Load RepeatMasker regions into merged per-chromosome intervals.
 
     Parameters
     ----------
     rmsk_path : str or pathlib.Path
-        Path to an ``rmsk.<build>.txt.gz`` file, as downloaded by
-        :func:`setup.download_repeatmasker_bed`.
+        Either UCSC's raw rmsk table dump (17 columns, no header) or
+        a three-column BED of intervals (the distributed table of
+        :mod:`repeatmasker`), as returned by
+        :func:`setup.download_repeatmasker_bed`; plain or compressed
+        (pandas infers the compression from the extension). Both give
+        the same intervals.
 
     Returns
     -------
@@ -320,17 +324,31 @@ def load_repeat_intervals(rmsk_path):
         :func:`wes_target._merge_intervals`, the same interval-merge
         already used for the WES-target gene universe.
     """
-    rmsk = pd.read_csv(
-        rmsk_path,
-        sep="\t",
-        header=None,
-        names=_RMSK_COLUMN_NAMES,
-        usecols=["chrom", "start", "end"],
-    )
+    first = pd.read_csv(rmsk_path, sep="\t", header=None, nrows=1)
+    if first.shape[1] == 3:
+        rmsk = pd.read_csv(
+            rmsk_path,
+            sep="\t",
+            header=None,
+            names=["chrom", "start", "end"],
+            dtype={"chrom": str, "start": np.int64, "end": np.int64},
+        )
+    else:
+        rmsk = pd.read_csv(
+            rmsk_path,
+            sep="\t",
+            header=None,
+            names=_RMSK_COLUMN_NAMES,
+            usecols=["chrom", "start", "end"],
+        )
     intervals = {}
     for chrom, group in rmsk.groupby("chrom"):
         arr = group[["start", "end"]].sort_values("start").to_numpy()
-        starts, ends = _merge_intervals(arr[:, 0], arr[:, 1])
+        starts, ends = arr[:, 0], arr[:, 1]
+        # Already disjoint and not touching (the distributed table):
+        # merging would return the same arrays, so skip the loop.
+        if not (starts[1:] > ends[:-1]).all():
+            starts, ends = _merge_intervals(starts, ends)
         intervals[chrom] = (starts, ends)
     return intervals
 

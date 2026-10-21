@@ -1266,6 +1266,31 @@ def test_repeat_masks_take_repeat_sites_out_of_the_territory(
     assert not out["in_universe"].iat[0]
 
 
+def test_repeat_masks_agree_on_the_full_and_distributed_tables(
+    models, tmp_path
+):
+    """The distributed table (merged intervals, BED) gives the masks
+    the full rmsk dump gives, under its own cache key."""
+    from sigmutsel.channel_universe import repeat_masks
+    from sigmutsel.repeatmasker import write_distributed_table
+
+    rows = [
+        ["0"] * 5 + ["chr1", "103", "106"] + ["0"] * 9,
+        ["0"] * 5 + ["chr1", "105", "110"] + ["0"] * 9,
+        ["0"] * 5 + ["chr2", "990", "1000"] + ["0"] * 9,
+    ]
+    rmsk = tmp_path / "rmsk.hg38.txt.gz"
+    pd.DataFrame(rows).to_csv(
+        rmsk, sep="\t", header=False, index=False, compression="gzip"
+    )
+    bed = write_distributed_table(rmsk, tmp_path / "rmsk.bed.xz")
+    full = repeat_masks(models, rmsk_path=rmsk)
+    dist = repeat_masks(models, rmsk_path=bed)
+    assert full[0].any()
+    assert (full[0] == dist[0]).all()
+    assert (full[1] == dist[1]).all()
+
+
 def test_cds_ends_are_elements_with_a_genome(
     models, tmp_path, monkeypatch
 ):

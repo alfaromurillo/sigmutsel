@@ -802,7 +802,10 @@ def repeat_masks(models, rmsk_path=None):
 
     GRCh38 positions against UCSC's hg38 rmsk track, merged as the
     call QC merges it (:func:`qc.load_repeat_intervals`). Cached next
-    to the transcript models.
+    to the transcript models, keyed on the file read: the full table
+    and the distributed one (:mod:`repeatmasker`) give the same masks
+    under different keys, so switching between them rebuilds the
+    cache rather than reusing it.
     """
     from .liftover import in_intervals
     from .qc import load_repeat_intervals

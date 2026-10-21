@@ -262,6 +262,7 @@ def estimate_gamma_from_mus(
     presence_model=None,
     absence_floor=ABSENCE_FLOOR,
     presence_clip=True,
+    shared_mu_uncertainty=False,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -346,6 +347,24 @@ def estimate_gamma_from_mus(
         (``draws=1``) its maximum-likelihood estimate. Not available
         with a custom ``presence_model``. Recorded in the posterior's
         attrs.
+
+    shared_mu_uncertainty : bool, default False
+        With 2-D draws only. The default cut gives every tumor its own
+        ``log_mu`` latent, independent of the others; but a gene's
+        draws share their uncertainty across tumors (the covariate
+        scale and ``r_g`` multiply every tumor's rate by the same
+        factor in a draw), and independent latents average that shared
+        part away over the tumors, so gamma's interval keeps almost
+        none of it. True splits each draw's ``log mu`` into a shared
+        part (the draw's mean over tumors, centred) and per-tumor
+        residuals, and fits one shared latent ``log_mu_shared ~
+        Normal(0, sd of the shared part)`` added to every tumor's
+        mean, plus independent per-tumor latents only where the
+        residuals vary (e.g. spectrum draws). For draws that factor as
+        a per-draw scale times a fixed per-tumor baseline -- the gene
+        draws of :meth:`.models.Model.compute_mu_g_posterior_draws`
+        without spectrum draws -- this is the stage-1 posterior
+        exactly, as a lognormal. Recorded in the posterior's attrs.
 
     draws : int, default=10000
         Number of posterior samples to draw. If draws == 1, returns MAP/MLE.
@@ -572,6 +591,21 @@ def estimate_gamma_from_mus(
         )
         log_mu_sigma = np.maximum(log_mu_sigma, _MIN_LOG_MU_SIGMA)
         mus_all = np.exp(log_mu_mean)
+        if shared_mu_uncertainty:
+            shared = log_mu_draws.mean(axis=1)
+            shared = shared - shared.mean()
+            shared_sigma = max(
+                float(shared.std(ddof=1)) if len(shared) > 1 else 0.0,
+                _MIN_LOG_MU_SIGMA,
+            )
+            residual_sigma = (
+                (log_mu_draws - shared[:, None]).std(axis=0, ddof=1)
+                if log_mu_draws.shape[0] > 1
+                else np.zeros(log_mu_draws.shape[1])
+            )
+            residual_free = np.flatnonzero(
+                residual_sigma > _MIN_LOG_MU_SIGMA
+            )
     else:
         n_yes, n_no = len(mus_yes_arr), len(mus_no_arr)
         mus_all = np.concatenate([mus_yes_arr, mus_no_arr])
@@ -664,12 +698,32 @@ def estimate_gamma_from_mus(
                     # only informed by this tumor's own Bernoulli
                     # observation below -- no joint fit, no feedback
                     # from gamma/selection back into mu.
-                    log_mu = pm.Normal(
-                        name="log_mu",
-                        mu=log_mu_mean,
-                        sigma=log_mu_sigma,
-                        shape=len(log_mu_mean),
-                    )
+                    if shared_mu_uncertainty:
+                        # One latent for what every tumor's draw
+                        # shares (scale, r_g), per-tumor latents only
+                        # for what varies by tumor.
+                        log_mu = log_mu_mean + pm.Normal(
+                            name="log_mu_shared",
+                            mu=0.0,
+                            sigma=shared_sigma,
+                        )
+                        if residual_free.size:
+                            residual = pm.Normal(
+                                name="log_mu_residual",
+                                mu=0.0,
+                                sigma=residual_sigma[residual_free],
+                                shape=residual_free.size,
+                            )
+                            log_mu = tt.inc_subtensor(
+                                log_mu[residual_free], residual
+                            )
+                    else:
+                        log_mu = pm.Normal(
+                            name="log_mu",
+                            mu=log_mu_mean,
+                            sigma=log_mu_sigma,
+                            shape=len(log_mu_mean),
+                        )
                     mu = pm.math.exp(log_mu)
                 else:
                     mu = mus_all
@@ -916,6 +970,9 @@ def estimate_gamma_from_mus(
                 )
                 results.posterior.attrs["presence_clip"] = int(
                     presence_clip
+                )
+                results.posterior.attrs["shared_mu_uncertainty"] = (
+                    int(bool(shared_mu_uncertainty) and use_mu_prior)
                 )
                 results.posterior.attrs["natural_gamma_ceiling"] = (
                     natural_ceiling

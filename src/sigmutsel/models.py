@@ -5301,6 +5301,7 @@ class Model:
         absence_floor=None,
         presence_clip=True,
         spectrum_draws=False,
+        shared_mu_uncertainty=False,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -5356,6 +5357,13 @@ class Model:
             spectrum from its hybrid spectrum's Dirichlet, so the cut
             carries the spectrum's uncertainty into gamma (see
             :meth:`compute_mu_g_posterior_draws`); ignored otherwise.
+        shared_mu_uncertainty : bool, default False
+            With ``use_mu_posterior=True``, keep the uncertainty the
+            tumors' mu draws share (covariate scale, ``r_g``) as one
+            latent instead of one independent latent per tumor, which
+            averages it away (see
+            :func:`.estimate_gammas.estimate_gamma_from_mus`); ignored
+            otherwise.
         gene_tumor_dispersion : None, float or "fitted", default None
             Gene-tumor dispersion in the presence likelihood (see
             :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``
@@ -5483,6 +5491,7 @@ class Model:
                 absence_floor=absence_floor,
                 presence_clip=presence_clip,
                 spectrum_draws=spectrum_draws,
+                shared_mu_uncertainty=shared_mu_uncertainty,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -5501,6 +5510,7 @@ class Model:
                 absence_floor=absence_floor,
                 presence_clip=presence_clip,
                 spectrum_draws=spectrum_draws,
+                shared_mu_uncertainty=shared_mu_uncertainty,
             )
         else:
             raise ValueError(
@@ -5606,6 +5616,7 @@ class Model:
         absence_floor=None,
         presence_clip=True,
         spectrum_draws=False,
+        shared_mu_uncertainty=False,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -5697,6 +5708,8 @@ class Model:
             extra["absence_floor"] = absence_floor
         if not presence_clip:
             extra["presence_clip"] = False
+        if shared_mu_uncertainty and use_mu_posterior:
+            extra["shared_mu_uncertainty"] = True
         yes_ids = present_mask.index[present_mask]
         no_ids = absent_mask.index[absent_mask]
         phi = None
@@ -6056,6 +6069,7 @@ class Model:
         absence_floor=None,
         presence_clip=True,
         spectrum_draws=False,
+        shared_mu_uncertainty=False,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -6207,6 +6221,8 @@ class Model:
             extra["absence_floor"] = absence_floor
         if not presence_clip:
             extra["presence_clip"] = False
+        if shared_mu_uncertainty and use_mu_posterior:
+            extra["shared_mu_uncertainty"] = True
         phi = self._resolve_gene_tumor_dispersion(
             gene_tumor_dispersion, gene_id, present_mask | absent_mask
         )

@@ -1064,3 +1064,61 @@ def test_absence_floor_caps_an_absent_tumors_evidence():
         10.0, mu, gene_tumor_shape=np.ones(3), absence_floor=u
     ).eval()
     assert (1 - shaped >= u - 1e-15).all()
+
+
+@pytest.mark.slow
+def test_shared_mu_uncertainty_keeps_a_shared_scale_in_gamma():
+    """A factor shared by every tumor's rate must widen gamma's interval.
+
+    The draws multiply 200 tumors' rates by one lognormal factor (sd
+    0.3 in log) per draw, as a gene's covariate scale and r_g do.
+    Independent per-tumor latents average that factor away over the
+    tumors; the shared latent keeps it, so sd(log gamma) is at least
+    the factor's own sd."""
+    rng = np.random.default_rng(3)
+    base = rng.uniform(0.1, 0.3, 200)
+    present = rng.random(200) < 1 - np.exp(-base)
+    scale = np.exp(rng.normal(0.0, 0.3, 400))
+    draws = scale[:, None] * base[None, :]
+
+    def fit(shared):
+        return estimate_gamma_from_mus(
+            draws[:, present],
+            draws[:, ~present],
+            draws=1000,
+            burn=500,
+            chains=2,
+            upper_bound_prior=100,
+            auto_raise_target_accept=False,
+            shared_mu_uncertainty=shared,
+        )
+
+    constants.random_seed = 3
+    independent, shared = fit(False), fit(True)
+    constants.random_seed = None
+
+    def sd(result):
+        return float(np.log(result.posterior["gamma"].values).std())
+
+    assert sd(shared) > 0.27
+    assert sd(shared) > 1.5 * sd(independent)
+    assert shared.posterior.attrs["shared_mu_uncertainty"] == 1
+    assert independent.posterior.attrs["shared_mu_uncertainty"] == 0
+
+
+def test_estimate_gamma_forwards_shared_mu_uncertainty(monkeypatch):
+    model = _model_stub_for_forwarding()
+    captured = {}
+
+    def fake(item, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(model, "_estimate_gamma_gene", fake)
+    model.estimate_gamma(
+        "GENE1",
+        level="gene",
+        use_mu_posterior=True,
+        shared_mu_uncertainty=True,
+    )
+    assert captured["shared_mu_uncertainty"] is True

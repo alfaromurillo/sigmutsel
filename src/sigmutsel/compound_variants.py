@@ -85,10 +85,10 @@ def define_compound_variants(
             merge_distance=2,
         )
 
-    Truncating variants anywhere in a gene, pooled::
+    Predicted loss-of-function variants anywhere in a gene, pooled::
 
         define_compound_variants(
-            dataset.variant_db, variants=truncating, by="gene",
+            dataset.variant_db, variants=plof, by="gene",
             merge_distance=np.inf,
         )
     """

@@ -185,7 +185,7 @@ multi-threaded can deadlock. The draws are the same either way.
 
 A compound variant is a set of distinct substitutions fitted with
 one shared gamma -- a hotspot codon's routes, a tumor suppressor's
-truncating variants, any group individually too rare to fit alone.
+predicted loss-of-function variants, any group individually too rare to fit alone.
 The fit is arithmetic, not a new model: members are mutually
 exclusive in a tumor, so `compound_rates` **adds** their rates, and
 `compound_presence` **ORs** their presence, after which

@@ -1,4 +1,4 @@
-"""Per-channel gene gammas: missense, truncating, synonymous control."""
+"""Per-channel gene gammas: missense, pLoF, synonymous control."""
 
 import pandas as pd
 

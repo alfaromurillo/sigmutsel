@@ -948,8 +948,8 @@ def summarize_gamma(result, prob=0.89):
     """Point estimate and interval of a gamma, or an upper bound only.
 
     A gamma fitted with no tumor carrying the mutation -- typical of a
-    consequence channel of an oncogene, such as the truncating channel
-    of NRAS -- is informed only by the tumors that do not carry it.
+    consequence channel of an oncogene, such as the predicted
+    loss-of-function channel of NRAS -- is informed only by the tumors that do not carry it.
     Its posterior is then the prior cut down by the absences: it says
     how large gamma can be, not where it is, and its mean depends on
     the prior's shape. Such a gamma is reported as an upper bound

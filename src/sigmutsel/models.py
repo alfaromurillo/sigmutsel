@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 
 # The consequence channels a gene gamma can be scored on, and the call
 # channels (channel_universe.CHANNELS) each one counts. "nonsyn" is the
-# gene gamma as always; "trunc" pools nonsense and essential splice;
+# gene gamma as always; "trunc" pools nonsense and essential splice
+# (predicted loss-of-function, pLoF: an essential-splice change need
+# not truncate the protein, so "truncating" is avoided in the docs);
 # "syn" is a negative control, expected near 1; "esyn" is the exon-end
 # synonymous sites, which can act through splicing.
 GAMMA_CHANNELS = {
@@ -5301,8 +5303,8 @@ class Model:
             Genes only, channel-split models only. None (or
             ``"nonsyn"``) is the gene gamma on its whole non-synonymous
             rate. Otherwise one consequence channel
-            (:data:`GAMMA_CHANNELS`): ``"mis"``, ``"trunc"`` (nonsense
-            plus essential splice), ``"non"``, ``"spl"``, or ``"syn"``
+            (:data:`GAMMA_CHANNELS`): ``"mis"``, ``"trunc"`` (predicted
+            loss-of-function: nonsense plus essential splice), ``"non"``, ``"spl"``, or ``"syn"``
             (a negative control, expected near 1). Presence counts that
             channel's calls, the rate is the gene's on that channel, a
             dispersed fit inherits the gene's per-tumor dispersion, and
@@ -5741,7 +5743,7 @@ class Model:
 
         A compound variant treats a set of distinct substitutions as
         interchangeable: a hotspot codon's three routes, a tumor
-        suppressor's truncating variants, any group that plausibly
+        suppressor's predicted loss-of-function variants, any group that plausibly
         shares a selection coefficient and is individually too rare
         to fit. The members are mutually exclusive in one tumor, so
         their rates add, and a tumor carries the compound if it

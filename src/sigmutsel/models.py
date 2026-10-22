@@ -235,6 +235,7 @@ class MutationDataset:
     _multi_base_db: pd.DataFrame = None
     _homdel_db: pd.DataFrame = None
     _indel_db: pd.DataFrame = None
+    _qc_ledger: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -494,6 +495,12 @@ class MutationDataset:
                 "indel_db.parquet",
                 "parquet",
             ),
+            (
+                "qc_ledger",
+                "_qc_ledger",
+                "qc_ledger.parquet",
+                "parquet",
+            ),
         ]
 
         saved_files = {}
@@ -562,7 +569,10 @@ class MutationDataset:
             # :mod:`spectrum_shrinkage` (None: no shrinkage). 9 -> adds
             # indel_db, the non-silent coding indels kept for the
             # gamma hold-out; a dataset without it holds out none.
-            "version": 9,
+            # 10 -> adds qc_ledger, what each QC step removed per
+            # tumor (:mod:`qc_ledger`); a dataset without it simply
+            # has no record of its load-time QC.
+            "version": 10,
             **provenance.package_provenance(),
             "run_history": list(self._run_history),
             "signature_class": self.signature_class,
@@ -795,6 +805,63 @@ class MutationDataset:
             return pd.Index([])
         rows = db[db["ensembl_gene_id"] == gene_id]
         return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+    @property
+    def qc_ledger(self):
+        """What each quality-control step removed, per tumor (or None).
+
+        One row per (tumor, step): see :mod:`qc_ledger` for the columns
+        and steps. Written by :meth:`generate_mutation_db` with
+        ``qc_mode=True`` (the load-time call QC) and
+        :meth:`run_two_pass_signature_decomposition` (its
+        treatment-signature tumors and artifact-signature calls); a
+        caller can add its own earlier steps (which MAF files were
+        used) with :meth:`record_qc_steps`. None for a dataset built
+        without ``qc_mode`` or saved before the ledger existed.
+        """
+        return self._qc_ledger
+
+    @qc_ledger.setter
+    def qc_ledger(self, value):
+        self._qc_ledger = value
+
+    def record_qc_steps(self, rows, steps=None):
+        """Add rows to :attr:`qc_ledger`, replacing their steps.
+
+        Parameters
+        ----------
+        rows : pandas.DataFrame
+            Rows with :data:`qc_ledger.LEDGER_COLUMNS`.
+        steps : iterable of str or None
+            The steps *rows* stand for; their old rows are dropped
+            first, so rerunning a step does not count it twice.
+            None: the steps present in *rows*; ``()`` adds *rows* to
+            what is there.
+        """
+        from .qc_ledger import LEDGER_COLUMNS, concat, empty_ledger
+
+        missing = set(LEDGER_COLUMNS) - set(rows.columns)
+        if missing:
+            raise ValueError(f"ledger rows lack {sorted(missing)}")
+        steps = set(rows["step"]) if steps is None else set(steps)
+        ledger = self._qc_ledger
+        if ledger is None:
+            ledger = empty_ledger()
+        merged = concat(
+            [
+                ledger[~ledger["step"].isin(steps)],
+                rows[LEDGER_COLUMNS],
+            ]
+        )
+        # Rows of one tumor and step are summed (an added rerun).
+        self._qc_ledger = concat(
+            [
+                merged.groupby(
+                    ["tumor", "level", "step", "order"],
+                    as_index=False,
+                )["n"].sum()
+            ]
+        )
 
     @property
     def indel_db(self):
@@ -1912,16 +1979,23 @@ class MutationDataset:
 
         # The call QC tags the single-base rows of a multi-base event;
         # keep them aside rather than drop them (see multi_base_db).
-        if kwargs.get("qc_mode") and self.signature_class == "SBS":
+        # With the call QC, keep its counts too (qc_ledger).
+        ledger = bool(kwargs.get("qc_mode"))
+        if ledger and self.signature_class == "SBS":
             kwargs.setdefault("keep_multi_base", True)
 
         # Use generate_compact_db and store result
-        self._mutation_db = generate_compact_db(
+        result = generate_compact_db(
             self.location_maf_files,
             signature_class=self.signature_class,
             location_gene_set=location_gene_set,
+            return_ledger=ledger,
             **kwargs,
         )
+        if ledger:
+            self._mutation_db, self._qc_ledger = result
+        else:
+            self._mutation_db, self._qc_ledger = result, None
         self._multi_base_db = None
         self._split_multi_base()
         self._channel_universe = None
@@ -3121,6 +3195,11 @@ class MutationDataset:
             working_db = tagged_samples_db[
                 tagged_samples_db["problem"].isna()
             ].drop(columns="problem")
+            treated_calls = tagged_samples_db.loc[
+                flagged_mask, "Tumor_Sample_Barcode"
+            ].value_counts()
+        else:
+            treated_calls = pd.Series(dtype="int64")
 
         surviving_samples = set(
             working_db["Tumor_Sample_Barcode"].unique()
@@ -3240,6 +3319,10 @@ class MutationDataset:
         cleaned_db = tagged_db[tagged_db["problem"].isna()].drop(
             columns="problem"
         )
+        artifact_calls = tagged_db.loc[
+            tagged_db["problem"] == "artifact_signature_mutation",
+            "Tumor_Sample_Barcode",
+        ].value_counts()
 
         # Pass B's input: rebuilt directly from the cleaned mutation
         # set, not re-derived from the original MAF files.
@@ -3312,6 +3395,36 @@ class MutationDataset:
         # mu_tau, gene presence, R^2) must see the same cleaned
         # mutation set pass B was fit on.
         self._mutation_db = cleaned_db
+        # Recorded here, where the removals take effect, and added to
+        # what earlier runs recorded: a rerun on the cleaned set counts
+        # only what it removes itself, and a run that fails before
+        # this point records nothing.
+        if self._qc_ledger is not None:
+            from .qc_ledger import ledger_rows
+
+            self.record_qc_steps(
+                pd.concat(
+                    [
+                        ledger_rows(
+                            treated_calls.clip(upper=1),
+                            "tumors",
+                            "treatment_signature_load",
+                        ),
+                        ledger_rows(
+                            treated_calls,
+                            "calls",
+                            "treatment_signature_sample",
+                        ),
+                        ledger_rows(
+                            artifact_calls,
+                            "calls",
+                            "artifact_signature_mutation",
+                        ),
+                    ],
+                    ignore_index=True,
+                ),
+                steps=(),
+            )
         self._sig_assignments = pass_b_assignments
         self._signature_matrix = pass_b_signature_matrix
 

@@ -718,6 +718,7 @@ def process_single_maf(
     qc_mode=False,
     qc_kwargs=None,
     keep_multi_base=False,
+    return_ledger=False,
     **kwargs,
 ):
     """Process a single MAF file into a cleaned and compact DataFrame.
@@ -759,24 +760,33 @@ def process_single_maf(
         :meth:`MutationDataset.generate_mutation_db` does by moving
         them to :attr:`MutationDataset.multi_base_db`.
 
+    return_ledger : bool, default False
+        With `qc_mode`, also return the file's QC ledger: per tumor,
+        the rows each step removed or set aside
+        (:func:`qc_ledger.load_rows`).
+
     **kwargs : dict
         Additional keyword arguments to be passed to
         `func:compact_data`.
 
     Returns
     -------
-    pandas.DataFrame or None
+    pandas.DataFrame or None, or a tuple
         A cleaned and compact mutation DataFrame. Returns None if the
         file could not be processed (e.g., invalid format or error on
-        reading).
+        reading). With `return_ledger`, a pair (that DataFrame, its
+        ledger), both None if the file could not be processed.
 
     """
+    if return_ledger and not qc_mode:
+        raise ValueError("return_ledger needs qc_mode=True.")
     try:
         logger.debug(f"Reading MAF file: {maf_file.name}")
 
         df = pd.read_csv(
             maf_file, sep="\t", comment="#", low_memory=False
         )
+        raw = df
 
         df = filter_db(df, variant_type)
 
@@ -799,13 +809,22 @@ def process_single_maf(
                     MULTI_BASE_PROBLEMS
                 )
                 keep |= df["multi_base"].notna()
+            tagged = df
             df = df[keep].drop(columns="problem")
         else:
             df = validate_full(df, variant_type=variant_type)
 
+        snv = df if not qc_mode else tagged
         df = compact_data(df, variant_type=variant_type, **kwargs)
 
         logger.debug(f"Successfully processed: {maf_file.name}")
+        if return_ledger:
+            from .qc_ledger import load_rows
+
+            ledger = load_rows(
+                raw, snv, tagged, df, tumor_col="Tumor_Sample_Barcode"
+            )
+            return df, ledger
         return df
 
     # Batch processing: one malformed file (bad format, parse
@@ -813,11 +832,11 @@ def process_single_maf(
     # whole run -- log it and let the caller skip this file.
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to process {maf_file.name}: {e}")
-        return None
+        return (None, None) if return_ledger else None
 
 
 def load_validate_compact_all_maf_files_parallel(
-    maf_dir, variant_type="SNP", **kwargs
+    maf_dir, variant_type="SNP", return_ledger=False, **kwargs
 ):
     """Load and process all MAF files in a directory in parallel.
 
@@ -841,11 +860,16 @@ def load_validate_compact_all_maf_files_parallel(
         germline-frequency filtering, and MNV/DBS merging -- see
         `func:process_single_maf`'s docstring and :mod:`qc`.
 
+    return_ledger : bool, default False
+        Also return the QC ledger of every file, concatenated (needs
+        `qc_mode=True`; see :mod:`qc_ledger`).
+
     Returns
     -------
-    pandas.DataFrame
+    pandas.DataFrame, or a tuple
         A concatenated DataFrame containing all valid and compacted
-        mutation records from all processed MAF files.
+        mutation records from all processed MAF files; with
+        `return_ledger`, the pair (that DataFrame, the ledger).
 
     Raises
     ------
@@ -866,13 +890,22 @@ def load_validate_compact_all_maf_files_parallel(
     logger.info(f"Found {len(all_files)} MAF files to process.")
 
     func = partial(
-        process_single_maf, variant_type=variant_type, **kwargs
+        process_single_maf,
+        variant_type=variant_type,
+        return_ledger=return_ledger,
+        **kwargs,
     )
 
     with Pool(processes=cpu_count()) as pool:
-        all_dataframes = pool.map(func, all_files)
+        results = pool.map(func, all_files)
 
-    all_dataframes = [df for df in all_dataframes if df is not None]
+    if return_ledger:
+        from .qc_ledger import concat
+
+        ledger = concat([led for _, led in results])
+        all_dataframes = [df for df, _ in results if df is not None]
+    else:
+        all_dataframes = [df for df in results if df is not None]
 
     if all_dataframes:
         combined_df = pd.concat(all_dataframes, ignore_index=True)
@@ -880,6 +913,8 @@ def load_validate_compact_all_maf_files_parallel(
             "Successfully processed "
             f"{len(all_dataframes)}/{len(all_files)} files."
         )
+        if return_ledger:
+            return combined_df, ledger
         return combined_df
     else:
         raise ValueError(
@@ -893,6 +928,7 @@ def generate_compact_db(
     signature_class: str = "SBS",
     location_db: str | None = None,
     location_gene_set: str | None = location_hgnc_complete_set,
+    return_ledger: bool = False,
     **kwargs,
 ) -> pd.DataFrame:
     """Generate a compact mutation database from MAF files.
@@ -928,6 +964,10 @@ def generate_compact_db(
         :func:`update_gene_names.update_genes_with_gene_set`.
         Defaults to HGNC complete set for consistent gene
         naming. Set to None to skip gene name updates.
+    return_ledger : bool, default False
+        Also return the QC ledger (needs ``qc_mode=True`` in
+        *kwargs*; see :mod:`qc_ledger`): the result is then the pair
+        (database, ledger).
     **kwargs : dict
         Additional keyword arguments passed to
         :func:`load_validate_compact_all_maf_files_parallel`.
@@ -1024,8 +1064,13 @@ def generate_compact_db(
     )
 
     db = load_validate_compact_all_maf_files_parallel(
-        maf_dir, variant_type=variant_type, **kwargs
+        maf_dir,
+        variant_type=variant_type,
+        return_ledger=return_ledger,
+        **kwargs,
     )
+    if return_ledger:
+        db, ledger = db
 
     if location_gene_set is not None:
         db = update_genes_with_gene_set(location_gene_set, db)
@@ -1039,6 +1084,8 @@ def generate_compact_db(
     logger.info("... done generating compact mutation database.")
     print()
 
+    if return_ledger:
+        return db, ledger
     return db
 
 

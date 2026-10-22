@@ -325,6 +325,31 @@ problem — see https://github.com/Townsend-Lab-Yale/cancereffectsizeR):
   *known* same-patient duplicates by barcode). Call it directly on
   a built `MutationDataset.mutation_db` when investigating a cohort.
 
+## The QC ledger (`qc_ledger.py`)
+
+The rows `qc_mode` drops are gone once the MAF files are read, so
+their counts are kept as they happen: `MutationDataset.qc_ledger`,
+one row per (tumor, step) with the rows that step removed or set
+aside (`tumor`, `level`, `step`, `order`, `n`), saved with the
+dataset as `qc_ledger.parquet`.
+
+- `generate_mutation_db(qc_mode=True)` writes the load-time steps
+  (`process_single_maf(..., return_ledger=True)` builds each file's
+  rows with `qc_ledger.load_rows`): the file's rows (`maf_rows`, the
+  total), non-SNV rows, each `apply_qc` tag, the multi-base rows set
+  aside, and rows `compact_data` drops. Per tumor, `maf_rows` equals
+  the other steps plus the calls kept.
+- `run_two_pass_signature_decomposition` adds its treatment-signature
+  tumors (and their calls) and its artifact-signature calls, when a
+  ledger exists; rerunning it replaces those rows.
+- A caller records its own earlier steps (which MAF files it used)
+  with `record_qc_steps`, at orders below 100.
+- Steps the saved dataset already determines (the channel universe,
+  germline-masked calls, sample QC flags, the exon-end channel) are
+  not recorded: read them from the dataset.
+- A dataset built without `qc_mode`, or saved before the ledger,
+  has `qc_ledger = None` and loads as before.
+
 ## Per-sample sequencing-quality flags (`sample_qc.py`)
 
 Separate from `qc.py` (which tags/drops individual mutation *rows*),

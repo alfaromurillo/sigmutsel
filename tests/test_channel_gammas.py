@@ -40,7 +40,7 @@ class _Dataset:
         # T1 has a missense call, T2 a nonsense one; T3 a synonymous one.
         self._by_channel = {
             "mis": [1, 0, 0, 0],
-            "trunc": [0, 1, 0, 0],
+            "plof": [0, 1, 0, 0],
             "syn": [0, 0, 1, 0],
         }
 
@@ -79,13 +79,13 @@ def _model():
 def test_channel_presence_counts_only_that_channel(monkeypatch):
     captured = _capture(monkeypatch)
     model = _model()
-    model._estimate_gamma_gene("G1", store=True, channel="trunc")
+    model._estimate_gamma_gene("G1", store=True, channel="plof")
     assert captured["yes"] == ["T2"]
     # T1's missense hit is not held out; T4's doublet is.
     assert captured["no"] == ["T1", "T3"]
-    assert "G1__trunc" in model.gammas
+    assert "G1__plof" in model.gammas
     attrs = captured["result"].posterior.attrs
-    assert attrs["channel"] == "trunc"
+    assert attrs["channel"] == "plof"
     assert attrs["n_tumors_held_out_multi_base"] == 1
 
 
@@ -135,8 +135,8 @@ def test_channel_baselines_sum_parts_and_cache(monkeypatch):
     model.dataset.contexts_by_gene_mis = "mis"
     model.dataset.contexts_by_gene_non = "non"
     model.dataset.contexts_by_gene_spl = "spl"
-    trunc = model._channel_baseline("trunc")
-    assert trunc.loc["G1", "T1"] == 1.5
+    plof = model._channel_baseline("plof")
+    assert plof.loc["G1", "T1"] == 1.5
     model._channel_baseline("non")  # cached, not recomputed
     assert calls == ["non", "spl"]
     assert set(GAMMA_CHANNELS["nonsyn"]) == {"mis", "non", "spl"}
@@ -161,8 +161,8 @@ def test_a_channel_without_carriers_is_an_upper_bound(monkeypatch):
 
     captured = _capture(monkeypatch)
     model = _model()
-    model.dataset._by_channel["trunc"] = [0, 0, 0, 0]
-    model._estimate_gamma_gene("G1", store=False, channel="trunc")
+    model.dataset._by_channel["plof"] = [0, 0, 0, 0]
+    model._estimate_gamma_gene("G1", store=False, channel="plof")
     assert captured["yes"] == []
     attrs = captured["result"].posterior.attrs
     assert attrs["upper_bound_only"] == 1

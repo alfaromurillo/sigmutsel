@@ -10127,6 +10127,7 @@ class Model:
         fit_rg=True,
         fit_intercept=True,
         use_silent_channel=True,
+        variant_rates=True,
     ):
         """Fit the full unified model: shared ``c``, ``θ`` and ``r_g``.
 
@@ -10216,6 +10217,15 @@ class Model:
             ``separate_c`` must be ``False``. Because the data differ,
             the resulting log-likelihood is **not** comparable with a
             two-channel arm's; compare on a common held-out target.
+        variant_rates : bool, default True
+            Whether to recompute the per-variant rates (``mu_ms``)
+            after the fit. A gene-level use of the fit -- each fold of
+            a held-out-gene cross-validation, say -- never reads them,
+            and they are most of the time of a MAP fit (93% of a
+            fold's fit in a small cohort). With ``False`` they are not
+            computed and ``mu_ms`` is cleared, so no rates from an
+            earlier fit survive next to this fit's coefficients; call
+            :meth:`compute_mu_ms` later if they are needed.
 
         Returns
         -------
@@ -10520,7 +10530,9 @@ class Model:
         else:
             self._channel_cov_effects = None
             self.compute_mu_gs()
-            if self.dataset.has_variants():
+            if not variant_rates:
+                self.mu_ms = None
+            elif self.dataset.has_variants():
                 self.compute_mu_ms()
             self.estimate_passenger_genes_r2()
 

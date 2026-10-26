@@ -593,3 +593,29 @@ def test_gamma_names_the_missing_blocks(tmp_path, monkeypatch):
     result = model._estimate_gamma_gene(_FALLBACK, store=False)
     assert result.posterior.attrs["covariate_fallback"] == 1
     assert result.posterior.attrs["covariate_fallback_blocks"] == "b"
+
+
+@pytest.mark.slow
+def test_fit_without_variant_rates_is_the_same_fit(tmp_path):
+    """variant_rates=False skips mu_ms only: the coefficients, theta,
+    delta and gene rates are those of the default fit, and rates left
+    from an earlier fit are cleared rather than kept beside the new
+    coefficients."""
+    full = _fallback_model(tmp_path / "a")
+    full.estimate_channel_rg_cov_effects(sample="MAP")
+
+    lean = _fallback_model(tmp_path / "b")
+    lean.mu_ms = pd.DataFrame({"T1": [1.0]}, index=["stale"])
+    lean.estimate_channel_rg_cov_effects(
+        sample="MAP", variant_rates=False
+    )
+
+    assert lean.mu_ms is None
+    np.testing.assert_allclose(
+        full.cov_effects, lean.cov_effects, rtol=1e-9
+    )
+    assert lean.rg_theta == pytest.approx(full.rg_theta, rel=1e-9)
+    assert lean._rg_delta_intercept == pytest.approx(
+        full._rg_delta_intercept, rel=1e-9
+    )
+    pd.testing.assert_frame_equal(full.mu_gs, lean.mu_gs)

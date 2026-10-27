@@ -9,6 +9,12 @@ from .locations import location_cosmic_signature_etiology
 random_seed = None
 # random_seed = 777
 
+# Seed of the covariate PCA when ``random_seed`` is None. For a wide
+# covariate matrix scikit-learn picks its randomized solver, whose
+# trailing components otherwise change from run to run, so a model's
+# basis could not be rebuilt from its inputs.
+pca_random_seed = 0
+
 
 def _load_signature_etiology_lists():
     """Load ARTIFACT_SIGNATURES / TREATMENT_ASSOCIATED_SIGNATURES.

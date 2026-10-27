@@ -201,9 +201,11 @@ def run_pca_on_covariates(
         Extra keyword arguments forwarded to
         sklearn.decomposition.PCA (e.g., whiten=True,
         svd_solver='full'). ``random_state`` defaults to
-        ``sigmutsel.constants.random_seed`` (svd_solver='randomized',
-        used automatically for wide covariate matrices, otherwise
-        draws from an unseeded global RNG).
+        ``sigmutsel.constants.random_seed``, or to
+        ``sigmutsel.constants.pca_random_seed`` when that is None:
+        svd_solver='randomized', used automatically for wide covariate
+        matrices, otherwise draws from an unseeded global RNG, and the
+        trailing components then differ from run to run.
 
     Returns
     -------
@@ -274,7 +276,11 @@ def run_pca_on_covariates(
 
     # run PCA (seeded by default: svd_solver='randomized' draws from
     # an unseeded global RNG otherwise, breaking reproducibility)
-    pca_kwargs.setdefault("random_state", constants.random_seed)
+    seed = constants.random_seed
+    pca_kwargs.setdefault(
+        "random_state",
+        constants.pca_random_seed if seed is None else seed,
+    )
     pca = PCA(n_components=n_components, **pca_kwargs)
     scores = pca.fit_transform(X)
 

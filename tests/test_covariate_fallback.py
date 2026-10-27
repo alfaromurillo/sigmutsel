@@ -436,6 +436,18 @@ def test_projection_reproduces_the_fit_and_zero_is_the_mean():
     )
 
 
+def test_pca_of_a_wide_matrix_is_seeded_by_default():
+    # 600 x 700 with 10 components: scikit-learn's randomized solver,
+    # which drew from the global RNG before pca_random_seed.
+    rng = np.random.default_rng(1)
+    raw = pd.DataFrame(rng.normal(size=(600, 700)))
+    raw.columns = [f"c{i}" for i in raw.columns]
+    first = run_pca_on_covariates(raw, n_components=10)
+    np.random.seed(12345)
+    second = run_pca_on_covariates(raw, n_components=10)
+    np.testing.assert_array_equal(first.to_numpy(), second.to_numpy())
+
+
 @pytest.mark.parametrize("theta", [None, 3.0])
 def test_fit_fallback_shifts_recovers_planted_shifts(theta):
     rng = np.random.default_rng(1)

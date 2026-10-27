@@ -7805,8 +7805,19 @@ class Model:
         self._saved_location = str(directory.resolve())
 
     @classmethod
-    def load_model(cls, directory):
-        """Load a Model from a directory created by save_model()."""
+    def load_model(cls, directory, dataset_dir=None):
+        """Load a Model from a directory created by save_model().
+
+        Parameters
+        ----------
+        directory : path-like
+            The model directory.
+        dataset_dir : path-like, optional
+            Load the dataset from here instead of the manifest's
+            ``dataset_snapshot``. The manifest records an absolute
+            path, so a model copied to another machine needs this to
+            find its dataset's copy there.
+        """
         from pathlib import Path
 
         directory = Path(directory)
@@ -7828,7 +7839,7 @@ class Model:
                 "MutationDataset and re-saving the model snapshot."
             )
 
-        snapshot_path = Path(dataset_snapshot)
+        snapshot_path = Path(dataset_dir or dataset_snapshot)
         if not snapshot_path.is_absolute():
             candidate = (directory / snapshot_path).resolve()
             if candidate.exists():

@@ -364,6 +364,23 @@ def test_gene_gamma_is_marked(tmp_path, monkeypatch, gene, flag):
     assert np.isfinite(captured["yes"]).all()
 
 
+def test_load_model_finds_a_moved_dataset(tmp_path):
+    model = _fallback_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    model.save_model(tmp_path / "model")
+    (tmp_path / "ds").rename(tmp_path / "elsewhere")
+
+    with pytest.raises(FileNotFoundError):
+        Model.load_model(tmp_path / "model")
+    loaded = Model.load_model(
+        tmp_path / "model", dataset_dir=tmp_path / "elsewhere"
+    )
+    assert loaded.dataset.mutation_db.equals(
+        model.dataset.mutation_db
+    )
+
+
 @pytest.mark.slow
 def test_fallback_statistics_survive_save_and_load(tmp_path):
     model = _fallback_model(tmp_path / "work")

@@ -616,6 +616,23 @@ def estimate_gamma_from_mus(
         Jeffreys-type prior and ``n`` for the log-uniform. Recorded in
         the posterior's attrs.
 
+        Which to use: the choice matters only when there are few
+        carriers (in simulations at known gamma, about five or fewer;
+        from about six the two give medians within 5%). There, under
+        a gamma of 1, the Uniform's 89% interval lies wholly above 1
+        about twice as often as nominal and almost never wholly below
+        it, while the Jeffreys-type prior gives each tail close to its
+        nominal rate; the Uniform's median, on the other hand, is the
+        more accurate point estimate (biased up by 2-23%, against
+        5-21% down, with a smaller error). Both cover the true gamma
+        at the nominal rate. So prefer "jeffreys" when the interval is
+        read as a test (does it lie above 1?) or drawn against
+        gamma = 1 in a figure, and "uniform" when the estimate itself
+        is the quantity reported, or for cancereffectsizeR
+        comparisons. Use one prior throughout a figure or table rather
+        than choosing it per item by its carrier count. Without a
+        carrier the interval is an upper bound only, under any prior.
+
     n_grid : int, default 256
         Fine-grid points for ``mu_uncertainty="draws"``.
     max_mu_draws : int or None, default 1000

@@ -5403,7 +5403,9 @@ class Model:
             Prior on gamma (see
             :func:`.estimate_gammas.estimate_gamma_from_mus`); the
             default "uniform" is the one cancereffectsizeR parity is
-            checked with.
+            checked with. With few carriers, "jeffreys" when the
+            interval is read against gamma = 1, "uniform" when the
+            estimate itself is reported (see there).
         gene_tumor_dispersion : None, float or "fitted", default None
             Gene-tumor dispersion in the presence likelihood (see
             :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``

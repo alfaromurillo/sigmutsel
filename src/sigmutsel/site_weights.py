@@ -232,7 +232,7 @@ def fit_site_weights(
 
 
 def variant_route_weights(
-    db, models, coding_in, sw, masked_keys=None
+    db, models, coding_in, sw, masked_keys=None, capture_w=None
 ):
     """Per variant, the weight of each of its routes, in route order.
 
@@ -248,6 +248,9 @@ def variant_route_weights(
     has one route, its own site. Splice variants (one site, outside
     the coding table) get weight 1: their only route is the call's
     own allele, which ``model_calls`` keeps only when it is unmasked.
+    ``capture_w`` (:func:`capture.capture_weights`) multiplies every
+    route by its site's capture observability; a splice variant then
+    takes its splice site's.
 
     Returns
     -------
@@ -332,11 +335,35 @@ def variant_route_weights(
         w = weights_at(
             dbin[s_idx], orient[s_idx], t_idx[:, None], sw
         )[:, 0]
+        if capture_w is not None:
+            w = w * capture_w[0][s_idx]
         if masked_keys is not None:
             w = w * ~_route_alleles_masked(
                 models, sites, minus_gene, masked_keys
             )
         out[row.variant] = [float(x) for x in w]
+    if capture_w is not None:
+        # A splice variant has one route, its own site.
+        spl = db[
+            db["in_universe"].fillna(False).astype(bool)
+            & (db["channel"] == "spl")
+        ].drop_duplicates("variant")
+        sp = models.splice
+        sp_key = (
+            sp["gene"].to_numpy().astype(np.int64) * (1 << 32)
+            + sp["gpos"].to_numpy()
+        )
+        sp_order = np.argsort(sp_key, kind="stable")
+        sp_sorted = sp_key[sp_order]
+        for row in spl.itertuples(index=False):
+            g = gene_index.get(str(row.ensembl_gene_id))
+            if g is None:
+                continue
+            q = g * (1 << 32) + int(row.Start_Position)
+            k = np.searchsorted(sp_sorted, q)
+            if k >= len(sp_sorted) or sp_sorted[k] != q:
+                continue
+            out[row.variant] = [float(capture_w[1][sp_order[k]])]
     return pd.Series(out, dtype=object)
 
 

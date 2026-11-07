@@ -1004,16 +1004,22 @@ def _normalised(composition):
     return [composition[b] / total for b in _BASES]
 
 
-def _splice_site_weights(models, splice_in=None, masked_keys=None):
+def _splice_site_weights(
+    models, splice_in=None, masked_keys=None, row_weights=None
+):
     """Per splice site: (gene, type index, weight) triples, flat arrays.
 
     Each site contributes weight 1 per alternate base (3 per site),
     spread over contexts for donor +2 and acceptor -2. With
     ``masked_keys`` (:func:`germline_mask.allele_keys`), only the
     masked alternate bases keep their weight: the result is then the
-    masked part of the splice opportunity.
+    masked part of the splice opportunity. ``row_weights`` (one per
+    row of ``models.splice``, e.g. the capture observability of
+    :mod:`capture`) multiplies each site's weights.
     """
     sp = models.splice
+    if row_weights is not None:
+        sp = sp.assign(_row_w=np.asarray(row_weights, dtype=float))
     if splice_in is not None:
         sp = sp[splice_in]
     A, G, T = 0, 2, 3
@@ -1070,14 +1076,17 @@ def _splice_site_weights(models, splice_in=None, masked_keys=None):
                 for b in range(4)
             ]
             ctx_weights = _normalised(ACCEPTOR_MINUS3_COMPOSITION)
+        row_w = (
+            group["_row_w"].to_numpy()
+            if "_row_w" in group.columns
+            else np.ones(len(g))
+        )
         for k in (1, 2, 3):
-            hit = np.ones(len(g))
+            hit = row_w.copy()
             if masked_keys is not None:
                 alt_code = (kind_ref[kind] + k) % 4
                 genomic_alt = np.where(minus, 3 - alt_code, alt_code)
-                hit = np.isin(site + genomic_alt, masked_keys).astype(
-                    float
-                )
+                hit = hit * np.isin(site + genomic_alt, masked_keys)
             for (left, ref, right), w in zip(contexts, ctx_weights):
                 alt = (ref + k) % 4
                 genes.append(g)
@@ -1102,6 +1111,7 @@ def compute_channel_opportunity(
     splice_in=None,
     masked_keys=None,
     site_weights=None,
+    capture_w=None,
 ):
     """Per-gene, per-type site counts of the five channels.
 
@@ -1120,6 +1130,10 @@ def compute_channel_opportunity(
         Weight every coding (site, alternate base) by its distance and
         strand factors (:mod:`site_weights`); splice sites keep weight
         1. The ``"contexts"`` position counts are never weighted.
+    capture_w : (numpy.ndarray, numpy.ndarray), optional
+        Capture observability of every coding position and splice
+        site (:func:`capture.capture_weights`), multiplying each
+        site's weight, splice sites included.
 
     Returns
     -------
@@ -1155,16 +1169,22 @@ def compute_channel_opportunity(
     ).ravel()
     counts = np.bincount(flat, minlength=size).astype(float)
     alt_w = None
-    if site_weights is not None:
-        from .site_weights import position_bins, weights_at
+    if site_weights is not None or capture_w is not None:
+        if site_weights is not None:
+            from .site_weights import position_bins, weights_at
 
-        dbin, orient = position_bins(models)
-        alt_w = weights_at(
-            dbin[idx], orient[idx], types, site_weights
-        )
+            dbin, orient = position_bins(models)
+            alt_w = weights_at(
+                dbin[idx], orient[idx], types, site_weights
+            )
+        else:
+            alt_w = np.ones(np.shape(types))
+        if capture_w is not None:
+            alt_w = alt_w * capture_w[0][idx][:, None]
         counts_w = np.bincount(
             flat, weights=alt_w.ravel(), minlength=size
         ).astype(float)
+    splice_row_w = None if capture_w is None else capture_w[1]
 
     sg, st, sw = _splice_site_weights(models, splice_in)
     splice_flat = (
@@ -1190,7 +1210,10 @@ def compute_channel_opportunity(
             flat, weights=hit_w.ravel(), minlength=size
         )
         mg, mt, mw = _splice_site_weights(
-            models, splice_in, masked_keys=masked_keys
+            models,
+            splice_in,
+            masked_keys=masked_keys,
+            row_weights=splice_row_w,
         )
         if len(mg):
             masked += np.bincount(
@@ -1217,10 +1240,19 @@ def compute_channel_opportunity(
     out = frames(counts)
     out["contexts"] = contexts_from_channels(out)
     if alt_w is not None:
-        # Splice sites (not weighted) carry over from the unweighted
-        # counts; coding sites take their weighted counts.
+        # Splice sites carry no site weight (only the capture weight,
+        # when given); coding sites take their weighted counts.
         splice_part = np.zeros(size)
         if len(sg):
+            if splice_row_w is not None:
+                sg, st, sw = _splice_site_weights(
+                    models, splice_in, row_weights=splice_row_w
+                )
+                splice_flat = (
+                    sg.astype(np.int64) * n_ch * 96
+                    + spl * 96
+                    + st.astype(np.int64)
+                )
             splice_part = np.bincount(
                 splice_flat, weights=sw, minlength=size
             )
@@ -1275,6 +1307,7 @@ def channel_opportunity(
     germline_mask_af=None,
     site_weights=None,
     exclude_repeats=False,
+    capture=None,
 ):
     """Cached channel opportunity tables, optionally subset to genes.
 
@@ -1304,6 +1337,9 @@ def channel_opportunity(
     exclude_repeats : bool
         Leave RepeatMasker sites out of the territory
         (:func:`territory_masks`).
+    capture : capture.CaptureTerritory, optional
+        Weight every site by its capture observability
+        (:func:`capture.capture_weights`).
 
     Returns
     -------
@@ -1313,6 +1349,7 @@ def channel_opportunity(
         ``"report"`` (site counts inside/outside the territory, and
         the masked opportunity per channel).
     """
+    from .capture import capture_weights
     from .locations import location_channel_universe_dir
 
     if territory not in ("mc3", None):
@@ -1336,6 +1373,8 @@ def channel_opportunity(
         tag += f"_sw-{site_weights.label()}"
     if exclude_repeats:
         tag += "_norep"
+    if capture is not None:
+        tag += f"_cap-{capture.label()}"
     directory = cache_dir / f"opportunity_{tag}"
     names = list(CHANNELS) + ["contexts"]
     if (directory / "report.json").exists() and not force:
@@ -1364,6 +1403,11 @@ def channel_opportunity(
             splice_in,
             masked_keys=masked_keys,
             site_weights=site_weights,
+            capture_w=(
+                None
+                if capture is None
+                else capture_weights(models, capture)
+            ),
         )
         tables = {name: built[name] for name in names}
         report = {

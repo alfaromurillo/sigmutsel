@@ -1021,6 +1021,50 @@ class MutationDataset:
             (self._channel_universe or {}).get("site_weights")
         )
 
+    @property
+    def capture(self):
+        """The opportunity's capture territory (:mod:`capture`), or None."""
+        from .capture import CaptureTerritory
+
+        return CaptureTerritory.from_dict(
+            (self._channel_universe or {}).get("capture")
+        )
+
+    @record_call
+    def set_capture(self, capture):
+        """Set (or clear, with None) the capture territory.
+
+        Like :meth:`set_site_weights`: no call changes; the
+        opportunity tables are rebuilt with every site weighted by its
+        capture observability (:func:`capture.capture_weights`), and
+        each variant's route weights take it too. The site weights, if
+        any, are cleared: they were fitted against the opportunity
+        without the capture, so they must be refitted on top of it.
+        """
+        if not self.has_channel_universe():
+            raise ValueError(
+                "A capture territory needs the channel universe; this "
+                "dataset was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        params["capture"] = (
+            None if capture is None else capture.to_dict()
+        )
+        if params.get("site_weights") is not None:
+            logger.warning(
+                "set_capture clears the site weights: refit them on "
+                "the captured opportunity."
+            )
+            params["site_weights"] = None
+        self._channel_universe = params
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+        self._attach_route_weights()
+
     @record_call
     @record_call
     def relabel_exon_end_synonymous(self):
@@ -1211,7 +1255,8 @@ class MutationDataset:
         )
         sw = self.site_weights
         mask_af = self.germline_mask_af
-        if sw is None and mask_af is None:
+        capture = self.capture
+        if sw is None and mask_af is None and capture is None:
             return
         from .channel_universe import (
             load_or_build_transcript_models,
@@ -1233,12 +1278,18 @@ class MutationDataset:
             from .germline_mask import load_germline_mask
 
             masked_keys = load_germline_mask(mask_af)
+        capture_w = None
+        if capture is not None:
+            from .capture import capture_weights
+
+            capture_w = capture_weights(models, capture)
         weights = variant_route_weights(
             self.model_db,
             models,
             coding_in,
             sw,
             masked_keys=masked_keys,
+            capture_w=capture_w,
         )
         key = (
             self._variant_db["variant"]
@@ -1266,6 +1317,7 @@ class MutationDataset:
             (
                 self.germline_mask_af is None
                 and params.get("site_weights") is None
+                and params.get("capture") is None
             )
             or self._contexts_by_gene_syn is None
             or self._contexts_by_gene_nonsyn is None
@@ -3551,6 +3603,7 @@ class MutationDataset:
                 params.get("site_weights")
             ),
             exclude_repeats=params.get("exclude_repeats", False),
+            capture=self.capture,
         )
         self._contexts_by_gene = tables["contexts"]
         self._contexts_by_gene_syn = tables["syn"]
@@ -5050,6 +5103,13 @@ class Model:
                 key[:, None] + g_alt,
                 load_germline_mask(ds.germline_mask_af),
             ).astype(float)
+        if ds.capture is not None:
+            # The capture observability is part of the opportunity the
+            # factors are fitted against (see :mod:`capture`).
+            from .capture import capture_weights
+
+            cap = capture_weights(models, ds.capture)[0]
+            alive = alive * cap[idx][:, None]
 
         mt = self._mu_taus[list(canonical_types_order)]
         if excluded_samples is not None:

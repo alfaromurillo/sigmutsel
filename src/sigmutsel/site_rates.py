@@ -124,6 +124,9 @@ class SiteTable:
         Its weight before and after the mask.
     site_weights : SiteWeights or None
     coding_in, splice_in : territory masks, or None
+    capture_coding, capture_splice : arrays or None
+        Capture observability (:mod:`capture`) of each coding row
+        (aligned with ``idx``) and of every ``models.splice`` row.
     """
 
     models: object
@@ -143,6 +146,8 @@ class SiteTable:
     coding_in: object = None
     splice_in: object = None
     masked_keys: object = None
+    capture_coding: object = None
+    capture_splice: object = None
     _genomic: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -154,6 +159,7 @@ class SiteTable:
         splice_in=None,
         masked_keys=None,
         site_weights=None,
+        capture=None,
     ):
         """Enumerate the elements of ``genes`` (stable Ensembl ids)."""
         from .site_weights import position_bins
@@ -183,10 +189,20 @@ class SiteTable:
             masked_keys = np.unique(np.asarray(masked_keys, np.int64))
             masked = _masked_alleles(models, idx, masked_keys)
 
-        sg, st, sw = _splice_site_weights(models, splice_in)
+        cap_c = cap_s = None
+        if capture is not None:
+            from .capture import capture_weights
+
+            cap_c, cap_s = capture_weights(models, capture)
+        sg, st, sw = _splice_site_weights(
+            models, splice_in, row_weights=cap_s
+        )
         if masked_keys is not None:
             _, _, mw = _splice_site_weights(
-                models, splice_in, masked_keys=masked_keys
+                models,
+                splice_in,
+                masked_keys=masked_keys,
+                row_weights=cap_s,
             )
         else:
             mw = np.zeros_like(sw)
@@ -209,6 +225,8 @@ class SiteTable:
             coding_in=coding_in,
             splice_in=splice_in,
             masked_keys=masked_keys,
+            capture_coding=None if cap_c is None else cap_c[idx],
+            capture_splice=cap_s,
         )
 
     @property
@@ -220,12 +238,15 @@ class SiteTable:
         """``upsilon_o`` before the mask, (n, 3), for ``rows``."""
         from .site_weights import weights_at
 
-        return weights_at(
+        w = weights_at(
             self.dbin[rows],
             self.orient[rows],
             self.types[rows].astype(np.int64),
             self.site_weights,
         )
+        if self.capture_coding is not None:
+            w = w * self.capture_coding[rows][..., None]
+        return w
 
     def position_rows(self, flat):
         """Row of each flat position in the table, or -1."""
@@ -531,6 +552,7 @@ class SiteRates:
             splice_in=splice_in,
             masked_keys=masked_keys,
             site_weights=dataset.site_weights,
+            capture=getattr(dataset, "capture", None),
         )
 
         denominators = type_denominators(
@@ -989,12 +1011,17 @@ class SiteRates:
             if not options:
                 continue
             g_row = self.table.gene_row[g]
+            cap = (
+                1.0
+                if self.table.capture_splice is None
+                else float(self.table.capture_splice[s])
+            )
             r = sum(
                 self._element_rates(
                     np.array([g_row]),
                     np.array([True]),
                     [tau],
-                    w,
+                    w * cap,
                     per_tumor,
                 )[0]
                 for tau, w in options
@@ -1012,7 +1039,7 @@ class SiteRates:
                         canonical_types_order[tau]
                         for tau, _ in options
                     ),
-                    "weight": 1.0,
+                    "weight": cap,
                     "observable": not masked,
                     "context": source,
                 }
@@ -1150,6 +1177,11 @@ class SiteRates:
             options, source, masked = self._splice_element(
                 s, _BASES.index(alt)
             )
+            cap = (
+                1.0
+                if self.table.capture_splice is None
+                else float(self.table.capture_splice[s])
+            )
             return {
                 "channel": "spl",
                 "types": [
@@ -1157,7 +1189,7 @@ class SiteRates:
                 ],
                 "flat": None,
                 "alt": None,
-                "weights": [w for _, w in options],
+                "weights": [w * cap for _, w in options],
                 "observable": [not masked] * len(options),
                 "splice_row": s,
                 "context": source,
@@ -1313,6 +1345,8 @@ class SiteRates:
             t_idx[:, None],
             t.site_weights,
         )[:, 0]
+        if t.capture_coding is not None:
+            weights = weights * t.capture_coding[rows]
         return {
             "channel": channel,
             "types": list(types),

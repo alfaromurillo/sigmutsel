@@ -1384,11 +1384,23 @@ def compute_channel_opportunity(
     alt_w = None
     if site_weights is not None or capture_w is not None:
         if site_weights is not None:
-            from .site_weights import position_bins, weights_at
+            from .site_weights import (
+                position_bins,
+                position_gc,
+                weights_at,
+            )
 
             dbin, orient = position_bins(models)
             alt_w = weights_at(
-                dbin[idx], orient[idx], types, site_weights
+                dbin[idx],
+                orient[idx],
+                types,
+                site_weights,
+                x=(
+                    position_gc(models)[idx]
+                    if site_weights.has_cpg()
+                    else None
+                ),
             )
         else:
             alt_w = np.ones(np.shape(types))

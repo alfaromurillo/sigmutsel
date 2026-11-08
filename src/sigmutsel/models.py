@@ -5446,7 +5446,7 @@ class Model:
 
     @record_call
     def estimate_site_weights(
-        self, pseudo_count=50.0, excluded_samples=None
+        self, pseudo_count=50.0, excluded_samples=None, cpg_term=None
     ):
         """Fit per-cohort site weights and put them on the opportunity.
 
@@ -5458,7 +5458,10 @@ class Model:
         gene -- play no part. Then :meth:`MutationDataset.set_site_weights`
         rebuilds the opportunity. Call it after :meth:`compute_mu_taus`
         and **before** :meth:`compute_base_mus`: baselines built earlier
-        are on the old opportunity.
+        are on the old opportunity. ``cpg_term`` adds the CpG C>T term of
+        :class:`site_weights.SiteWeights`: ``"flat"`` fits it freely, a
+        ``(mean, cov)`` pair with that Gaussian prior (per-cohort values
+        shrunk by the between-cohort spread); None (default) has no term.
 
         Returns
         -------
@@ -5583,6 +5586,18 @@ class Model:
         c_alt = np.where(minus[rows], 3 - c_alt, c_alt)
         k = (c_alt - ref[rows]) % 4 - 1
         good = k >= 0
+        cpg = None
+        cpg_prior = None
+        if cpg_term is not None:
+            from .capture import exon_gc, exon_index
+
+            exon_all = exon_index(models)
+            cpg = (
+                exon_all[idx],
+                gene,
+                exon_gc(models, exon_all) - 0.5,
+            )
+            cpg_prior = None if cpg_term == "flat" else cpg_term
         sw = fit_site_weights(
             dbin,
             orient,
@@ -5591,6 +5606,8 @@ class Model:
             rows[good],
             k[good],
             pseudo_count=pseudo_count,
+            cpg=cpg,
+            cpg_prior=cpg_prior,
         )
         ds.set_site_weights(sw)
         logger.info(

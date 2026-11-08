@@ -53,6 +53,11 @@ CLASS_OF = np.array(
 STRAND_LABELS = tuple(
     f"{c} {s}" for c in CLASSES for s in ("coding", "template")
 )
+# The elements of the CpG term: C>T with a 3' G (a pyrimidine context,
+# so the G of a CpG on either strand).
+CPG_CT = np.array(
+    [t[2:5] == "C>T" and t[-1] == "G" for t in canonical_types_order]
+)
 
 
 @dataclass
@@ -61,13 +66,21 @@ class SiteWeights:
 
     ``distance``: one factor per :data:`DIST_LABELS` bin. ``strand``:
     one per class x strand (:data:`STRAND_LABELS`; "coding" = the
-    pyrimidine is on the coding strand).
+    pyrimidine is on the coding strand). ``cpg``: ``(a1, a2)`` of the
+    factor ``exp(a1 x + a2 x^2)`` on CpG C>T elements, ``x`` being the
+    GC fraction of the site's exon minus 0.5 (CpG C>T depends on
+    methylation, which follows the exon's GC); zero (the default) is no
+    term at all.
     """
 
     distance: np.ndarray = field(default_factory=lambda: np.ones(8))
     strand: np.ndarray = field(default_factory=lambda: np.ones(12))
     pseudo_count: float = 50.0
     n_calls: int = 0
+    cpg: np.ndarray = field(default_factory=lambda: np.zeros(2))
+
+    def has_cpg(self):
+        return bool(np.any(np.asarray(self.cpg) != 0))
 
     def to_dict(self):
         return {
@@ -79,6 +92,7 @@ class SiteWeights:
             ),
             "pseudo_count": float(self.pseudo_count),
             "n_calls": int(self.n_calls),
+            "cpg": [float(x) for x in self.cpg],
         }
 
     @classmethod
@@ -92,6 +106,7 @@ class SiteWeights:
             strand=np.array([d["strand"][k] for k in STRAND_LABELS]),
             pseudo_count=d.get("pseudo_count", 50.0),
             n_calls=d.get("n_calls", 0),
+            cpg=np.array(d.get("cpg", [0.0, 0.0]), dtype=float),
         )
 
     def label(self):
@@ -99,6 +114,10 @@ class SiteWeights:
         import hashlib
 
         blob = np.concatenate([self.distance, self.strand]).round(6)
+        if self.has_cpg():
+            blob = np.concatenate(
+                [blob, np.asarray(self.cpg).round(6)]
+            )
         return hashlib.sha1(blob.tobytes()).hexdigest()[:10]
 
 
@@ -152,15 +171,40 @@ def position_bins(models):
     return dbin, orient
 
 
-def weights_at(dbin, orient, types, sw):
-    """Weights of substitutions: bins/orientations per site, types per alt."""
+def position_gc(models):
+    """Exon GC fraction minus 0.5 at every flat position (0 for padding)."""
+    from .capture import exon_gc, exon_index
+
+    exon = exon_index(models)
+    gc = exon_gc(models, exon)
+    out = np.zeros(len(models.codes))
+    coding = exon >= 0
+    out[coding] = gc[exon[coding]] - 0.5
+    return out
+
+
+def weights_at(dbin, orient, types, sw, x=None):
+    """Weights of substitutions: bins/orientations per site, types per alt.
+
+    ``x`` (:func:`position_gc`, per site) is needed when ``sw`` has a
+    CpG term.
+    """
     if sw is None:
         return np.ones(np.shape(types))
     cls = CLASS_OF[types]
-    return (
+    w = (
         sw.distance[dbin][..., None]
         * sw.strand[cls * 2 + orient[..., None]]
     )
+    if sw.has_cpg():
+        if x is None:
+            raise ValueError(
+                "These site weights have a CpG term: pass x."
+            )
+        x = np.asarray(x)[..., None]
+        term = np.exp(sw.cpg[0] * x + sw.cpg[1] * x**2)
+        w = w * np.where(CPG_CT[types], term, 1.0)
+    return w
 
 
 def fit_site_weights(
@@ -172,6 +216,8 @@ def fit_site_weights(
     call_alts,
     pseudo_count=50.0,
     n_iter=30,
+    cpg=None,
+    cpg_prior=None,
 ):
     """Fit distance and strand factors by raking two margins.
 
@@ -186,49 +232,199 @@ def fit_site_weights(
         observed call used for the fit
     pseudo_count : expected calls added to every margin, pulling every
         factor toward 1 where the data are thin
+    cpg : (exon, gene, x_of_exon), optional
+        Fit the CpG term too: per site its exon and gene index, and per
+        exon its ``x`` (GC fraction minus 0.5). It is fitted within
+        genes (each gene's calls over its elements), so gene-level
+        biology correlated with GC stays out of it, and alternated with
+        the raking.
+    cpg_prior : (mean, cov), optional
+        Gaussian prior on ``(a1, a2)``: per-cohort estimates shrunk
+        toward ``mean``, ``cov`` being the between-cohort spread. A
+        zero ``cov`` is full pooling (``a = mean``). None is a flat
+        prior.
 
     Returns
     -------
     SiteWeights
     """
     cls_orient = CLASS_OF[types] * 2 + orient[:, None]
-    n_sites = len(dbin)
     d_rep = np.repeat(dbin, 3)
     O_d = np.bincount(dbin[call_rows], minlength=8).astype(float)
     O_s = np.bincount(
         cls_orient[call_rows, call_alts], minlength=12
     ).astype(float)
-    u, v = np.ones(8), np.ones(12)
-    E_s = np.zeros(12)
-    for _ in range(n_iter):
-        E_d = np.bincount(
-            d_rep,
-            weights=(expected * v[cls_orient]).ravel(),
-            minlength=8,
-        )
-        u = (O_d + pseudo_count) / (E_d + pseudo_count)
-        E_s = np.bincount(
-            cls_orient.ravel(),
-            weights=(expected * u[dbin][:, None]).ravel(),
-            minlength=12,
-        )
-        v = (O_s + pseudo_count) / (E_s + pseudo_count)
-        for k in range(6):
-            pair = [2 * k, 2 * k + 1]
-            if E_s[pair].sum() > 0:
-                v[pair] /= (E_s[pair] * v[pair]).sum() / E_s[
-                    pair
-                ].sum()
-    E_d0 = np.bincount(d_rep, weights=expected.ravel(), minlength=8)
-    if E_d0.sum() > 0:
-        u /= (E_d0 * u).sum() / E_d0.sum()
-    del n_sites
+
+    def rake(exp):
+        u, v = np.ones(8), np.ones(12)
+        for _ in range(n_iter):
+            E_d = np.bincount(
+                d_rep,
+                weights=(exp * v[cls_orient]).ravel(),
+                minlength=8,
+            )
+            u = (O_d + pseudo_count) / (E_d + pseudo_count)
+            E_s = np.bincount(
+                cls_orient.ravel(),
+                weights=(exp * u[dbin][:, None]).ravel(),
+                minlength=12,
+            )
+            v = (O_s + pseudo_count) / (E_s + pseudo_count)
+            for k in range(6):
+                pair = [2 * k, 2 * k + 1]
+                if E_s[pair].sum() > 0:
+                    v[pair] /= (E_s[pair] * v[pair]).sum() / E_s[
+                        pair
+                    ].sum()
+        E_d0 = np.bincount(d_rep, weights=exp.ravel(), minlength=8)
+        if E_d0.sum() > 0:
+            u /= (E_d0 * u).sum() / E_d0.sum()
+        return u, v
+
+    a = np.zeros(2)
+    if cpg is None:
+        u, v = rake(expected)
+    else:
+        exon, gene, x_of_exon = cpg
+        is_ct = CPG_CT[types]
+        design = np.column_stack([x_of_exon, x_of_exon**2])
+
+        def with_term(exp, a_):
+            # The term multiplies CpG C>T elements; each such type's
+            # total is kept, since D_tau renormalises it.
+            h = np.exp(design @ a_)[exon][:, None]
+            out = exp * np.where(is_ct, h, 1.0)
+            before = np.bincount(types.ravel(), exp.ravel(), 96)
+            after = np.bincount(types.ravel(), out.ravel(), 96)
+            scale = np.divide(
+                before, after, out=np.ones(96), where=after > 0
+            )
+            return out * scale[types], scale
+
+        for _ in range(3):
+            u, v = rake(with_term(expected, a)[0])
+            a = _fit_cpg_term(
+                expected * u[dbin][:, None] * v[cls_orient],
+                types,
+                exon,
+                gene,
+                design,
+                call_rows,
+                call_alts,
+                a,
+                cpg_prior,
+            )
+        u, v = rake(with_term(expected, a)[0])
     return SiteWeights(
         distance=u,
         strand=v,
         pseudo_count=pseudo_count,
         n_calls=len(call_rows),
+        cpg=a,
     )
+
+
+def _fit_cpg_term(
+    base,
+    types,
+    exon,
+    gene,
+    design,
+    call_rows,
+    call_alts,
+    start,
+    prior,
+):
+    """``(a1, a2)``: each gene's calls over its elements, plus the prior.
+
+    ``base`` is the expectation without the term, calibrated per type.
+    Multiplying a CpG C>T type's elements by the term leaves the type's
+    total to its rate, so that rate is profiled out exactly: the scale
+    ``s_t(a) = sum_e A_et / sum_e A_et h_e`` is part of the objective.
+    """
+    from scipy.optimize import minimize
+
+    if prior is not None:
+        mean = np.asarray(prior[0], dtype=float)
+        cov = np.asarray(prior[1], dtype=float)
+        if np.allclose(cov, 0.0, atol=1e-10):
+            return mean.copy()
+        precision = np.linalg.inv(cov)
+    n_ex = design.shape[0]
+    n_g = int(gene.max()) + 1
+    ct_of_type = np.full(96, -1)
+    ct_types = np.flatnonzero(CPG_CT)
+    ct_of_type[ct_types] = np.arange(len(ct_types))
+    n_t = len(ct_types)
+    ex3 = np.repeat(exon, 3)
+    t_idx = ct_of_type[types].ravel()
+    is_ct = t_idx >= 0
+    A_et = np.zeros((n_ex, n_t))
+    for t in range(n_t):
+        m = t_idx == t
+        A_et[:, t] = np.bincount(ex3[m], base.ravel()[m], n_ex)
+    A_ot = np.bincount(ex3[~is_ct], base.ravel()[~is_ct], n_ex)
+    call_t = ct_of_type[types[call_rows, call_alts]]
+    call_ct = call_t >= 0
+    O_e = np.bincount(
+        exon[call_rows][call_ct], minlength=n_ex
+    ).astype(float)
+    O_t = np.bincount(call_t[call_ct], minlength=n_t).astype(float)
+    n_gene = np.bincount(gene[call_rows], minlength=n_g).astype(float)
+    ex_gene = np.zeros(n_ex, dtype=np.int64)
+    ex_gene[exon] = gene
+    use = (A_et.sum(axis=1) + A_ot) > 0
+    g, X, a_et, a_ot, o_e = (
+        ex_gene[use],
+        design[use],
+        A_et[use],
+        A_ot[use],
+        O_e[use],
+    )
+    tot0 = a_et.sum(axis=0)
+
+    def objective(b):
+        eta = X @ b
+        h = np.exp(eta)
+        den = np.maximum((a_et * h[:, None]).sum(axis=0), 1e-300)
+        scale = tot0 / den
+        # d log s_t / d a_k = -sum_e A_et h_e X_ek / sum_e A_et h_e
+        dls = -((a_et * h[:, None]).T @ X) / den[:, None]  # (t, k)
+        ct_part = a_et * h[:, None] * scale  # (e, t)
+        lam = a_ot + ct_part.sum(axis=1)
+        total = np.maximum(np.bincount(g, lam, n_g), 1e-300)
+        value = (
+            -(o_e * eta).sum()
+            - (O_t * np.log(np.maximum(scale, 1e-300))).sum()
+            + (n_gene * np.log(total)).sum()
+        )
+        d_lam = ct_part.sum(axis=1)[:, None] * X + ct_part @ dls
+        grad = (
+            -(X.T @ o_e)
+            - (O_t @ dls)
+            + np.array(
+                [
+                    (
+                        n_gene
+                        * np.bincount(g, d_lam[:, k], n_g)
+                        / total
+                    ).sum()
+                    for k in range(X.shape[1])
+                ]
+            )
+        )
+        if prior is not None:
+            d = b - mean
+            value += 0.5 * d @ precision @ d
+            grad += precision @ d
+        return value, grad
+
+    return minimize(
+        objective,
+        np.asarray(start, float),
+        jac=True,
+        method="L-BFGS-B",
+    ).x
 
 
 def variant_route_weights(
@@ -265,6 +461,11 @@ def variant_route_weights(
     )
 
     dbin, orient = position_bins(models)
+    x = (
+        position_gc(models)
+        if sw is not None and sw.has_cpg()
+        else None
+    )
     calls = db[
         db["in_universe"].fillna(False).astype(bool)
         & db["channel"].isin(["syn", "esyn", "mis", "non"])
@@ -333,7 +534,11 @@ def variant_route_weights(
         )
         s_idx = np.array([s for s, _ in sites], dtype=np.int64)
         w = weights_at(
-            dbin[s_idx], orient[s_idx], t_idx[:, None], sw
+            dbin[s_idx],
+            orient[s_idx],
+            t_idx[:, None],
+            sw,
+            x=None if x is None else x[s_idx],
         )[:, 0]
         if capture_w is not None:
             w = w * capture_w[0][s_idx]

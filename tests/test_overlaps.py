@@ -63,6 +63,14 @@ def test_priority_order(models):
     assert r[a] < r[b]
 
 
+def test_old_style_clone_names_lose_to_a_symbol(models):
+    m, a, b, *_ = _overlapping(
+        models, name_a="RP11-2C24.9", name_b="GB"
+    )
+    r = gene_priority(m)
+    assert r[b] < r[a]
+
+
 def test_one_owner_per_contested_position(models, tmp_path):
     m, _a, b, ia, ib = _overlapping(
         models, name_a="AC013489.1", name_b="GB"

@@ -921,8 +921,12 @@ def _capture_territory_masks(
 # One gene per position
 # ---------------------------------------------------------------------
 
-# GENCODE names a novel gene after its clone (AC013489.1, AL121899.2).
-_CLONE_NAME = re.compile(r"^[A-Z]{1,2}\d{5,6}\.\d+$")
+# GENCODE names a novel gene after its clone (AC013489.1, AL121899.2),
+# or, in the older style, its library and clone (RP11-2C24.9).
+_CLONE_NAME = re.compile(
+    r"^([A-Z]{1,2}\d{5,6}\.\d+"
+    r"|(RP\d+|CT[A-D]|KB|XXbac|CH\d+|GS1|LL\d+)-.+)$"
+)
 
 
 def gene_priority(models):
@@ -980,7 +984,7 @@ def position_owners(models):
     cache = None
     if getattr(models, "directory", None) is not None:
         cache = (
-            Path(models.directory) / f"owners_{_BUILD_VERSION}.npz"
+            Path(models.directory) / f"owners_{_BUILD_VERSION}_2.npz"
         )
         if cache.exists():
             with np.load(cache) as f:

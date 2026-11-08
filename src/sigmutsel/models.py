@@ -1229,6 +1229,9 @@ class MutationDataset:
                 models,
                 splice_padding=params.get("splice_padding", 0),
                 exclude_repeats=params.get("exclude_repeats", False),
+                exclude_overlaps=params.get(
+                    "exclude_overlaps", False
+                ),
             )
         else:
             coding_in = splice_in = None
@@ -1293,6 +1296,9 @@ class MutationDataset:
                 models,
                 splice_padding=params.get("splice_padding", 0),
                 exclude_repeats=bool(exclude),
+                exclude_overlaps=params.get(
+                    "exclude_overlaps", False
+                ),
             )
         else:
             coding_in = splice_in = None
@@ -1320,6 +1326,85 @@ class MutationDataset:
                 self.generate_contexts_by_gene(gene_universe=universe)
         self._recompute_call_tables()
         return db["universe_reason"].value_counts()
+
+    @record_call
+    def set_exclude_overlaps(self, exclude=True):
+        """Give each coding position and splice site to one gene.
+
+        Overlapping genes (readthroughs, novel clone-based genes over a
+        named one) each counted a shared position in their opportunity,
+        while the MAF credited its calls to only one of them. With
+        ``exclude``, a position belongs to its owner
+        (:func:`channel_universe.position_owners`): it leaves the
+        other genes' territory, and calls labelled with a losing gene
+        move to the owner (:func:`channel_universe.credit_calls_to_owners`).
+        Every call is placed again and the tables rebuilt, as in
+        :meth:`set_exclude_repeats`.
+
+        Returns
+        -------
+        (pandas.Series, int)
+            Calls per ``universe_reason`` after the change, and how
+            many calls moved to their position's owner.
+        """
+        from .channel_universe import (
+            classify_calls,
+            credit_calls_to_owners,
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+
+        if not self.has_channel_universe():
+            raise ValueError(
+                "One gene per position needs the channel universe; this "
+                "dataset was built without it."
+            )
+        params = dict(self._channel_universe or {})
+        params["exclude_overlaps"] = bool(exclude)
+        self._channel_universe = params
+        models = load_or_build_transcript_models()
+        if params.get("territory", "mc3") == "mc3":
+            coding_in, splice_in = territory_masks(
+                models,
+                splice_padding=params.get("splice_padding", 0),
+                exclude_repeats=params.get("exclude_repeats", False),
+                exclude_overlaps=bool(exclude),
+            )
+        else:
+            coding_in = splice_in = None
+        db = self._mutation_db.copy()
+        moved = 0
+        if exclude:
+            db, moved = credit_calls_to_owners(db, models)
+        elif "ensembl_gene_id_maf" in db.columns:
+            db["ensembl_gene_id"] = db["ensembl_gene_id_maf"]
+            db["gene"] = db["gene_maf"]
+        got = classify_calls(db, models, coding_in, splice_in)
+        for column in (
+            "channel",
+            "in_universe",
+            "universe_reason",
+            "transcript_id",
+            "routes",
+        ):
+            db[column] = got[column]
+        if "variant_maf" in db.columns:
+            db["variant"] = db["variant_maf"].where(
+                ~got["in_universe"], got["variant_label"]
+            )
+        self._mutation_db = db
+        self._classify_multi_base(models, coding_in, splice_in)
+        if self._contexts_by_gene is not None:
+            universe = self._contexts_by_gene_gene_universe
+            if universe is None:
+                self.generate_contexts_by_gene()
+            else:
+                self.generate_contexts_by_gene(gene_universe=universe)
+        self._recompute_call_tables()
+        logger.info(
+            "%d calls moved to their position's owner.", moved
+        )
+        return db["universe_reason"].value_counts(), moved
 
     def _recompute_call_tables(self):
         """Rebuild every table derived from the calls that exists."""
@@ -1396,6 +1481,9 @@ class MutationDataset:
                 models,
                 splice_padding=params.get("splice_padding", 0),
                 exclude_repeats=params.get("exclude_repeats", False),
+                exclude_overlaps=params.get(
+                    "exclude_overlaps", False
+                ),
             )
         masked_keys = None
         if mask_af is not None:
@@ -2397,6 +2485,9 @@ class MutationDataset:
                     splice_padding=params.get("splice_padding", 0),
                     exclude_repeats=params.get(
                         "exclude_repeats", False
+                    ),
+                    exclude_overlaps=params.get(
+                        "exclude_overlaps", False
                     ),
                 )
             self._classify_multi_base(models, coding_in, splice_in)
@@ -3727,6 +3818,7 @@ class MutationDataset:
                 params.get("site_weights")
             ),
             exclude_repeats=params.get("exclude_repeats", False),
+            exclude_overlaps=params.get("exclude_overlaps", False),
             capture=self.capture,
         )
         self._contexts_by_gene = tables["contexts"]
@@ -4150,6 +4242,7 @@ class AssayView:
                 params.get("site_weights")
             ),
             exclude_repeats=params.get("exclude_repeats", False),
+            exclude_overlaps=params.get("exclude_overlaps", False),
             capture=self.capture,
         )
         index = ds.contexts_by_gene.index
@@ -4220,6 +4313,9 @@ class AssayView:
                 models,
                 splice_padding=params.get("splice_padding", 0),
                 exclude_repeats=params.get("exclude_repeats", False),
+                exclude_overlaps=params.get(
+                    "exclude_overlaps", False
+                ),
             )
         mask_af = ds.germline_mask_af
         weights = variant_route_weights(
@@ -5390,6 +5486,7 @@ class Model:
             models,
             splice_padding=params.get("splice_padding", 0),
             exclude_repeats=params.get("exclude_repeats", False),
+            exclude_overlaps=params.get("exclude_overlaps", False),
         )
         gene, types, _cons, idx, _ = _coding_site_table(
             models, coding_in

@@ -768,6 +768,7 @@ def territory_masks(
     bed_path=None,
     chain_path=None,
     exclude_repeats=False,
+    exclude_overlaps=False,
 ):
     """Which coding positions and splice sites lie in the territory.
 
@@ -779,7 +780,9 @@ def territory_masks(
     model expect calls that can never be seen (about 1.4% of coding
     positions). Everything that reads the territory -- the
     opportunity, variant routes, call classification, site rates --
-    then excludes those sites alike.
+    then excludes those sites alike. With ``exclude_overlaps``, a
+    position claimed by several genes stays only in its owner's
+    territory (:func:`position_owners`).
 
     Returns
     -------
@@ -794,6 +797,10 @@ def territory_masks(
         coding_rep, splice_rep = repeat_masks(models)
         coding_in = coding_in & ~coding_rep
         splice_in = splice_in & ~splice_rep
+    if exclude_overlaps:
+        own = position_owners(models)
+        coding_in = coding_in & own["coding_owned"]
+        splice_in = splice_in & own["splice_owned"]
     return coding_in, splice_in
 
 
@@ -908,6 +915,208 @@ def _capture_territory_masks(
         )
         os.replace(tmp, cache)
     return coding_in, splice_in
+
+
+# ---------------------------------------------------------------------
+# One gene per position
+# ---------------------------------------------------------------------
+
+# GENCODE names a novel gene after its clone (AC013489.1, AL121899.2).
+_CLONE_NAME = re.compile(r"^[A-Z]{1,2}\d{5,6}\.\d+$")
+
+
+def gene_priority(models):
+    """Rank of every gene when two claim one position (0 is strongest).
+
+    In order: not a readthrough (a hyphenated name whose parts are all
+    genes, TRIM6-TRIM34, unlike HLA-A or NKX2-1); a proper symbol over
+    a clone-based name; the transcript rule (MANE Select, canonical,
+    longest); the longer CDS; the gene id.
+    """
+    sel = models.selection
+    names = sel["gene_name"].astype(str)
+    known = set(names)
+    readthrough = names.map(
+        lambda n: "-" in n and all(p in known for p in n.split("-"))
+    ).to_numpy()
+    clone = names.map(lambda n: bool(_CLONE_NAME.match(n))).to_numpy()
+    rule = (
+        sel["rule"]
+        .map({r: i for i, r in enumerate(TRANSCRIPT_RULES)})
+        .to_numpy()
+    )
+    length = sel["cds_length"].to_numpy()
+    order = np.lexsort(
+        (
+            np.asarray(models.gene_ids, dtype=str),
+            -length,
+            rule,
+            clone,
+            readthrough,
+        )
+    )
+    rank = np.empty(len(order), dtype=np.int64)
+    rank[order] = np.arange(len(order))
+    return rank
+
+
+def position_owners(models):
+    """Which gene owns each coding position and essential splice site.
+
+    A genomic position claimed by several genes (coding in any, or an
+    essential splice site of any) belongs to the one of highest
+    :func:`gene_priority`.
+
+    Returns
+    -------
+    dict
+        ``coding_owned``: bool over ``models.codes`` (True for a
+        position its gene owns; padding False). ``splice_owned``: bool
+        over ``models.splice`` rows. ``keys``, ``genes``, ``owner``:
+        one row per (contested position, claiming gene), sorted by
+        key: the position key, the claiming gene's index and the
+        owner's.
+    """
+    cache = None
+    if getattr(models, "directory", None) is not None:
+        cache = (
+            Path(models.directory) / f"owners_{_BUILD_VERSION}.npz"
+        )
+        if cache.exists():
+            with np.load(cache) as f:
+                return {k: f[k] for k in f.files}
+    rank = gene_priority(models)
+    coding = np.flatnonzero(models.gpos >= 0)
+    sp = models.splice
+    sp_gene = sp["gene"].to_numpy()
+    chroms = pd.unique(
+        np.concatenate(
+            [
+                models.chrom_of[coding],
+                models.selection["chrom"].to_numpy(),
+            ]
+        ).astype(str)
+    )
+    code = {c: i for i, c in enumerate(chroms)}
+    keys = np.concatenate(
+        [
+            pd.Series(models.chrom_of[coding].astype(str))
+            .map(code)
+            .to_numpy(np.int64)
+            * (1 << 33)
+            + models.gpos[coding],
+            pd.Series(
+                models.selection["chrom"]
+                .to_numpy()[sp_gene]
+                .astype(str)
+            )
+            .map(code)
+            .to_numpy(np.int64)
+            * (1 << 33)
+            + sp["gpos"].to_numpy(),
+        ]
+    )
+    genes = np.concatenate([models.gene_of[coding], sp_gene])
+    ranks = rank[genes]
+    order = np.lexsort((ranks, keys))
+    k_sorted, g_sorted = keys[order], genes[order]
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = k_sorted[1:] != k_sorted[:-1]
+    group = np.cumsum(first) - 1
+    owner_of_group = g_sorted[first]
+    owner_sorted = owner_of_group[group]
+    # A row is owned when its gene is the position's owner (a gene that
+    # claims a position twice, coding and splice, keeps both rows).
+    owned_sorted = g_sorted == owner_sorted
+    owned = np.empty(len(order), dtype=bool)
+    owned[order] = owned_sorted
+    n_claims = np.bincount(group)
+    contested = n_claims[group] > 1
+    # Different genes only: one gene's own coding/splice pair is no contest.
+    n_lose = np.bincount(group, ~owned_sorted)
+    contested &= n_lose[group] > 0
+    coding_owned = np.zeros(len(models.codes), dtype=bool)
+    coding_owned[coding] = owned[: len(coding)]
+    out = {
+        "coding_owned": coding_owned,
+        "splice_owned": owned[len(coding) :],
+        "keys": k_sorted[contested],
+        "genes": g_sorted[contested],
+        "owner": owner_sorted[contested],
+        "chroms": chroms.astype(str),
+    }
+    if cache is not None:
+        tmp = cache.with_name(f".{cache.stem}.{os.getpid()}.npz")
+        np.savez_compressed(tmp, **out)
+        os.replace(tmp, cache)
+    return out
+
+
+def credit_calls_to_owners(db, models):
+    """Give each call on a contested position to the position's owner.
+
+    Only a call labelled with a gene that claims the position moves
+    (the MAF's annotation picks one of the overlapping genes); a call
+    the MAF put on a gene without that position stays, as
+    :func:`classify_calls` would leave it out anyway.
+
+    Returns
+    -------
+    (pandas.DataFrame, int)
+        ``db`` with ``ensembl_gene_id`` and ``gene`` of the moved calls
+        replaced (the MAF's values are kept once, in
+        ``ensembl_gene_id_maf`` and ``gene_maf``), and how many moved.
+    """
+    own = position_owners(models)
+    db = db.copy()
+    if "ensembl_gene_id_maf" not in db.columns:
+        db["ensembl_gene_id_maf"] = db["ensembl_gene_id"]
+        db["gene_maf"] = db["gene"]
+    else:
+        db["ensembl_gene_id"] = db["ensembl_gene_id_maf"]
+        db["gene"] = db["gene_maf"]
+    code = {str(c): i for i, c in enumerate(own["chroms"])}
+    chrom = (
+        db["Chromosome"]
+        .astype(str)
+        .map(
+            lambda c: code.get(
+                c, code.get("chr" + c.removeprefix("chr"), -1)
+            )
+        )
+        .to_numpy(np.int64)
+    )
+    gene = (
+        db["ensembl_gene_id"].map(models.gene_index).to_numpy(float)
+    )
+    known = (chrom >= 0) & ~np.isnan(gene)
+    key = chrom * (1 << 33) + db["Start_Position"].to_numpy(np.int64)
+    pair = own["keys"] * len(models.gene_ids) + own["genes"]
+    order = np.argsort(pair, kind="stable")
+    pair_sorted = pair[order]
+    q = key[known] * len(models.gene_ids) + gene[known].astype(
+        np.int64
+    )
+    j = np.clip(
+        np.searchsorted(pair_sorted, q),
+        0,
+        max(len(pair_sorted) - 1, 0),
+    )
+    moved = np.zeros(len(db), dtype=bool)
+    new_owner = np.full(len(db), -1, dtype=np.int64)
+    if len(pair_sorted):
+        idx = np.flatnonzero(known)
+        hit = pair_sorted[j] == q
+        owner = own["owner"][order[j]]
+        changes = hit & (owner != gene[known].astype(np.int64))
+        moved[idx[changes]] = True
+        new_owner[idx[changes]] = owner[changes]
+    if moved.any():
+        ids = np.asarray(models.gene_ids, dtype=object)
+        names = models.selection["gene_name"].to_numpy(dtype=object)
+        db.loc[moved, "ensembl_gene_id"] = ids[new_owner[moved]]
+        db.loc[moved, "gene"] = names[new_owner[moved]]
+    return db, int(moved.sum())
 
 
 # ---------------------------------------------------------------------
@@ -1308,6 +1517,7 @@ def channel_opportunity(
     site_weights=None,
     exclude_repeats=False,
     capture=None,
+    exclude_overlaps=False,
 ):
     """Cached channel opportunity tables, optionally subset to genes.
 
@@ -1340,6 +1550,9 @@ def channel_opportunity(
     capture : capture.CaptureTerritory, optional
         Weight every site by its capture observability
         (:func:`capture.capture_weights`).
+    exclude_overlaps : bool
+        Keep each position only in its owner gene
+        (:func:`position_owners`).
 
     Returns
     -------
@@ -1373,6 +1586,8 @@ def channel_opportunity(
         tag += f"_sw-{site_weights.label()}"
     if exclude_repeats:
         tag += "_norep"
+    if exclude_overlaps:
+        tag += "_owned"
     if capture is not None:
         tag += f"_cap-{capture.label()}"
     directory = cache_dir / f"opportunity_{tag}"
@@ -1389,6 +1604,7 @@ def channel_opportunity(
                 models,
                 splice_padding=splice_padding,
                 exclude_repeats=exclude_repeats,
+                exclude_overlaps=exclude_overlaps,
             )
         else:
             coding_in = splice_in = None
@@ -1433,6 +1649,7 @@ def channel_opportunity(
                     models,
                     splice_padding=0,
                     exclude_repeats=exclude_repeats,
+                    exclude_overlaps=exclude_overlaps,
                 )
                 report["splice_sites_in_unpadded_territory"] = int(
                     unpadded.sum()

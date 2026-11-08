@@ -524,6 +524,9 @@ class SiteRates:
                     exclude_repeats=params.get(
                         "exclude_repeats", False
                     ),
+                    exclude_overlaps=params.get(
+                        "exclude_overlaps", False
+                    ),
                 )
             else:
                 c_in = s_in = None

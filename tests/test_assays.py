@@ -214,3 +214,14 @@ def test_assay_groups_fall_back_to_the_primary(tmp_path):
         )
         is None
     )
+
+
+def test_a_view_shows_the_datasets_private_tables(tmp_path):
+    # Model code reads private attributes (``_variant_db``,
+    # ``_contexts_by_gene``) through the view: they must be the
+    # dataset's, never an attribute of the view that shadows them.
+    ds = MutationDataset(location_maf_files=tmp_path)
+    ds._variant_db = pd.DataFrame({"x": [1]})
+    view = AssayView(ds, "A")
+    assert view._variant_db is ds._variant_db
+    assert view._contexts_by_gene is ds._contexts_by_gene

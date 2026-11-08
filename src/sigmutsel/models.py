@@ -4112,7 +4112,7 @@ class AssayView:
         self._dataset = dataset
         self.assay_name = name
         self._tables = None
-        self._variant_db = None
+        self._assay_variant_db = None
 
     def __getattr__(self, attr):
         return getattr(self._dataset, attr)
@@ -4196,8 +4196,8 @@ class AssayView:
     @property
     def variant_db(self):
         """The dataset's variants, with this assay's route weights."""
-        if self._variant_db is not None:
-            return self._variant_db
+        if self._assay_variant_db is not None:
+            return self._assay_variant_db
         ds = self._dataset
         db = ds.variant_db
         if db is None or self.assay_name == (
@@ -4241,7 +4241,7 @@ class AssayView:
             else db.index.to_series()
         )
         db["route_weights"] = key.map(weights).to_numpy()
-        self._variant_db = db
+        self._assay_variant_db = db
         return db
 
 

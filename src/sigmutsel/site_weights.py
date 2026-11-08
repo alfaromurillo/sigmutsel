@@ -335,21 +335,37 @@ def _fit_cpg_term(
     start,
     prior,
 ):
-    """``(a1, a2)``: each gene's calls over its elements, plus the prior.
+    """``(a1, a2)``: each gene's calls over its elements, plus the prior."""
+    from scipy.optimize import minimize
+
+    if prior is not None and np.allclose(
+        np.asarray(prior[1], dtype=float), 0.0, atol=1e-10
+    ):
+        return np.asarray(prior[0], dtype=float).copy()
+    objective = _cpg_objective(
+        base, types, exon, gene, design, call_rows, call_alts, prior
+    )
+    return minimize(
+        objective,
+        np.asarray(start, float),
+        jac=True,
+        method="L-BFGS-B",
+    ).x
+
+
+def _cpg_objective(
+    base, types, exon, gene, design, call_rows, call_alts, prior=None
+):
+    """The term's negative log-likelihood and gradient, as a function.
 
     ``base`` is the expectation without the term, calibrated per type.
     Multiplying a CpG C>T type's elements by the term leaves the type's
     total to its rate, so that rate is profiled out exactly: the scale
     ``s_t(a) = sum_e A_et / sum_e A_et h_e`` is part of the objective.
     """
-    from scipy.optimize import minimize
-
     if prior is not None:
         mean = np.asarray(prior[0], dtype=float)
-        cov = np.asarray(prior[1], dtype=float)
-        if np.allclose(cov, 0.0, atol=1e-10):
-            return mean.copy()
-        precision = np.linalg.inv(cov)
+        precision = np.linalg.inv(np.asarray(prior[1], dtype=float))
     n_ex = design.shape[0]
     n_g = int(gene.max()) + 1
     ct_of_type = np.full(96, -1)
@@ -419,12 +435,7 @@ def _fit_cpg_term(
             grad += precision @ d
         return value, grad
 
-    return minimize(
-        objective,
-        np.asarray(start, float),
-        jac=True,
-        method="L-BFGS-B",
-    ).x
+    return objective
 
 
 def variant_route_weights(

@@ -1,5 +1,6 @@
 """Data models for mutation rate analysis."""
 
+import contextlib
 import inspect
 import json
 import logging
@@ -236,6 +237,7 @@ class MutationDataset:
     _homdel_db: pd.DataFrame = None
     _indel_db: pd.DataFrame = None
     _qc_ledger: pd.DataFrame = None
+    _assay_table: pd.DataFrame = None
     dataset_directory: str | None = field(
         default=None, init=False, repr=False
     )
@@ -499,6 +501,12 @@ class MutationDataset:
                 "qc_ledger",
                 "_qc_ledger",
                 "qc_ledger.parquet",
+                "parquet",
+            ),
+            (
+                "assay_table",
+                "_assay_table",
+                "assay_table.parquet",
                 "parquet",
             ),
         ]
@@ -1064,6 +1072,122 @@ class MutationDataset:
             else:
                 self.generate_contexts_by_gene(gene_universe=universe)
         self._attach_route_weights()
+
+    @property
+    def assay_table(self):
+        """Each tumor's assay (one row per tumor, column ``assay``), or None.
+
+        Set by :meth:`set_assays`; see :attr:`assays`.
+        """
+        return self._assay_table
+
+    @assay_table.setter
+    def assay_table(self, value):
+        self._assay_table = value
+
+    @property
+    def assay_of_tumor(self):
+        """Tumor -> assay name (a pandas Series), or None."""
+        if self._assay_table is None:
+            return None
+        return self._assay_table["assay"].astype(str)
+
+    @property
+    def assays(self):
+        """Assay name -> its :class:`capture.CaptureTerritory`, or None."""
+        from .capture import CaptureTerritory
+
+        specs = (self._channel_universe or {}).get("assays")
+        if not specs:
+            return None
+        return {
+            name: CaptureTerritory.from_dict(d)
+            for name, d in specs.items()
+        }
+
+    @record_call
+    def set_assays(self, assay_of_tumor, captures, primary=None):
+        """Give each tumor the capture territory of its assay.
+
+        Tumors sequenced under different designs (capture kits, panels,
+        processing batches) see different territories. Each assay
+        ``K`` gets its own opportunity tables, built with
+        ``captures[K]``, and a tumor's rates are computed against its
+        assay's tables and per-type denominators ``D^K``
+        (:meth:`Model._by_assay` joins the assays' tumor columns). The
+        dataset's own tables are the ``primary`` assay's (default: the
+        one with most tumors). Like :meth:`set_capture`, this clears
+        the site weights, to be refitted on the assays' opportunity.
+
+        Parameters
+        ----------
+        assay_of_tumor : mapping or pandas.Series
+            Tumor barcode -> assay name, for every tumor of the dataset.
+        captures : dict
+            Assay name -> :class:`capture.CaptureTerritory`.
+        primary : str, optional
+            The assay whose tables the dataset holds.
+        """
+        assay_of_tumor = pd.Series(
+            assay_of_tumor, dtype=object
+        ).astype(str)
+        unknown = sorted(set(assay_of_tumor) - set(captures))
+        if unknown:
+            raise ValueError(f"Assays without a capture: {unknown}")
+        if self._mutation_db is not None:
+            tumors = pd.Index(
+                self._mutation_db["Tumor_Sample_Barcode"].unique()
+            )
+            missing = tumors.difference(assay_of_tumor.index)
+            if len(missing):
+                raise ValueError(
+                    f"{len(missing)} tumors have no assay "
+                    f"(e.g. {list(missing[:3])})."
+                )
+        if primary is None:
+            primary = assay_of_tumor.value_counts().index[0]
+        params = dict(self._channel_universe or {})
+        params["assays"] = {
+            name: cap.to_dict() for name, cap in captures.items()
+        }
+        params["primary_assay"] = primary
+        self._channel_universe = params
+        table = assay_of_tumor.rename("assay").to_frame()
+        table.index.name = "Tumor_Sample_Barcode"
+        self._assay_table = table
+        self.__dict__.pop("_assay_cache", None)
+        self.set_capture(captures[primary])
+
+    def assay_groups(self, tumors):
+        """Assay name -> the given tumors on it (order kept), or None.
+
+        None when the dataset has no assays. A tumor without an assay
+        takes the primary one (with a warning).
+        """
+        a = self.assay_of_tumor
+        if a is None or not self.assays:
+            return None
+        tumors = pd.Index(tumors)
+        primary = (self._channel_universe or {}).get("primary_assay")
+        of = a.reindex(tumors)
+        if of.isna().any():
+            logger.warning(
+                "%d tumors have no assay; they take the primary %r.",
+                int(of.isna().sum()),
+                primary,
+            )
+            of = of.fillna(primary)
+        return {
+            name: tumors[(of == name).to_numpy()]
+            for name in pd.unique(of.to_numpy())
+        }
+
+    def assay_view(self, name):
+        """The dataset as assay ``name`` sees it (:class:`AssayView`)."""
+        cache = self.__dict__.setdefault("_assay_cache", {})
+        if name not in cache:
+            cache[name] = AssayView(self, name)
+        return cache[name]
 
     @record_call
     @record_call
@@ -3939,6 +4063,188 @@ def _cut_kwargs(
     return extra
 
 
+def _rows_of(mu_taus, tumors):
+    """``mu_taus`` (a frame or a dict of frames) on ``tumors`` only."""
+    if isinstance(mu_taus, dict):
+        return {k: v.loc[tumors] for k, v in mu_taus.items()}
+    return mu_taus.loc[tumors]
+
+
+def _join_tumor_columns(outs, order):
+    """Join per-assay outputs along their tumor columns, in ``order``."""
+    first = outs[0]
+    if isinstance(first, dict):
+        return {
+            k: _join_tumor_columns([o[k] for o in outs], order)
+            for k in first
+        }
+    if isinstance(first, tuple):
+        return tuple(
+            _join_tumor_columns([o[i] for o in outs], order)
+            for i in range(len(first))
+        )
+    if isinstance(first, pd.DataFrame):
+        joined = pd.concat(outs, axis=1)
+        cols = [c for c in order if c in joined.columns]
+        rest = [c for c in joined.columns if c not in set(cols)]
+        return joined[cols + rest]
+    raise TypeError(
+        f"Cannot join per-assay outputs of type {type(first)}"
+    )
+
+
+class AssayView:
+    """A :class:`MutationDataset` as one assay's tumors see it.
+
+    Everything is the dataset's, except what depends on the territory:
+    the opportunity tables (``contexts_by_gene_syn``, ``_mis``, ``_non``,
+    ``_spl``, ``_esyn``, ``_nonsyn``, :attr:`type_opportunity`), each
+    variant's ``route_weights`` in :attr:`variant_db`, and
+    :attr:`capture` are the assay's (built on first use from its
+    :class:`capture.CaptureTerritory`, with the dataset's territory,
+    mask and site weights). The position counts ``contexts_by_gene``
+    are the dataset's: they never carry weights.
+    """
+
+    _OWN = ("syn", "mis", "non", "spl", "esyn")
+
+    def __init__(self, dataset, name):
+        self._dataset = dataset
+        self.assay_name = name
+        self._tables = None
+        self._variant_db = None
+
+    def __getattr__(self, attr):
+        return getattr(self._dataset, attr)
+
+    @property
+    def capture(self):
+        return self._dataset.assays[self.assay_name]
+
+    def _load_tables(self):
+        if self._tables is not None:
+            return self._tables
+        ds = self._dataset
+        if self.assay_name == (ds.channel_universe or {}).get(
+            "primary_assay"
+        ):
+            self._tables = {
+                h: getattr(ds, f"_contexts_by_gene_{h}")
+                for h in self._OWN
+            }
+            return self._tables
+        from .channel_universe import (
+            channel_opportunity,
+            load_or_build_transcript_models,
+        )
+        from .site_weights import SiteWeights
+
+        params = ds.channel_universe or {}
+        tables = channel_opportunity(
+            keep_ids=ds.contexts_by_gene.index,
+            territory=params.get("territory", "mc3"),
+            splice_padding=params.get("splice_padding", 0),
+            models=load_or_build_transcript_models(),
+            germline_mask_af=params.get("germline_mask_af"),
+            site_weights=SiteWeights.from_dict(
+                params.get("site_weights")
+            ),
+            exclude_repeats=params.get("exclude_repeats", False),
+            capture=self.capture,
+        )
+        index = ds.contexts_by_gene.index
+        self._tables = {
+            h: tables[h].reindex(index).fillna(0.0) for h in self._OWN
+        }
+        return self._tables
+
+    @property
+    def contexts_by_gene_syn(self):
+        return self._load_tables()["syn"]
+
+    @property
+    def contexts_by_gene_mis(self):
+        return self._load_tables()["mis"]
+
+    @property
+    def contexts_by_gene_non(self):
+        return self._load_tables()["non"]
+
+    @property
+    def contexts_by_gene_spl(self):
+        return self._load_tables()["spl"]
+
+    @property
+    def contexts_by_gene_esyn(self):
+        return self._load_tables()["esyn"]
+
+    @property
+    def contexts_by_gene_nonsyn(self):
+        t = self._load_tables()
+        return t["mis"] + t["non"] + t["spl"]
+
+    @property
+    def type_opportunity(self):
+        t = self._load_tables()
+        total = t["syn"].add(
+            t["mis"] + t["non"] + t["spl"], fill_value=0.0
+        )
+        if t["esyn"] is not None:
+            total = total.add(t["esyn"], fill_value=0.0)
+        return total
+
+    @property
+    def variant_db(self):
+        """The dataset's variants, with this assay's route weights."""
+        if self._variant_db is not None:
+            return self._variant_db
+        ds = self._dataset
+        db = ds.variant_db
+        if db is None or self.assay_name == (
+            ds.channel_universe or {}
+        ).get("primary_assay"):
+            return db
+        from .capture import capture_weights
+        from .channel_universe import (
+            load_or_build_transcript_models,
+            territory_masks,
+        )
+        from .germline_mask import load_germline_mask
+        from .site_weights import variant_route_weights
+
+        params = ds.channel_universe or {}
+        models = load_or_build_transcript_models()
+        coding_in = None
+        if params.get("territory", "mc3") == "mc3":
+            coding_in, _ = territory_masks(
+                models,
+                splice_padding=params.get("splice_padding", 0),
+                exclude_repeats=params.get("exclude_repeats", False),
+            )
+        mask_af = ds.germline_mask_af
+        weights = variant_route_weights(
+            ds.model_db,
+            models,
+            coding_in,
+            ds.site_weights,
+            masked_keys=(
+                None
+                if mask_af is None
+                else load_germline_mask(mask_af)
+            ),
+            capture_w=capture_weights(models, self.capture),
+        )
+        db = db.copy()
+        key = (
+            db["variant"]
+            if "variant" in db.columns
+            else db.index.to_series()
+        )
+        db["route_weights"] = key.map(weights).to_numpy()
+        self._variant_db = db
+        return db
+
+
 @dataclass(repr=False, init=False)
 class Model:
     """Signature based, mutation and selection model.
@@ -5103,34 +5409,56 @@ class Model:
                 key[:, None] + g_alt,
                 load_germline_mask(ds.germline_mask_af),
             ).astype(float)
-        if ds.capture is not None:
-            # The capture observability is part of the opportunity the
-            # factors are fitted against (see :mod:`capture`).
-            from .capture import capture_weights
-
-            cap = capture_weights(models, ds.capture)[0]
-            alive = alive * cap[idx][:, None]
-
         mt = self._mu_taus[list(canonical_types_order)]
         if excluded_samples is not None:
             mt = mt.loc[
                 mt.index.difference(pd.Index(excluded_samples))
             ]
-        D = np.bincount(
-            types.ravel(), weights=alive.ravel(), minlength=96
+
+        def expected_of(alive_k, mt_k):
+            # sum_j mu_{j,tau} / D_tau per substitution, observability
+            # included: the per-tumor type rates alone.
+            D = np.bincount(
+                types.ravel(), weights=alive_k.ravel(), minlength=96
+            )
+            rate = np.divide(
+                mt_k.sum(axis=0).to_numpy(float),
+                D,
+                out=np.zeros(96),
+                where=D > 0,
+            )
+            return rate[types] * alive_k
+
+        from .capture import capture_weights
+
+        groups = (
+            ds.assay_groups(mt.index)
+            if hasattr(ds, "assay_groups")
+            else None
         )
-        rate = np.divide(
-            mt.sum(axis=0).to_numpy(float),
-            D,
-            out=np.zeros(96),
-            where=D > 0,
-        )
+        if groups is not None:
+            # Each assay's tumors against their own captured
+            # opportunity (see :meth:`MutationDataset.set_assays`).
+            assays = ds.assays
+            core = np.zeros(types.shape)
+            for name, tumors in groups.items():
+                cap = capture_weights(models, assays[name])[0]
+                core += expected_of(
+                    alive * cap[idx][:, None], mt.loc[tumors]
+                )
+        else:
+            if ds.capture is not None:
+                # The capture observability is part of the opportunity
+                # the factors are fitted against (see :mod:`capture`).
+                cap = capture_weights(models, ds.capture)[0]
+                alive = alive * cap[idx][:, None]
+            core = expected_of(alive, mt)
         gene_ids = pd.Index(models.gene_ids)
         passengers = pd.Index(
             filter_passenger_genes_ensembl(ds.contexts_by_gene.index)
         )
         is_pas = gene_ids.isin(passengers)[gene]
-        expected = rate[types] * alive * is_pas[:, None]
+        expected = core * is_pas[:, None]
 
         db = ds.model_db
         db = db[db["channel"].isin(["syn", "esyn", "mis", "non"])]
@@ -7130,6 +7458,18 @@ class Model:
     def _compute_mu_g_taus(
         self, use_cov_effects=True, channel="nonsyn", taus=None
     ):
+        """Per-type rates (:meth:`_compute_mu_g_taus_single`), per assay."""
+        return self._by_assay(
+            lambda: self._compute_mu_g_taus_single(
+                use_cov_effects=use_cov_effects,
+                channel=channel,
+                taus=taus,
+            )
+        )
+
+    def _compute_mu_g_taus_single(
+        self, use_cov_effects=True, channel="nonsyn", taus=None
+    ):
         """Compute per-gene, per-type, per-sample mutation rates.
 
         Mirrors :meth:`compute_mu_gs`, but keeps mutation type τ as
@@ -7327,6 +7667,15 @@ class Model:
 
     @record_call
     def compute_mu_ms(self, use_cov_effects=True, **kwargs):
+        """Per-variant rates (:meth:`_compute_mu_ms_single`), per assay."""
+        self.mu_ms = self._by_assay(
+            lambda: self._compute_mu_ms_single(
+                use_cov_effects=use_cov_effects, **kwargs
+            )
+        )
+        return self.mu_ms
+
+    def _compute_mu_ms_single(self, use_cov_effects=True, **kwargs):
         """Compute per-variant mutation rates per sample.
 
         Wraps :func:`estimate_mus.compute_mu_m_per_tumor` to convert
@@ -8725,13 +9074,16 @@ class Model:
             )
 
         # Compute baseline mutation rates per gene
-        self._base_mus = compute_mu_g_per_tumor(
-            mu_taus=self._mu_taus,
-            contexts_by_gene=self.dataset.contexts_by_gene,
-            prob_g_tau_tau_independent=prob_g_tau_tau_independent,
-            type_opportunity=getattr(
-                self.dataset, "type_opportunity", None
-            ),
+        # Per assay (each against its own territory), when it has them.
+        self._base_mus = self._by_assay(
+            lambda: compute_mu_g_per_tumor(
+                mu_taus=self._mu_taus,
+                contexts_by_gene=self.dataset.contexts_by_gene,
+                prob_g_tau_tau_independent=prob_g_tau_tau_independent,
+                type_opportunity=getattr(
+                    self.dataset, "type_opportunity", None
+                ),
+            )
         )
 
         self._prob_g_tau_tau_independent = prob_g_tau_tau_independent
@@ -8748,6 +9100,82 @@ class Model:
 
     @record_call
     def compute_channel_base_mus(
+        self, prob_g_tau_tau_independent=None
+    ):
+        """Split baseline rates into the two channels, per assay.
+
+        :meth:`_compute_channel_base_mus_single` for each assay's
+        tumors against its own territory (:meth:`_by_assay`); without
+        assays, exactly that method.
+        """
+        syn, nonsyn = self._by_assay(
+            lambda: self._compute_channel_base_mus_single(
+                prob_g_tau_tau_independent
+            )
+        )
+        self._base_mus_syn, self._base_mus_nonsyn = syn, nonsyn
+        return syn, nonsyn
+
+    # -----------------------------------------------------------------
+    # Assays: one territory per group of tumors
+    # -----------------------------------------------------------------
+
+    def _assay_groups(self):
+        """Assay -> tumors of ``mu_taus``, or None (no assays, or inside one)."""
+        ds = getattr(self, "dataset", None)
+        if isinstance(ds, AssayView) or not hasattr(
+            ds, "assay_groups"
+        ):
+            return None
+        if getattr(self, "_mu_taus", None) is None:
+            return None
+        frame = (
+            next(iter(self._mu_taus.values()))
+            if isinstance(self._mu_taus, dict)
+            else self._mu_taus
+        )
+        return ds.assay_groups(frame.index)
+
+    @contextlib.contextmanager
+    def _in_assay(self, name, tumors):
+        """Temporarily see only assay ``name``: its tables, its tumors."""
+        saved = (self.dataset, self._mu_taus)
+        parts = self.__dict__.pop("_base_mus_parts", None)
+        self.dataset = saved[0].assay_view(name)
+        self._mu_taus = _rows_of(saved[1], tumors)
+        try:
+            yield
+        finally:
+            self.dataset, self._mu_taus = saved
+            self.__dict__.pop("_base_mus_parts", None)
+            if parts is not None:
+                self.__dict__["_base_mus_parts"] = parts
+
+    def _by_assay(self, compute):
+        """``compute()`` once per assay on its tumors; columns joined.
+
+        Without assays (or already inside one) it is ``compute()``.
+        Each assay's tumors see its own opportunity tables, per-type
+        denominators and route weights (:class:`AssayView`), so a
+        tumor's rate is the one its own territory gives; the outputs
+        (genes x tumors frames, draws x tumors frames, or dicts and
+        tuples of them) are joined back in the tumors' original order.
+        """
+        groups = self._assay_groups()
+        if groups is None:
+            return compute()
+        frame = (
+            next(iter(self._mu_taus.values()))
+            if isinstance(self._mu_taus, dict)
+            else self._mu_taus
+        )
+        outs = []
+        for name, tumors in groups.items():
+            with self._in_assay(name, tumors):
+                outs.append(compute())
+        return _join_tumor_columns(outs, frame.index)
+
+    def _compute_channel_base_mus_single(
         self, prob_g_tau_tau_independent=None
     ):
         """Split baseline rates into synonymous/non-synonymous channels.
@@ -8950,16 +9378,20 @@ class Model:
                     f"The dataset has no opportunity table for {part!r}."
                 )
             if part not in cache:
-                cache[part] = compute_mu_g_channel_per_tumor(
-                    mu_taus=self._mu_taus,
-                    channel_contexts_by_gene=tables[part],
-                    contexts_by_gene=self.dataset.contexts_by_gene,
-                    prob_g_tau_tau_independent=(
-                        self._prob_g_tau_tau_independent
-                    ),
-                    type_opportunity=getattr(
-                        self.dataset, "type_opportunity", None
-                    ),
+                cache[part] = self._by_assay(
+                    lambda part=part: compute_mu_g_channel_per_tumor(
+                        mu_taus=self._mu_taus,
+                        channel_contexts_by_gene=getattr(
+                            self.dataset, f"contexts_by_gene_{part}"
+                        ),
+                        contexts_by_gene=self.dataset.contexts_by_gene,
+                        prob_g_tau_tau_independent=(
+                            self._prob_g_tau_tau_independent
+                        ),
+                        type_opportunity=getattr(
+                            self.dataset, "type_opportunity", None
+                        ),
+                    )
                 )
             parts.append(cache[part])
         total = parts[0]
@@ -11189,6 +11621,11 @@ class Model:
         from .constants import canonical_types_order
         from .estimate_mus import compute_mu_g_channel_per_tumor
 
+        if self._assay_groups() is not None:
+            raise NotImplementedError(
+                "Per-type weights (spectrum_draws) are not implemented "
+                "with assays: each assay has its own."
+            )
         identity = pd.DataFrame(
             np.eye(len(canonical_types_order)),
             index=canonical_types_order,
@@ -11370,6 +11807,41 @@ class Model:
         return r_g_draws.to_numpy()
 
     def compute_mu_m_posterior_draws(
+        self,
+        variant,
+        r_g_variant="none",
+        n_draws=None,
+        rng=None,
+        spectrum_draws=False,
+    ):
+        """Per-tumor rate draws of one variant, per assay.
+
+        :meth:`_compute_mu_m_posterior_draws_single` for each assay's
+        tumors. A draw is one stage-1 sample shared by every tumor, so
+        every assay replays the same random stream (the generator's
+        state is reset before each), and the draws join column-wise.
+        """
+        if self._assay_groups() is None:
+            return self._compute_mu_m_posterior_draws_single(
+                variant, r_g_variant, n_draws, rng, spectrum_draws
+            )
+        if spectrum_draws:
+            raise NotImplementedError(
+                "spectrum_draws is not implemented with assays."
+            )
+        if rng is None:
+            rng = np.random.default_rng()
+        state = rng.bit_generator.state
+
+        def one():
+            rng.bit_generator.state = state
+            return self._compute_mu_m_posterior_draws_single(
+                variant, r_g_variant, n_draws, rng, spectrum_draws
+            )
+
+        return self._by_assay(one)
+
+    def _compute_mu_m_posterior_draws_single(
         self,
         variant,
         r_g_variant="none",

@@ -544,6 +544,11 @@ class SiteRates:
         if isinstance(genome_dir, str) and genome_dir == "default":
             genome_dir = sigprofiler_genome_dir()
 
+        if getattr(dataset, "assays", None):
+            raise NotImplementedError(
+                "SiteRates does not handle per-assay territories yet "
+                "(MutationDataset.set_assays)."
+            )
         contexts = dataset.contexts_by_gene
         table = SiteTable.build(
             models,

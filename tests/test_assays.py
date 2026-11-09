@@ -225,3 +225,60 @@ def test_a_view_shows_the_datasets_private_tables(tmp_path):
     view = AssayView(ds, "A")
     assert view._variant_db is ds._variant_db
     assert view._contexts_by_gene is ds._contexts_by_gene
+
+
+def test_rebuilt_tables_drop_every_assay_view(tmp_path, monkeypatch):
+    # The territory refit fitted its models on the tables an assay view
+    # cached before the site weights were refitted (flat weights, no
+    # CpG term): a view must never outlive the tables it was built on.
+    import sigmutsel.channel_universe as cu
+
+    genes = pd.Index(["g1", "g2"], name="ensembl_gene_id")
+    types = list(canonical_types_order)
+
+    def tables(scale):
+        frame = pd.DataFrame(scale, index=genes, columns=types)
+        out = {
+            h: frame.copy()
+            for h in ("syn", "mis", "non", "spl", "esyn")
+        }
+        out["contexts"] = frame.copy()
+        out["transcripts"] = pd.DataFrame(
+            {"rule": ["mane_select"] * 2}, index=genes
+        )
+        return out
+
+    built = iter([tables(1.0), tables(2.0)])
+    monkeypatch.setattr(
+        cu, "load_or_build_transcript_models", lambda **k: None
+    )
+    monkeypatch.setattr(
+        cu, "resolve_keep_ids_for_universe", lambda ids: ids
+    )
+    monkeypatch.setattr(
+        cu, "channel_opportunity", lambda **k: next(built)
+    )
+    ds = MutationDataset(location_maf_files=tmp_path)
+    ds._channel_universe = {
+        "territory": "mc3",
+        "splice_padding": 0,
+        "assays": {"A": {"bed_path": __file__}},
+        "primary_assay": "A",
+    }
+    ds._generate_channel_opportunity(None)
+    first = ds.assay_view("A")
+    assert float(first.contexts_by_gene_nonsyn.iloc[0, 0]) == 3.0
+    ds._generate_channel_opportunity(
+        None
+    )  # e.g. refitted site weights
+    view = ds.assay_view("A")
+    assert view is not first
+    assert float(view.contexts_by_gene_nonsyn.iloc[0, 0]) == 6.0
+    assert view.type_opportunity.equals(
+        ds._contexts_by_gene_syn
+        + ds._contexts_by_gene_nonsyn
+        + ds._contexts_by_gene_esyn
+    )
+    # New route weights (set_site_weights, set_capture, the mask) too.
+    ds._attach_route_weights()
+    assert ds.assay_view("A") is not view

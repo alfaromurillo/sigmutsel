@@ -1453,7 +1453,10 @@ class MutationDataset:
         (:func:`site_weights.variant_route_weights`);
         :func:`estimate_mus.compute_mu_m_per_tumor` multiplies them in.
         Dropped when there are neither site weights nor a mask.
+        Every assay's view is dropped too: it keeps the route weights
+        it built, from the weights of that moment.
         """
+        self.__dict__.pop("_assay_cache", None)
         if (
             self._variant_db is None
             or not self.has_channel_universe()
@@ -3831,6 +3834,9 @@ class MutationDataset:
             tables["mis"] + tables["non"] + tables["spl"]
         )
         self._gene_transcripts = tables["transcripts"]
+        # Each assay's view holds the tables it saw first (the primary's
+        # are these very frames): rebuilt tables make every view stale.
+        self.__dict__.pop("_assay_cache", None)
         logger.info(
             "Channel opportunity for %d genes (%s)",
             len(self._contexts_by_gene),

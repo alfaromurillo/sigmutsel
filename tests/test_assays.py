@@ -14,6 +14,7 @@ and one on the other:
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from sigmutsel.capture import CaptureTerritory, capture_weights
 from sigmutsel.channel_universe import (
@@ -282,3 +283,97 @@ def test_rebuilt_tables_drop_every_assay_view(tmp_path, monkeypatch):
     # New route weights (set_site_weights, set_capture, the mask) too.
     ds._attach_route_weights()
     assert ds.assay_view("A") is not view
+
+
+def test_site_rates_per_assay_are_mu_ms(
+    models, tmp_path, monkeypatch
+):
+    # Each tumor's observable rate goes through its own assay: its
+    # capture and its denominators. The mutation rate has no capture.
+    import sigmutsel.channel_universe as cu
+    import sigmutsel.germline_mask as gm
+    from sigmutsel.site_rates import AssaySiteRates, SiteRates
+    from tests import test_site_rates as _sr
+
+    monkeypatch.setattr(
+        cu, "load_or_build_transcript_models", lambda **k: models
+    )
+    monkeypatch.setattr(
+        gm, "load_germline_mask", lambda af: _masked_keys(MASK)
+    )
+    full, partial = _captures(tmp_path)
+    t_a, t_b = _tables(models, full), _tables(models, partial)
+    db = _sr._every_call(models)
+    db["Tumor_Sample_Barcode"] = np.resize(TUMORS, len(db))
+    db["Variant_Classification"] = np.where(
+        db["channel"] == "syn", "Silent", "Missense_Mutation"
+    )
+    ds = MutationDataset(str(tmp_path / "mafs"))
+    ds._mutation_db = db.reset_index(drop=True)
+    ds._channel_universe = {
+        "territory": None,
+        "splice_padding": 0,
+        "germline_mask_af": 1e-4,
+        "site_weights": _planted().to_dict(),
+        "assays": {"A": full.to_dict(), "B": partial.to_dict()},
+        "primary_assay": "A",
+    }
+    ds._assay_table = pd.DataFrame(
+        {"assay": ["A", "B", "A"]}, index=pd.Index(TUMORS)
+    )
+    ds._contexts_by_gene = t_a["contexts"]
+    for ch in CHANNELS:
+        setattr(ds, f"_contexts_by_gene_{ch}", t_a[ch])
+    ds._contexts_by_gene_nonsyn = t_a["nonsyn"]
+    ds._variant_db = _sr._variant_db(models, db)
+    ds.assay_view("B")._tables = {h: t_b[h] for h in AssayView._OWN}
+    cov = pd.DataFrame({"x1": [0.4, -0.7]}, index=_sr.GENES)
+    model = Model(ds, cov)
+    model._mu_taus = _sr._mu_taus()
+    model.compute_base_mus(prob_g_tau_tau_independent=False)
+    model.compute_channel_base_mus()
+    model.cov_effects = np.array([0.2, 0.5])
+    model._rg_delta_intercept = 0.15
+    model.compute_mu_ms()
+
+    kw = {
+        "r_g": "none",
+        "transcript_models": models,
+        "coding_in": None,
+        "splice_in": None,
+        "masked_keys": _masked_keys(MASK),
+        "genome_dir": None,
+    }
+    rates = SiteRates.from_model(model, **kw)
+    assert isinstance(rates, AssaySiteRates)
+    assert [k for k, _ in rates.parts()] == ["A", "B"]
+    variants = ds.variant_db
+    info, mutation, observable = rates.variant_rates(
+        list(variants.index), genes=list(variants["ensembl_gene_id"])
+    )
+    want = model.mu_ms.loc[variants.index, TUMORS].to_numpy()
+    assert list(observable.columns) == TUMORS
+    np.testing.assert_allclose(
+        observable.to_numpy(), want, rtol=1e-9, atol=0
+    )
+    np.testing.assert_allclose(
+        info["observable_rate_total"].to_numpy(),
+        want.sum(axis=1),
+        rtol=1e-9,
+        atol=0,
+    )
+    # B's capture lowers its tumor's observable rate, not its mutation
+    # rate; A's territory is the whole exome, so only the mask counts.
+    assert (
+        mutation["t2"].to_numpy() >= observable["t2"].to_numpy()
+    ).all()
+    assert (
+        mutation["t2"].to_numpy() > observable["t2"].to_numpy() * 1.01
+    ).any()
+    # One assay alone is a plain SiteRates on its tumors.
+    only_b = SiteRates.from_model(model, assay="B", **kw)
+    assert isinstance(only_b, SiteRates)
+    assert list(only_b.tumors) == ["t2"]
+    # A weight table per element does not exist across assays.
+    with pytest.raises(AttributeError, match="parts"):
+        _ = rates.table

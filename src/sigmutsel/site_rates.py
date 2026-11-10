@@ -28,6 +28,16 @@ multiplier per gene and channel, and computes rates for whatever is
 asked, per tumor or summed over tumors, including aggregates over any
 grouping of the elements.
 
+Capture territories
+-------------------
+A capture territory (:mod:`capture`) makes a site observable with
+probability ``T_o``. It does not change how often a site mutates, so
+``rate`` carries no ``T_o``; ``observable_rate`` is ``rate * T_o`` on an
+unmasked allele. ``mu_ms`` is the observable rate. A dataset whose
+tumors are on several assays gives :class:`AssaySiteRates`: one
+:class:`SiteRates` per assay (:meth:`SiteRates.parts`), each with that
+assay's capture and denominators ``D^K``.
+
 Masked alleles
 --------------
 An allele of the germline mask is not opportunity (a call there is
@@ -56,7 +66,7 @@ mixture otherwise; ``context`` in the result says which.
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -200,19 +210,9 @@ class SiteTable:
             from .capture import capture_weights
 
             cap_c, cap_s = capture_weights(models, capture)
-        sg, st, sw = _splice_site_weights(
-            models, splice_in, row_weights=cap_s
+        spl = _splice_arrays(
+            models, splice_in, masked_keys, gene_row, cap_s
         )
-        if masked_keys is not None:
-            _, _, mw = _splice_site_weights(
-                models,
-                splice_in,
-                masked_keys=masked_keys,
-                row_weights=cap_s,
-            )
-        else:
-            mw = np.zeros_like(sw)
-        sk = gene_row[sg] >= 0 if len(sg) else np.zeros(0, bool)
         return cls(
             models=models,
             genes=genes,
@@ -223,10 +223,6 @@ class SiteTable:
             types=types.astype(np.int8),
             cons=cons.astype(np.int8),
             masked=masked,
-            splice_gene=gene_row[sg[sk]] if len(sg) else sg,
-            splice_type=st[sk].astype(np.int64),
-            splice_weight=sw[sk],
-            splice_observable=(sw - mw)[sk],
             site_weights=site_weights,
             coding_in=coding_in,
             splice_in=splice_in,
@@ -234,6 +230,25 @@ class SiteTable:
             capture_coding=None if cap_c is None else cap_c[idx],
             gc_x=gc_x,
             capture_splice=cap_s,
+            **spl,
+        )
+
+    def with_capture(self, capture):
+        """This table under another capture; the arrays are shared."""
+        from .capture import capture_weights
+
+        cap_c, cap_s = capture_weights(self.models, capture)
+        return replace(
+            self,
+            capture_coding=cap_c[self.idx],
+            capture_splice=cap_s,
+            **_splice_arrays(
+                self.models,
+                self.splice_in,
+                self.masked_keys,
+                self.gene_row,
+                cap_s,
+            ),
         )
 
     @property
@@ -241,8 +256,12 @@ class SiteTable:
         """Gene row of each coding position."""
         return self.gene_row[self.models.gene_of[self.idx]]
 
-    def weights(self, rows=slice(None)):
-        """``upsilon_o`` before the mask, (n, 3), for ``rows``."""
+    def weights(self, rows=slice(None), capture=True):
+        """``upsilon_o`` before the mask, (n, 3), for ``rows``.
+
+        ``capture`` multiplies in the capture observability ``T_o``,
+        as the opportunity tables do.
+        """
         from .site_weights import weights_at
 
         w = weights_at(
@@ -252,7 +271,7 @@ class SiteTable:
             self.site_weights,
             x=None if self.gc_x is None else self.gc_x[rows],
         )
-        if self.capture_coding is not None:
+        if capture and self.capture_coding is not None:
             w = w * self.capture_coding[rows][..., None]
         return w
 
@@ -287,6 +306,38 @@ class SiteTable:
             np.cumsum(hi - lo) - (hi - lo), hi - lo
         )
         return qi, flat[starts + offs]
+
+
+def _splice_arrays(models, splice_in, masked_keys, gene_row, cap_s):
+    """A site table's splice columns, under capture weights ``cap_s``."""
+    sg, st, sw = _splice_site_weights(
+        models, splice_in, row_weights=cap_s
+    )
+    if masked_keys is not None:
+        _, _, mw = _splice_site_weights(
+            models,
+            splice_in,
+            masked_keys=masked_keys,
+            row_weights=cap_s,
+        )
+    else:
+        mw = np.zeros_like(sw)
+    sk = gene_row[sg] >= 0 if len(sg) else np.zeros(0, bool)
+    return {
+        "splice_gene": gene_row[sg[sk]] if len(sg) else sg,
+        "splice_type": st[sk].astype(np.int64),
+        "splice_weight": sw[sk],
+        "splice_observable": (sw - mw)[sk],
+    }
+
+
+def _channel_tables(data):
+    """The four-channel opportunity of a dataset or an assay's view."""
+    if getattr(data, "assay_name", None) is None:
+        return data.contexts_by_gene_channels
+    return {
+        c: getattr(data, f"contexts_by_gene_{c}") for c in CHANNELS
+    }
 
 
 def _chrom_codes(chrom):
@@ -455,6 +506,7 @@ class SiteRates:
         masked_keys="dataset",
         genome_dir="default",
         verify=True,
+        assay=None,
     ):
         """The site rates of a fitted channel-split model.
 
@@ -483,6 +535,11 @@ class SiteRates:
         verify : bool
             Check that the site table rebuilds the dataset's four
             channel tables (to 1e-9 relative); raises if not.
+        assay : str, optional
+            On a dataset with assays, this assay's tumors alone. The
+            default is all of them: an :class:`AssaySiteRates` when
+            there are several assays, one :class:`SiteRates` when
+            there is one.
         """
         from .channel_universe import (
             load_or_build_transcript_models,
@@ -555,11 +612,7 @@ class SiteRates:
         if isinstance(genome_dir, str) and genome_dir == "default":
             genome_dir = sigprofiler_genome_dir()
 
-        if getattr(dataset, "assays", None):
-            raise NotImplementedError(
-                "SiteRates does not handle per-assay territories yet "
-                "(MutationDataset.set_assays)."
-            )
+        assays = getattr(dataset, "assays", None)
         contexts = dataset.contexts_by_gene
         table = SiteTable.build(
             models,
@@ -568,13 +621,10 @@ class SiteRates:
             splice_in=splice_in,
             masked_keys=masked_keys,
             site_weights=dataset.site_weights,
-            capture=getattr(dataset, "capture", None),
+            capture=(
+                None if assays else getattr(dataset, "capture", None)
+            ),
         )
-
-        denominators = type_denominators(
-            contexts, getattr(dataset, "type_opportunity", None)
-        )
-        M = tumor_type_rates(mu_taus, denominators)
 
         # The covariate scale exactly as _compute_mu_g_taus applies it:
         # the same function, over the same genes, on a baseline of 1.
@@ -603,22 +653,59 @@ class SiteRates:
         multipliers = pd.DataFrame(
             {"syn": syn * rg, "nonsyn": nonsyn * rg}
         )
-        out = cls(
-            table,
-            M,
-            multipliers,
-            genome_dir=genome_dir,
-            description={
-                "r_g": r_g,
-                "delta": None if delta is None else float(delta),
-                "n_genes_without_r_g": int(rg.isna().sum()),
-                "germline_mask_af": dataset.germline_mask_af,
-                "site_weights": params.get("site_weights"),
-            },
-        )
-        if verify:
-            out.verify_opportunity(dataset.contexts_by_gene_channels)
-        return out
+        description = {
+            "r_g": r_g,
+            "delta": None if delta is None else float(delta),
+            "n_genes_without_r_g": int(rg.isna().sum()),
+            "germline_mask_af": dataset.germline_mask_af,
+            "site_weights": params.get("site_weights"),
+        }
+
+        def part(data, tumors, tab):
+            out = cls(
+                tab,
+                tumor_type_rates(
+                    mu_taus.loc[tumors],
+                    type_denominators(
+                        contexts,
+                        getattr(data, "type_opportunity", None),
+                    ),
+                ),
+                multipliers,
+                genome_dir=genome_dir,
+                description=description,
+            )
+            if verify:
+                out.verify_opportunity(_channel_tables(data))
+            return out
+
+        if not assays:
+            if assay is not None:
+                raise ValueError(
+                    f"The dataset has no assays ({assay!r})."
+                )
+            return part(dataset, mu_taus.index, table)
+        groups = dataset.assay_groups(mu_taus.index)
+        if assay is not None and assay not in groups:
+            raise ValueError(
+                f"No tumor on assay {assay!r}: {sorted(groups)}."
+            )
+        names = [assay] if assay is not None else list(groups)
+        parts = {
+            k: part(
+                dataset.assay_view(k),
+                groups[k],
+                table.with_capture(assays[k]),
+            )
+            for k in names
+        }
+        if len(parts) == 1:
+            return next(iter(parts.values()))
+        return AssaySiteRates(parts, mu_taus.index)
+
+    def parts(self):
+        """(name, SiteRates) per assay; here, one."""
+        return [("all", self)]
 
     # -----------------------------------------------------------------
     # Opportunity and aggregates
@@ -808,7 +895,9 @@ class SiteRates:
             return self._M[:, tau].T * factor[:, None]
         return self._M_total[tau] * factor
 
-    def snv_rates(self, chrom, pos, alt, per_tumor=True):
+    def snv_rates(
+        self, chrom, pos, alt, per_tumor=True, observable=False
+    ):
         """Rates of genomic SNVs (plus-strand ``alt``), vectorised.
 
         A position coding in several genes gives one row per gene; a
@@ -818,10 +907,10 @@ class SiteRates:
         -------
         (pandas.DataFrame, pandas.DataFrame or None)
             ``info``: query, ensembl_gene_id, channel, type, weight,
-            observable, context, rate_total, observable_rate_total;
-            and, with ``per_tumor``, rows x tumors mutation rates
-            (multiply by ``info["observable"]`` for the observable
-            rate).
+            capture, observable, context, rate_total,
+            observable_rate_total; and, with ``per_tumor``, rows x
+            tumors mutation rates, or observable rates (each times
+            ``capture`` and ``observable``) with ``observable=True``.
         """
         t = self.table
         m = t.models
@@ -851,14 +940,19 @@ class SiteRates:
         tau = np.full(n, -1, dtype=np.int64)
         cons = np.full(n, 1, dtype=np.int64)
         weight = np.ones(n)
-        observable = np.ones(n, dtype=bool)
+        capture = np.ones(n)
+        seen = np.ones(n, dtype=bool)
         context = np.full(n, "coding", dtype=object)
         inside = rows >= 0
         r = rows[inside]
         tau[inside] = t.types[r, col[inside]]
         cons[inside] = t.cons[r, col[inside]]
-        weight[inside] = t.weights(r)[np.arange(len(r)), col[inside]]
-        observable[inside] = ~t.masked[r, col[inside]]
+        weight[inside] = t.weights(r, capture=False)[
+            np.arange(len(r)), col[inside]
+        ]
+        if t.capture_coding is not None:
+            capture[inside] = t.capture_coding[r]
+        seen[inside] = ~t.masked[r, col[inside]]
         # Positions with no element (a CDS end, next to an N): as
         # mu_ms, the call's own genomic type at weight 1.
         edge = ~inside
@@ -866,10 +960,10 @@ class SiteRates:
             fe = flat[edge]
             tau[edge] = self._genomic_types(fe, a[edge])
             cons[edge] = _edge_consequence(m, fe, a[edge])
-            observable[edge] = ~self._masked_at(fe, a[edge])
+            seen[edge] = ~self._masked_at(fe, a[edge])
             context[edge] = "edge"
         keep = tau >= 0
-        qi, g_row, tau, cons, weight, observable, context = (
+        qi, g_row, tau, cons, weight, capture, seen, context = (
             x[keep]
             for x in (
                 qi,
@@ -877,7 +971,8 @@ class SiteRates:
                 tau,
                 cons,
                 weight,
-                observable,
+                capture,
+                seen,
                 context,
             )
         )
@@ -893,7 +988,8 @@ class SiteRates:
                     tau
                 ],
                 "weight": weight,
-                "observable": observable,
+                "capture": capture,
+                "observable": seen,
                 "context": context,
             }
         )
@@ -907,9 +1003,12 @@ class SiteRates:
             info = pd.concat([info, spl_info], ignore_index=True)
             rates = np.concatenate([rates, spl_rates])
         total = rates.sum(axis=1) if per_tumor else rates
+        obs = (info["capture"] * info["observable"]).to_numpy(float)
         info["rate_total"] = total
-        info["observable_rate_total"] = total * info["observable"]
+        info["observable_rate_total"] = total * obs
         if per_tumor:
+            if observable:
+                rates = rates * obs[:, None]
             return info, pd.DataFrame(rates, columns=self.tumors)
         return info, None
 
@@ -1037,7 +1136,7 @@ class SiteRates:
                     np.array([g_row]),
                     np.array([True]),
                     [tau],
-                    w * cap,
+                    w,
                     per_tumor,
                 )[0]
                 for tau, w in options
@@ -1055,7 +1154,8 @@ class SiteRates:
                         canonical_types_order[tau]
                         for tau, _ in options
                     ),
-                    "weight": cap,
+                    "weight": 1.0,
+                    "capture": cap,
                     "observable": not masked,
                     "context": source,
                 }
@@ -1205,7 +1305,8 @@ class SiteRates:
                 ],
                 "flat": None,
                 "alt": None,
-                "weights": [w * cap for _, w in options],
+                "weights": [w for _, w in options],
+                "capture": [cap] * len(options),
                 "observable": [not masked] * len(options),
                 "splice_row": s,
                 "context": source,
@@ -1362,14 +1463,18 @@ class SiteRates:
             t.site_weights,
             x=None if t.gc_x is None else t.gc_x[rows],
         )[:, 0]
-        if t.capture_coding is not None:
-            weights = weights * t.capture_coding[rows]
+        cap = (
+            np.ones(len(rows))
+            if t.capture_coding is None
+            else t.capture_coding[rows]
+        )
         return {
             "channel": channel,
             "types": list(types),
             "flat": flat,
             "alt": alt,
             "weights": [float(w) for w in weights],
+            "capture": [float(c) for c in cap],
             "observable": list(~t.masked[rows, col]),
             "splice_row": None,
             "context": "coding",
@@ -1405,8 +1510,8 @@ class SiteRates:
         }
         infos = []
         failed = np.zeros(len(variants), dtype=bool)
-        r_var, r_gene, r_nonsyn, r_tau, r_w, r_seen = (
-            [] for _ in range(6)
+        r_var, r_gene, r_nonsyn, r_tau, r_w, r_cap, r_seen = (
+            [] for _ in range(7)
         )
         for i, v in enumerate(variants):
             if genes is not None:
@@ -1426,6 +1531,8 @@ class SiteRates:
             r_nonsyn += [rec["channel"] not in ("syn", "esyn")] * n
             r_tau += [type_index[x] for x in rec["types"]]
             r_w += list(rec["weights"])
+            caps = rec.get("capture") or [1.0] * n
+            r_cap += list(caps)
             r_seen += list(rec["observable"])
             infos.append(
                 {
@@ -1441,14 +1548,18 @@ class SiteRates:
                         n - sum(rec["observable"])
                     ),
                     "routes": ";".join(rec["types"]),
-                    "route_weights": rec["weights"],
+                    "route_weights": [
+                        w * c for w, c in zip(rec["weights"], caps)
+                    ],
                     "context": rec["context"],
                     "error": None,
                 }
             )
         r_var = np.asarray(r_var, dtype=np.int64)
         r_tau = np.asarray(r_tau, dtype=np.int64)
-        r_seen = np.asarray(r_seen, dtype=bool)
+        r_seen = np.asarray(r_seen, dtype=float) * np.asarray(
+            r_cap, dtype=float
+        )
         r_gene = np.asarray(r_gene, dtype=np.int64)
         factor = np.asarray(r_w, dtype=float) * np.where(
             r_gene >= 0,
@@ -1486,4 +1597,113 @@ class SiteRates:
             info,
             pd.DataFrame(rates, index=variants, columns=self.tumors),
             pd.DataFrame(obs, index=variants, columns=self.tumors),
+        )
+
+
+class AssaySiteRates:
+    """The rates of a cohort whose tumors are on several assays.
+
+    One :class:`SiteRates` per assay (:meth:`parts`), each with its own
+    capture, denominators and tumors. The queries join them over the
+    tumors; anything that needs one weight table per element (the
+    ``table``, ``_M`` and ``opportunity`` of a :class:`SiteRates`) does
+    not exist here: go through :meth:`parts`, since the element weights
+    are the assay's.
+    """
+
+    def __init__(self, parts, tumors):
+        self._parts = dict(parts)
+        self.tumors = pd.Index(tumors)
+        first = next(iter(self._parts.values()))
+        self.description = first.description
+        self.type_rates = pd.concat(
+            [p.type_rates for p in self._parts.values()]
+        ).loc[self.tumors]
+
+    def parts(self):
+        """(assay name, its :class:`SiteRates`) per assay."""
+        return list(self._parts.items())
+
+    def __getattr__(self, name):
+        if name in (
+            "table",
+            "_M",
+            "_M_total",
+            "_mult",
+            "multipliers",
+            "opportunity",
+            "verify_opportunity",
+        ):
+            raise AttributeError(
+                f"{name} is per assay here: use SiteRates.parts()."
+            )
+        raise AttributeError(name)
+
+    def _join(self, frames):
+        return pd.concat(frames, axis=1).loc[:, self.tumors]
+
+    def aggregate_rates(
+        self,
+        labels=None,
+        splice_label="splice",
+        observable=True,
+        by_gene=True,
+        per_tumor=True,
+    ):
+        """:meth:`SiteRates.aggregate_rates`, summed over the assays."""
+        out = [
+            p.aggregate_rates(
+                labels, splice_label, observable, by_gene, per_tumor
+            )
+            for p in self._parts.values()
+        ]
+        if per_tumor:
+            return self._join(out).fillna(0.0)
+        total = out[0]
+        for x in out[1:]:
+            total = total.add(x, fill_value=0.0)
+        return total
+
+    def snv_rates(
+        self, chrom, pos, alt, per_tumor=True, observable=False
+    ):
+        """:meth:`SiteRates.snv_rates`, rows x all tumors.
+
+        ``info`` has no ``capture`` column, since it is per assay.
+        """
+        got = [
+            p.snv_rates(chrom, pos, alt, per_tumor, observable)
+            for p in self._parts.values()
+        ]
+        info = got[0][0].drop(columns="capture")
+        for col in ("rate_total", "observable_rate_total"):
+            info[col] = np.sum(
+                [g[0][col].to_numpy() for g in got], axis=0
+            )
+        if per_tumor:
+            return info, self._join([g[1] for g in got])
+        return info, None
+
+    def variant_rates(
+        self, variants, genes=None, per_tumor=True, chunk=50_000
+    ):
+        """:meth:`SiteRates.variant_rates`, variants x all tumors.
+
+        ``route_weights`` in ``info`` is the first assay's.
+        """
+        got = [
+            p.variant_rates(variants, genes, per_tumor, chunk)
+            for p in self._parts.values()
+        ]
+        info = got[0][0].copy()
+        for col in ("rate_total", "observable_rate_total"):
+            info[col] = np.sum(
+                [g[0][col].to_numpy() for g in got], axis=0
+            )
+        if not per_tumor:
+            return info, None, None
+        return (
+            info,
+            self._join([g[1] for g in got]),
+            self._join([g[2] for g in got]),
         )

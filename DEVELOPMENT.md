@@ -34,6 +34,11 @@ the contribution workflow, see `CONTRIBUTING.md` and `SETUP_GUIDE.md`.
 
 ## Testing
 
+CI's main job installs with `-c ci/constraints-pinned.txt` (the pinned
+versions); a second job, `test-latest`, runs the suite on the newest
+releases and is allowed to fail. Upgrade the pins by regenerating that
+file when the environment they mirror is upgraded.
+
 ```bash
 pytest                              # all tests (what CI runs)
 pytest -m "not slow"                # fast loop, about 40 s

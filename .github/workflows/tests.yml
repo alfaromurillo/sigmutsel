@@ -7,6 +7,7 @@ on:
     branches: [ master, main, develop ]
 
 jobs:
+  # The main job: the pinned versions of ci/constraints-pinned.txt.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -23,10 +24,10 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install dependencies
+    - name: Install dependencies (pinned)
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        pip install -c ci/constraints-pinned.txt -e ".[dev]"
 
     - name: Run tests
       run: |
@@ -43,3 +44,27 @@ jobs:
     - name: Check docs for private repo/path references
       run: |
         python scripts/check_no_private_refs.py
+
+  # The newest releases of every dependency, unpinned. Allowed to fail:
+  # it warns of upstream changes before the pins move, without blocking.
+  test-latest:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies (latest)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+        pip freeze | grep -iE "^(jax|jaxlib|numpyro|pymc|pytensor|numpy|pandas|arviz)=="
+
+    - name: Run tests
+      run: |
+        pytest

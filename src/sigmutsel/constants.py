@@ -1,5 +1,7 @@
 """Constants that we use in multiple modules."""
 
+import os
+
 import pandas as pd
 
 from .locations import location_cosmic_signature_etiology
@@ -14,6 +16,13 @@ random_seed = None
 # trailing components otherwise change from run to run, so a model's
 # basis could not be rebuilt from its inputs.
 pca_random_seed = 0
+
+# How NumPyro runs NUTS's chains. "parallel" needs one device per chain
+# (the CPU default, with XLA's forced host devices); "vectorized" runs
+# all chains on one device, as a single GPU requires.
+nuts_chain_method = os.environ.get(
+    "SIGMUTSEL_CHAIN_METHOD", "parallel"
+)
 
 
 def _load_signature_etiology_lists():

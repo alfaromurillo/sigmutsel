@@ -842,7 +842,7 @@ def estimate_channel_rg_effect(
             )
             results = pmjax.sample_numpyro_nuts(
                 draws=int(draws / chains),
-                chain_method="parallel",
+                chain_method=constants.nuts_chain_method,
                 tune=burn,
                 chains=chains,
                 target_accept=0.9,

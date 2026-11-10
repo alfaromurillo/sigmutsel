@@ -1244,11 +1244,14 @@ def test_shared_latent_matches_the_draws_cut_under_a_loguniform_prior():
         for prior in ("loguniform", "uniform")
     }
     constants.random_seed = None
+    # Monte Carlo tolerance: over seeds the tail quantiles' difference
+    # spreads by about 0.017 (sd), so 0.05 is three sd; 0.03 failed one
+    # stream in about twenty.
     for p in (0.055, 0.5, 0.945):
         assert np.isclose(
             np.quantile(fits["shared", "loguniform"], p),
             np.quantile(fits["draws", "loguniform"], p),
-            atol=0.03,
+            atol=0.05,
         )
     tilt = np.median(fits["shared", "uniform"]) - np.median(
         fits["draws", "uniform"]

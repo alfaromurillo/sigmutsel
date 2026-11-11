@@ -1218,7 +1218,11 @@ def _normalised(composition):
 
 
 def _splice_site_weights(
-    models, splice_in=None, masked_keys=None, row_weights=None
+    models,
+    splice_in=None,
+    masked_keys=None,
+    row_weights=None,
+    return_rows=False,
 ):
     """Per splice site: (gene, type index, weight) triples, flat arrays.
 
@@ -1228,7 +1232,8 @@ def _splice_site_weights(
     masked alternate bases keep their weight: the result is then the
     masked part of the splice opportunity. ``row_weights`` (one per
     row of ``models.splice``, e.g. the capture observability of
-    :mod:`capture`) multiplies each site's weights.
+    :mod:`capture`) multiplies each site's weights. ``return_rows``
+    adds a fourth array, each triple's row of ``models.splice``.
     """
     sp = models.splice
     if row_weights is not None:
@@ -1239,7 +1244,7 @@ def _splice_site_weights(
     # Coding-strand reference base of each kind of essential site.
     kind_ref = {"d1": G, "d2": T, "a2": A, "a1": G}
     minus_gene = models.selection["strand"].to_numpy() == "-"
-    genes, types, weights = [], [], []
+    genes, types, weights, rows = [], [], [], []
     for kind, group in sp.groupby("kind"):
         g = group["gene"].to_numpy()
         exon = group["exon_base"].to_numpy()
@@ -1305,17 +1310,20 @@ def _splice_site_weights(
                 genes.append(g)
                 types.append(_TYPE_TABLE[left, ref, right, alt])
                 weights.append(w * hit)
+                rows.append(group.index.to_numpy())
     if not genes:
-        return (
+        out = (
             np.array([], int),
             np.array([], int),
             np.array([], float),
         )
-    return (
+        return out + (np.array([], int),) if return_rows else out
+    out = (
         np.concatenate(genes),
         np.concatenate(types),
         np.concatenate(weights),
     )
+    return out + (np.concatenate(rows),) if return_rows else out
 
 
 def compute_channel_opportunity(

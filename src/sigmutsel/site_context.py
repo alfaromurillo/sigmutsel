@@ -256,10 +256,10 @@ def placement_multipliers(psi, mix, types, c, group_opportunity):
 
 
 # The placement groups: a route's rate is spread over its gene's sites
-# of its type in one channel table (syn, esyn, or the coding
-# non-silent sites, mis + non). Splice routes are not in a group:
-# they take factor 1.
-PLACEMENT_CODE = {"syn": 0, "esyn": 1, "mis": 2, "non": 2}
+# of its type in one channel table: syn, esyn, the coding non-silent
+# sites (mis + non), or the essential splice sites (spl), each with
+# its exact genomic context.
+PLACEMENT_CODE = {"syn": 0, "esyn": 1, "mis": 2, "non": 2, "spl": 3}
 _CONS_CODE = np.array(
     [0, 2, 2, 3, 1]
 )  # site table cons -> group code
@@ -278,7 +278,8 @@ class PlacementContext:
     """
 
     def __init__(self, factors, table, exposures, emissions, tumors):
-        from .site_weights import position_context5
+        from .channel_universe import _splice_site_weights
+        from .site_weights import position_context5, splice_context5
 
         t = table
         c5 = np.asarray(position_context5(t.models)[t.idx], np.int64)
@@ -293,11 +294,42 @@ class PlacementContext:
         keep = code.ravel() < 3
         key = key[keep]
         cc = np.broadcast_to(c5[:, None], types.shape).ravel()[keep]
+        ww = w.ravel()[keep]
+        # Splice sites: the triples the splice table sums (capture and
+        # mask included), each with its site's exact outer bases.
+        sg, st, sw, srow = _splice_site_weights(
+            t.models,
+            t.splice_in,
+            row_weights=t.capture_splice,
+            return_rows=True,
+        )
+        if t.masked_keys is not None and len(sg):
+            _, _, mw = _splice_site_weights(
+                t.models,
+                t.splice_in,
+                masked_keys=t.masked_keys,
+                row_weights=t.capture_splice,
+            )
+            sw = sw - mw
+        if len(sg):
+            srows_g = t.gene_row[sg]
+            ok = srows_g >= 0
+            s5 = np.asarray(splice_context5(t.models), np.int64)[srow]
+            key = np.concatenate(
+                [
+                    key,
+                    ((3 * G + srows_g[ok]) * 96 + st[ok]).astype(
+                        np.int64
+                    ),
+                ]
+            )
+            cc = np.concatenate([cc, s5[ok]])
+            ww = np.concatenate([ww, sw[ok]])
         uk, inv = np.unique(key, return_inverse=True)
         self.keys = uk
         self.W = np.bincount(
             inv * (N_CONTEXTS + 1) + np.minimum(cc, NO_CONTEXT),
-            weights=w.ravel()[keep],
+            weights=ww,
             minlength=len(uk) * (N_CONTEXTS + 1),
         ).reshape(len(uk), N_CONTEXTS + 1)
         self.n_genes = G
@@ -320,7 +352,7 @@ class PlacementContext:
         j = np.minimum(
             np.searchsorted(self.keys, key), len(self.keys) - 1
         )
-        hit = (self.keys[j] == key) & (np.asarray(codes) < 3)
+        hit = (self.keys[j] == key) & (np.asarray(codes) < 4)
         out = np.zeros((len(key), N_CONTEXTS + 1))
         out[hit] = self.W[j[hit]]
         return out
@@ -331,7 +363,7 @@ class PlacementContext:
         """Placement multipliers ``(R, J)`` of routes.
 
         ``channels``: each route's variant channel (``syn``, ``esyn``,
-        ``mis``, ``non``; anything else, e.g. ``spl``, takes 1).
+        ``mis``, ``non``, ``spl``; anything else takes 1).
         ``genes``: Ensembl ids (or table gene rows). ``taus``: type
         indices or labels. ``contexts``: outer-bases codes. ``tumors``
         reorders the columns (default: this context's tumors).
@@ -356,13 +388,13 @@ class PlacementContext:
             dtype=np.int64,
         )
         codes = np.asarray(
-            [PLACEMENT_CODE.get(str(c), 3) for c in channels],
+            [PLACEMENT_CODE.get(str(c), 4) for c in channels],
             np.int64,
         )
-        codes = np.where(rows >= 0, codes, 3)
+        codes = np.where(rows >= 0, codes, 4)
         W = self.group_opportunity(codes, np.maximum(rows, 0), taus)
         out = np.ones((n, len(self.tumors)))
-        sel = (codes < 3) & (W.sum(axis=1) > 0)
+        sel = (codes < 4) & (W.sum(axis=1) > 0)
         if sel.any():
             out[sel] = placement_multipliers(
                 self.psi,

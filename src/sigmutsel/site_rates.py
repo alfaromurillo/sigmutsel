@@ -554,8 +554,9 @@ class SiteRates:
 
         ``factors``: :class:`site_context.ContextFactors`;
         ``exposures`` (tumors x signatures) and ``emissions`` (types x
-        signatures) give each tumor's mix. Coding routes and SNVs are
-        multiplied per tumor; splice ones and CDS ends take 1. Group
+        signatures) give each tumor's mix. Coding and essential splice
+        routes and SNVs are multiplied per tumor (a splice site with
+        its exact genomic context); CDS ends take 1. Group
         totals, and so :meth:`aggregate_rates`, do not change.
         """
         from .site_context import PlacementContext
@@ -568,9 +569,16 @@ class SiteRates:
         )
         return self
 
-    def _placement_factor(self, channels, g_row, tau, flat):
-        """``(R, J)`` multipliers; ones without a placement context."""
-        from .site_weights import position_context5
+    def _placement_factor(
+        self, channels, g_row, tau, flat, srow=None
+    ):
+        """``(R, J)`` multipliers; ones without a placement context.
+
+        A route's outer bases come from its coding position ``flat``,
+        or for a splice route (``flat`` -1) from its ``models.splice``
+        row ``srow``.
+        """
+        from .site_weights import position_context5, splice_context5
 
         n = len(tau)
         if self.placement is None:
@@ -581,6 +589,10 @@ class SiteRates:
         c5[coding] = position_context5(self.table.models)[
             flat[coding]
         ]
+        if srow is not None:
+            srow = np.asarray(srow, dtype=np.int64)
+            spl = (~coding) & (srow >= 0)
+            c5[spl] = splice_context5(self.table.models)[srow[spl]]
         return self.placement.multipliers(
             channels, g_row, tau, c5, tumors=self.tumors
         )
@@ -1249,16 +1261,33 @@ class SiteRates:
                 if self.table.capture_splice is None
                 else float(self.table.capture_splice[s])
             )
-            r = sum(
-                self._element_rates(
-                    np.array([g_row]),
-                    np.array([True]),
-                    [tau],
-                    w,
-                    per_tumor,
-                )[0]
-                for tau, w in options
-            )
+            if self.placement is not None:
+                r = sum(
+                    self._element_rates(
+                        np.array([g_row]),
+                        np.array([True]),
+                        [tau],
+                        w,
+                        True,
+                    )[0]
+                    * self._placement_factor(
+                        ["spl"], [g_row], [tau], [-1], [s]
+                    )[0]
+                    for tau, w in options
+                )
+                if not per_tumor:
+                    r = r.sum()
+            else:
+                r = sum(
+                    self._element_rates(
+                        np.array([g_row]),
+                        np.array([True]),
+                        [tau],
+                        w,
+                        per_tumor,
+                    )[0]
+                    for tau, w in options
+                )
             rates.append(r)
             infos.append(
                 {
@@ -1632,7 +1661,7 @@ class SiteRates:
         r_var, r_gene, r_nonsyn, r_tau, r_w, r_cap, r_seen = (
             [] for _ in range(7)
         )
-        r_chan, r_flat = [], []
+        r_chan, r_flat, r_srow = [], [], []
         for i, v in enumerate(variants):
             if genes is not None:
                 gene, change = genes[i], v.split(" ")[-1]
@@ -1660,6 +1689,8 @@ class SiteRates:
                 if rec.get("flat") is not None
                 else [-1] * n
             )
+            srow = rec.get("splice_row")
+            r_srow += [-1 if srow is None else int(srow)] * n
             infos.append(
                 {
                     "variant": v,
@@ -1698,6 +1729,7 @@ class SiteRates:
         V = len(variants)
         r_chan = np.asarray(r_chan, dtype=object)
         r_flat = np.asarray(r_flat, dtype=np.int64)
+        r_srow = np.asarray(r_srow, dtype=np.int64)
         rates = obs = None
         if per_tumor or self.placement is not None:
             rates = np.zeros((V, len(self.tumors)))
@@ -1707,7 +1739,11 @@ class SiteRates:
                 contrib = self._M[:, r_tau[sl]].T * factor[sl, None]
                 if self.placement is not None:
                     contrib = contrib * self._placement_factor(
-                        r_chan[sl], r_gene[sl], r_tau[sl], r_flat[sl]
+                        r_chan[sl],
+                        r_gene[sl],
+                        r_tau[sl],
+                        r_flat[sl],
+                        r_srow[sl],
                     )
                 np.add.at(rates, r_var[sl], contrib)
                 np.add.at(obs, r_var[sl], contrib * r_seen[sl, None])

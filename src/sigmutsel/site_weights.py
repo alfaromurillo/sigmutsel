@@ -210,6 +210,51 @@ def position_gc(models):
 _CONTEXT5_CACHE = {}
 
 
+def genomic_context5(genome_dir, chrom, gpos, chunk=5_000_000):
+    """Outer bases of the pentamers at genomic positions, 0..15 or 16.
+
+    ``4 * left2 + right2`` on the strand of the position's pyrimidine,
+    from the genome (``site_rates._genome_bases``); 16 where any base
+    is unknown.
+    """
+    from .site_rates import _genome_bases
+
+    chrom = np.asarray(chrom)
+    gpos = np.asarray(gpos, dtype=np.int64)
+    out = np.full(len(gpos), 16, dtype=np.int8)
+    comp = np.array([3, 2, 1, 0, 4])
+    for s0 in range(0, len(gpos), chunk):
+        c, g = chrom[s0 : s0 + chunk], gpos[s0 : s0 + chunk]
+        lm2, b0, rp2 = (
+            _genome_bases(genome_dir, c, g + k).astype(np.int64)
+            for k in (-2, 0, 2)
+        )
+        plus = np.isin(b0, (1, 3))  # C or T on the plus strand
+        left = np.where(plus, lm2, comp[np.minimum(rp2, 4)])
+        right = np.where(plus, rp2, comp[np.minimum(lm2, 4)])
+        ok = (left < 4) & (right < 4) & (b0 < 4)
+        out[s0 : s0 + chunk] = np.where(ok, left * 4 + right, 16)
+    return out
+
+
+def splice_context5(models, genome_dir="default"):
+    """:func:`genomic_context5` of every ``models.splice`` row (cached)."""
+    from .channel_universe import sigprofiler_genome_dir
+
+    if isinstance(genome_dir, str) and genome_dir == "default":
+        genome_dir = sigprofiler_genome_dir()
+    key = ("splice", id(models), str(genome_dir))
+    if key not in _CONTEXT5_CACHE:
+        sp = models.splice
+        chrom = models.selection["chrom"].to_numpy()[
+            sp["gene"].to_numpy()
+        ]
+        _CONTEXT5_CACHE[key] = genomic_context5(
+            genome_dir, chrom, sp["gpos"].to_numpy()
+        )
+    return _CONTEXT5_CACHE[key]
+
+
 def position_context5(models, genome_dir="default"):
     """Outer bases of every flat position's pentamer, 0..15 or 16.
 
@@ -222,31 +267,17 @@ def position_context5(models, genome_dir="default"):
     one every position is 16, so every context factor is 1.
     """
     from .channel_universe import sigprofiler_genome_dir
-    from .site_rates import _genome_bases
 
     if isinstance(genome_dir, str) and genome_dir == "default":
         genome_dir = sigprofiler_genome_dir()
     key = (id(models), str(genome_dir))
     if key in _CONTEXT5_CACHE:
         return _CONTEXT5_CACHE[key]
-    n = len(models.codes)
-    out = np.full(n, 16, dtype=np.int8)
+    out = np.full(len(models.codes), 16, dtype=np.int8)
     pos = np.flatnonzero(np.asarray(models.gpos) >= 0)
-    comp = np.array([3, 2, 1, 0, 4])
-    chunk = 5_000_000
-    for s0 in range(0, len(pos), chunk):
-        p = pos[s0 : s0 + chunk]
-        chrom = models.chrom_of[p]
-        g = np.asarray(models.gpos[p], dtype=np.int64)
-        lm2, b0, rp2 = (
-            _genome_bases(genome_dir, chrom, g + k).astype(np.int64)
-            for k in (-2, 0, 2)
-        )
-        plus = np.isin(b0, (1, 3))  # C or T on the plus strand
-        left = np.where(plus, lm2, comp[np.minimum(rp2, 4)])
-        right = np.where(plus, rp2, comp[np.minimum(lm2, 4)])
-        ok = (left < 4) & (right < 4) & (b0 < 4)
-        out[p] = np.where(ok, left * 4 + right, 16)
+    out[pos] = genomic_context5(
+        genome_dir, models.chrom_of[pos], models.gpos[pos]
+    )
     _CONTEXT5_CACHE[key] = out
     return out
 
@@ -690,8 +721,8 @@ def variant_route_contexts(
 
     Aligned with ``mut_types`` as :func:`variant_route_weights` is
     (the same routes), from :func:`position_context5`; 16 where a
-    pentamer is unreadable. Splice variants are left out (their
-    routes take the context factor 1 in the placement mode).
+    pentamer is unreadable. A splice variant's one route takes its
+    splice site's exact context (:func:`splice_context5`).
 
     Returns
     -------
@@ -699,15 +730,35 @@ def variant_route_contexts(
         variant -> list of int
     """
     c5 = position_context5(models, genome_dir)
-    return pd.Series(
-        {
-            variant: [int(c5[s]) for s, _ in sites]
-            for variant, _types, sites in _variant_coding_routes(
-                db, models, coding_in
-            )
-        },
-        dtype=object,
-    )
+    out = {
+        variant: [int(c5[s]) for s, _ in sites]
+        for variant, _types, sites in _variant_coding_routes(
+            db, models, coding_in
+        )
+    }
+    spl = db[
+        db["in_universe"].fillna(False).astype(bool)
+        & (db["channel"] == "spl")
+    ].drop_duplicates("variant")
+    if len(spl):
+        s5 = splice_context5(models, genome_dir)
+        sp = models.splice
+        sp_key = (
+            sp["gene"].to_numpy().astype(np.int64) * (1 << 32)
+            + sp["gpos"].to_numpy()
+        )
+        order = np.argsort(sp_key, kind="stable")
+        sorted_ = sp_key[order]
+        gene_index = models.gene_index
+        for row in spl.itertuples(index=False):
+            g = gene_index.get(str(row.ensembl_gene_id))
+            if g is None:
+                continue
+            q = g * (1 << 32) + int(row.Start_Position)
+            k = np.searchsorted(sorted_, q)
+            if k < len(sorted_) and sorted_[k] == q:
+                out[row.variant] = [int(s5[order[k]])]
+    return pd.Series(out, dtype=object)
 
 
 def _route_alleles_masked(models, sites, minus_gene, masked_keys):

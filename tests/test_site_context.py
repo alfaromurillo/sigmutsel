@@ -276,6 +276,12 @@ def test_opportunity_mode_site_rates_match_mu_ms(models, monkeypatch):
 # --- the placement mode end to end, on the toy annotation ------------
 
 
+def _fake_splice_contexts(models, genome_dir="default"):
+    return ((np.arange(len(models.splice)) * 5 + 3) % 17).astype(
+        np.int8
+    )
+
+
 def _placement_rates(models, monkeypatch):
     """The toy's site rates (production's planted weights) with the
     placement mode on, and the variants' table with route contexts."""
@@ -283,6 +289,9 @@ def _placement_rates(models, monkeypatch):
 
     monkeypatch.setattr(
         sw_module, "position_context5", _fake_contexts
+    )
+    monkeypatch.setattr(
+        sw_module, "splice_context5", _fake_splice_contexts
     )
     tables = _sr._tables(models)
     mu_taus = _sr._mu_taus()
@@ -369,6 +378,12 @@ def test_placement_keeps_every_channel_total(models, monkeypatch):
     alt_c = (ref[:, None] + np.arange(1, 4)[None, :]) % 4
     alt_g = np.where(minus[:, None], 3 - alt_c, alt_c).ravel()
     alts = np.array(list("ACGT"))[alt_g]
+    # and every essential splice site, with all four bases
+    sp = m.splice
+    s_chrom = m.selection["chrom"].to_numpy()[sp["gene"].to_numpy()]
+    chrom = np.concatenate([chrom, np.repeat(s_chrom, 4)])
+    pos = np.concatenate([pos, np.repeat(sp["gpos"].to_numpy(), 4)])
+    alts = np.concatenate([alts, np.tile(list("ACGT"), len(sp))])
     info, with_ = rates.snv_rates(chrom, pos, alts, observable=True)
     keep_placement = rates.placement
     rates.placement = None
@@ -379,11 +394,22 @@ def test_placement_keeps_every_channel_total(models, monkeypatch):
         + "|"
         + info["channel"].replace({"mis": "nonsyn", "non": "nonsyn"})
     )
-    coding = (info["context"] == "coding").to_numpy()
+    coding = (info["context"] != "edge").to_numpy()
     a = with_[coding].groupby(key[coding].to_numpy()).sum()
     b = without[coding].groupby(key[coding].to_numpy()).sum()
     np.testing.assert_allclose(a.to_numpy(), b.to_numpy(), rtol=1e-9)
     assert not np.allclose(with_.to_numpy(), without.to_numpy())
+    # The toy's splice groups (gene, type) hold one site each, so their
+    # multiplier is 1; a splice route with another context is not.
+    pc = rates.placement
+    G = pc.n_genes
+    spl_keys = pc.keys[pc.keys // 96 // G == 3]
+    assert len(spl_keys)
+    g_row, tau = (spl_keys // 96) % G, spl_keys % 96
+    W = pc.group_opportunity(np.full(len(g_row), 3), g_row, tau)
+    other = (W[:, :16].argmax(axis=1) + 5) % 16
+    m = pc.multipliers(["spl"] * len(g_row), g_row, tau, other)
+    assert np.abs(np.log(m)).max() > 0.01
 
 
 class _StubPlacement:

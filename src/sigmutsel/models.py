@@ -7943,11 +7943,12 @@ class Model:
         ``factors``: :class:`site_context.ContextFactors` (or a dict or
         JSON path of one). Every variant rate -- :meth:`compute_mu_ms`
         and :meth:`compute_mu_m_posterior_draws`, so gamma -- then
-        multiplies each coding route, per tumor, by its placement
+        multiplies each route, per tumor, by its placement
         multiplier (:meth:`site_context.PlacementContext.multipliers`):
         the factor renormalised within the route's gene, channel table
         and type, so gene rates, channel rates and everything fitted
-        on them are unchanged. Splice routes take factor 1. Recompute
+        on them are unchanged. A splice route uses its splice site's
+        exact genomic context. Recompute
         ``mu_ms`` after changing it.
         """
         from .site_context import as_factors

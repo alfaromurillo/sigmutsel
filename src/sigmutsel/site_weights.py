@@ -70,7 +70,11 @@ class SiteWeights:
     factor ``exp(a1 x + a2 x^2)`` on CpG C>T elements, ``x`` being the
     GC fraction of the site's exon minus 0.5 (CpG C>T depends on
     methylation, which follows the exon's GC); zero (the default) is no
-    term at all.
+    term at all. ``context``: a ``(96, 16)`` table of pentanucleotide
+    factors ``upsilon^ctx(tau, c)``, ``c = 4 * left2 + right2`` the
+    outer bases on the pyrimidine strand (:func:`position_context5`),
+    the opportunity mode of :mod:`site_context`; None (the default) is
+    no term. A site with no readable pentamer takes factor 1.
     """
 
     distance: np.ndarray = field(default_factory=lambda: np.ones(8))
@@ -78,9 +82,13 @@ class SiteWeights:
     pseudo_count: float = 50.0
     n_calls: int = 0
     cpg: np.ndarray = field(default_factory=lambda: np.zeros(2))
+    context: np.ndarray | None = None
 
     def has_cpg(self):
         return bool(np.any(np.asarray(self.cpg) != 0))
+
+    def has_context(self):
+        return self.context is not None
 
     def to_dict(self):
         return {
@@ -93,6 +101,13 @@ class SiteWeights:
             "pseudo_count": float(self.pseudo_count),
             "n_calls": int(self.n_calls),
             "cpg": [float(x) for x in self.cpg],
+            "context": (
+                None
+                if self.context is None
+                else np.asarray(self.context, float)
+                .round(12)
+                .tolist()
+            ),
         }
 
     @classmethod
@@ -107,6 +122,11 @@ class SiteWeights:
             pseudo_count=d.get("pseudo_count", 50.0),
             n_calls=d.get("n_calls", 0),
             cpg=np.array(d.get("cpg", [0.0, 0.0]), dtype=float),
+            context=(
+                None
+                if d.get("context") is None
+                else np.array(d["context"], dtype=float)
+            ),
         )
 
     def label(self):
@@ -117,6 +137,10 @@ class SiteWeights:
         if self.has_cpg():
             blob = np.concatenate(
                 [blob, np.asarray(self.cpg).round(6)]
+            )
+        if self.has_context():
+            blob = np.concatenate(
+                [blob, np.asarray(self.context).ravel().round(6)]
             )
         return hashlib.sha1(blob.tobytes()).hexdigest()[:10]
 
@@ -183,11 +207,56 @@ def position_gc(models):
     return out
 
 
-def weights_at(dbin, orient, types, sw, x=None):
+_CONTEXT5_CACHE = {}
+
+
+def position_context5(models, genome_dir="default"):
+    """Outer bases of every flat position's pentamer, 0..15 or 16.
+
+    ``4 * left2 + right2`` with ``left2``/``right2`` the bases two to
+    the left and right on the strand of the position's pyrimidine (the
+    strand a type is written on), read from the genome; 16 where any
+    of the five bases is unknown or the position is padding. Cached per
+    transcript-model object. ``genome_dir`` "default" is the installed
+    genome (:func:`channel_universe.sigprofiler_genome_dir`); without
+    one every position is 16, so every context factor is 1.
+    """
+    from .channel_universe import sigprofiler_genome_dir
+    from .site_rates import _genome_bases
+
+    if isinstance(genome_dir, str) and genome_dir == "default":
+        genome_dir = sigprofiler_genome_dir()
+    key = (id(models), str(genome_dir))
+    if key in _CONTEXT5_CACHE:
+        return _CONTEXT5_CACHE[key]
+    n = len(models.codes)
+    out = np.full(n, 16, dtype=np.int8)
+    pos = np.flatnonzero(np.asarray(models.gpos) >= 0)
+    comp = np.array([3, 2, 1, 0, 4])
+    chunk = 5_000_000
+    for s0 in range(0, len(pos), chunk):
+        p = pos[s0 : s0 + chunk]
+        chrom = models.chrom_of[p]
+        g = np.asarray(models.gpos[p], dtype=np.int64)
+        lm2, b0, rp2 = (
+            _genome_bases(genome_dir, chrom, g + k).astype(np.int64)
+            for k in (-2, 0, 2)
+        )
+        plus = np.isin(b0, (1, 3))  # C or T on the plus strand
+        left = np.where(plus, lm2, comp[np.minimum(rp2, 4)])
+        right = np.where(plus, rp2, comp[np.minimum(lm2, 4)])
+        ok = (left < 4) & (right < 4) & (b0 < 4)
+        out[p] = np.where(ok, left * 4 + right, 16)
+    _CONTEXT5_CACHE[key] = out
+    return out
+
+
+def weights_at(dbin, orient, types, sw, x=None, c=None):
     """Weights of substitutions: bins/orientations per site, types per alt.
 
     ``x`` (:func:`position_gc`, per site) is needed when ``sw`` has a
-    CpG term.
+    CpG term, ``c`` (:func:`position_context5`, per site) when it has a
+    context table.
     """
     if sw is None:
         return np.ones(np.shape(types))
@@ -204,6 +273,16 @@ def weights_at(dbin, orient, types, sw, x=None):
         x = np.asarray(x)[..., None]
         term = np.exp(sw.cpg[0] * x + sw.cpg[1] * x**2)
         w = w * np.where(CPG_CT[types], term, 1.0)
+    if sw.has_context():
+        if c is None:
+            raise ValueError(
+                "These site weights have a context table: pass c."
+            )
+        from .site_context import context_table_at
+
+        w = w * context_table_at(
+            sw.context, types, np.asarray(c)[..., None]
+        )
     return w
 
 
@@ -477,6 +556,11 @@ def variant_route_weights(
         if sw is not None and sw.has_cpg()
         else None
     )
+    c5 = (
+        position_context5(models)
+        if sw is not None and sw.has_context()
+        else None
+    )
     calls = db[
         db["in_universe"].fillna(False).astype(bool)
         & db["channel"].isin(["syn", "esyn", "mis", "non"])
@@ -550,6 +634,7 @@ def variant_route_weights(
             t_idx[:, None],
             sw,
             x=None if x is None else x[s_idx],
+            c=None if c5 is None else c5[s_idx],
         )[:, 0]
         if capture_w is not None:
             w = w * capture_w[0][s_idx]

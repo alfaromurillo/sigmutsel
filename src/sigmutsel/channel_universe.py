@@ -1386,6 +1386,7 @@ def compute_channel_opportunity(
         if site_weights is not None:
             from .site_weights import (
                 position_bins,
+                position_context5,
                 position_gc,
                 weights_at,
             )
@@ -1399,6 +1400,11 @@ def compute_channel_opportunity(
                 x=(
                     position_gc(models)[idx]
                     if site_weights.has_cpg()
+                    else None
+                ),
+                c=(
+                    position_context5(models)[idx]
+                    if site_weights.has_context()
                     else None
                 ),
             )

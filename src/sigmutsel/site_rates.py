@@ -159,6 +159,7 @@ class SiteTable:
     capture_coding: object = None
     capture_splice: object = None
     gc_x: object = None
+    c5: object = None
     _genomic: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -199,6 +200,11 @@ class SiteTable:
             from .site_weights import position_gc
 
             gc_x = position_gc(models)[idx]
+        c5 = None
+        if site_weights is not None and site_weights.has_context():
+            from .site_weights import position_context5
+
+            c5 = position_context5(models)[idx]
         masked = np.zeros(types.shape, dtype=bool)
         if masked_keys is not None:
             # Sorted and unique, for the binary searches of _in_sorted.
@@ -229,6 +235,7 @@ class SiteTable:
             masked_keys=masked_keys,
             capture_coding=None if cap_c is None else cap_c[idx],
             gc_x=gc_x,
+            c5=c5,
             capture_splice=cap_s,
             **spl,
         )
@@ -270,6 +277,7 @@ class SiteTable:
             self.types[rows].astype(np.int64),
             self.site_weights,
             x=None if self.gc_x is None else self.gc_x[rows],
+            c=None if self.c5 is None else self.c5[rows],
         )
         if capture and self.capture_coding is not None:
             w = w * self.capture_coding[rows][..., None]
@@ -1462,6 +1470,7 @@ class SiteRates:
             t_idx[:, None],
             t.site_weights,
             x=None if t.gc_x is None else t.gc_x[rows],
+            c=None if t.c5 is None else t.c5[rows],
         )[:, 0]
         cap = (
             np.ones(len(rows))

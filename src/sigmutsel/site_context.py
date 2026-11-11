@@ -255,6 +255,128 @@ def placement_multipliers(psi, mix, types, c, group_opportunity):
     return np.where(norm > 0, out, 1.0).T
 
 
+# The placement groups: a route's rate is spread over its gene's sites
+# of its type in one channel table (syn, esyn, or the coding
+# non-silent sites, mis + non). Splice routes are not in a group:
+# they take factor 1.
+PLACEMENT_CODE = {"syn": 0, "esyn": 1, "mis": 2, "non": 2}
+_CONS_CODE = np.array(
+    [0, 2, 2, 3, 1]
+)  # site table cons -> group code
+
+
+class PlacementContext:
+    """The placement mode, bound to one site table and its tumors.
+
+    Holds the tumors' group mixes (:func:`group_mix`), the flank
+    factors normalised over the table's coding territory
+    (:func:`normalised_flank`) and, for every (group code, gene, type),
+    the observable weights of its sites by outer bases -- the same
+    weights the channel tables sum (site weights, capture, germline
+    mask), so :meth:`multipliers` keeps every channel table's totals.
+    Build one per dataset or assay view (its capture).
+    """
+
+    def __init__(self, factors, table, exposures, emissions, tumors):
+        from .site_weights import position_context5
+
+        t = table
+        c5 = np.asarray(position_context5(t.models)[t.idx], np.int64)
+        w = t.weights() * ~t.masked  # observable, capture included
+        types = t.types.astype(np.int64)
+        code = _CONS_CODE[t.cons.astype(np.int64)]
+        G = len(t.genes)
+        gene = np.broadcast_to(
+            t.gene.astype(np.int64)[:, None], types.shape
+        )
+        key = ((code * G + gene) * 96 + types).ravel()
+        keep = code.ravel() < 3
+        key = key[keep]
+        cc = np.broadcast_to(c5[:, None], types.shape).ravel()[keep]
+        uk, inv = np.unique(key, return_inverse=True)
+        self.keys = uk
+        self.W = np.bincount(
+            inv * (N_CONTEXTS + 1) + np.minimum(cc, NO_CONTEXT),
+            weights=w.ravel()[keep],
+            minlength=len(uk) * (N_CONTEXTS + 1),
+        ).reshape(len(uk), N_CONTEXTS + 1)
+        self.n_genes = G
+        self.gene_row = {g: i for i, g in enumerate(t.genes)}
+        self.territory = context_opportunity(types, w, c5)
+        self.psi = normalised_flank(factors, self.territory)
+        self.tumors = list(tumors)
+        exp = exposures.reindex(self.tumors).fillna(0.0)
+        self.mix = group_mix(
+            factors, exp, emissions
+        )  # (J, 96, K + 1)
+        self.factors = factors
+
+    def group_opportunity(self, codes, gene_rows, taus):
+        """``(R, 17)`` group weights; zeros where there is no group."""
+        key = (
+            np.asarray(codes, np.int64) * self.n_genes
+            + np.asarray(gene_rows, np.int64)
+        ) * 96 + np.asarray(taus, np.int64)
+        j = np.minimum(
+            np.searchsorted(self.keys, key), len(self.keys) - 1
+        )
+        hit = (self.keys[j] == key) & (np.asarray(codes) < 3)
+        out = np.zeros((len(key), N_CONTEXTS + 1))
+        out[hit] = self.W[j[hit]]
+        return out
+
+    def multipliers(
+        self, channels, genes, taus, contexts, tumors=None
+    ):
+        """Placement multipliers ``(R, J)`` of routes.
+
+        ``channels``: each route's variant channel (``syn``, ``esyn``,
+        ``mis``, ``non``; anything else, e.g. ``spl``, takes 1).
+        ``genes``: Ensembl ids (or table gene rows). ``taus``: type
+        indices or labels. ``contexts``: outer-bases codes. ``tumors``
+        reorders the columns (default: this context's tumors).
+        """
+        n = len(taus)
+        taus = np.asarray(
+            [
+                (
+                    canonical_types_order.index(x)
+                    if isinstance(x, str)
+                    else x
+                )
+                for x in taus
+            ],
+            dtype=np.int64,
+        )
+        rows = np.asarray(
+            [
+                self.gene_row.get(g, -1) if isinstance(g, str) else g
+                for g in genes
+            ],
+            dtype=np.int64,
+        )
+        codes = np.asarray(
+            [PLACEMENT_CODE.get(str(c), 3) for c in channels],
+            np.int64,
+        )
+        codes = np.where(rows >= 0, codes, 3)
+        W = self.group_opportunity(codes, np.maximum(rows, 0), taus)
+        out = np.ones((n, len(self.tumors)))
+        sel = (codes < 3) & (W.sum(axis=1) > 0)
+        if sel.any():
+            out[sel] = placement_multipliers(
+                self.psi,
+                self.mix,
+                taus[sel],
+                np.asarray(contexts, np.int64)[sel],
+                W[sel],
+            )
+        if tumors is not None:
+            pos = {x: i for i, x in enumerate(self.tumors)}
+            out = out[:, [pos[x] for x in tumors]]
+        return out
+
+
 def as_factors(obj):
     """A :class:`ContextFactors` from itself, a dict or a JSON path."""
     if obj is None or isinstance(obj, ContextFactors):
@@ -271,6 +393,7 @@ __all__ = [
     "MODES",
     "NO_CONTEXT",
     "ContextFactors",
+    "PlacementContext",
     "as_factors",
     "cohort_context_table",
     "context_factor",

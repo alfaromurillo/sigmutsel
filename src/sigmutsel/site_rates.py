@@ -339,6 +339,53 @@ def _splice_arrays(models, splice_in, masked_keys, gene_row, cap_s):
     }
 
 
+def site_table_of(data, transcript_models=None):
+    """The :class:`SiteTable` of a dataset, or of one assay's view.
+
+    Built as :meth:`SiteRates.from_model` builds it -- the dataset's
+    territory, germline mask and site weights -- under the view's
+    capture for an :class:`models.AssayView`.
+    """
+    from .channel_universe import (
+        load_or_build_transcript_models,
+        territory_masks,
+    )
+
+    capture = None
+    ds = data
+    if getattr(data, "assay_name", None) is not None:
+        ds = data._dataset
+        capture = data.capture
+    params = ds.channel_universe or {}
+    models = transcript_models or load_or_build_transcript_models()
+    coding_in = splice_in = None
+    if params.get("territory", "mc3") == "mc3":
+        coding_in, splice_in = territory_masks(
+            models,
+            splice_padding=params.get("splice_padding", 0),
+            exclude_repeats=params.get("exclude_repeats", False),
+            exclude_overlaps=params.get("exclude_overlaps", False),
+        )
+    masked_keys = None
+    if ds.germline_mask_af is not None:
+        from .germline_mask import load_germline_mask
+
+        masked_keys = load_germline_mask(ds.germline_mask_af)
+    assays = getattr(ds, "assays", None)
+    table = SiteTable.build(
+        models,
+        ds.contexts_by_gene.index.to_numpy(),
+        coding_in=coding_in,
+        splice_in=splice_in,
+        masked_keys=masked_keys,
+        site_weights=ds.site_weights,
+        capture=None if assays else getattr(ds, "capture", None),
+    )
+    if capture is not None:
+        table = table.with_capture(capture)
+    return table
+
+
 def _channel_tables(data):
     """The four-channel opportunity of a dataset or an assay's view."""
     if getattr(data, "assay_name", None) is None:
@@ -498,6 +545,45 @@ class SiteRates:
         self.genome_dir = genome_dir
         self.description = dict(description or {})
         self._symbol_index = None
+        # The context factor in the placement mode
+        # (site_context.PlacementContext), or None.
+        self.placement = None
+
+    def with_placement(self, factors, exposures, emissions):
+        """These rates with the context factor in the placement mode.
+
+        ``factors``: :class:`site_context.ContextFactors`;
+        ``exposures`` (tumors x signatures) and ``emissions`` (types x
+        signatures) give each tumor's mix. Coding routes and SNVs are
+        multiplied per tumor; splice ones and CDS ends take 1. Group
+        totals, and so :meth:`aggregate_rates`, do not change.
+        """
+        from .site_context import PlacementContext
+
+        self.placement = PlacementContext(
+            factors, self.table, exposures, emissions, self.tumors
+        )
+        self.description["site_context"] = getattr(
+            factors, "label", ""
+        )
+        return self
+
+    def _placement_factor(self, channels, g_row, tau, flat):
+        """``(R, J)`` multipliers; ones without a placement context."""
+        from .site_weights import position_context5
+
+        n = len(tau)
+        if self.placement is None:
+            return np.ones((n, len(self.tumors)))
+        flat = np.asarray(flat, dtype=np.int64)
+        c5 = np.full(n, 16, dtype=np.int64)
+        coding = flat >= 0
+        c5[coding] = position_context5(self.table.models)[
+            flat[coding]
+        ]
+        return self.placement.multipliers(
+            channels, g_row, tau, c5, tumors=self.tumors
+        )
 
     # -----------------------------------------------------------------
     # Construction from a model
@@ -515,6 +601,7 @@ class SiteRates:
         genome_dir="default",
         verify=True,
         assay=None,
+        site_context=None,
     ):
         """The site rates of a fitted channel-split model.
 
@@ -548,6 +635,9 @@ class SiteRates:
             default is all of them: an :class:`AssaySiteRates` when
             there are several assays, one :class:`SiteRates` when
             there is one.
+        site_context : site_context.ContextFactors, optional
+            The pentanucleotide context factor in the placement mode
+            (:meth:`with_placement`), each assay on its own table.
         """
         from .channel_universe import (
             load_or_build_transcript_models,
@@ -685,6 +775,12 @@ class SiteRates:
             )
             if verify:
                 out.verify_opportunity(_channel_tables(data))
+            if site_context is not None:
+                out.with_placement(
+                    site_context,
+                    dataset.sig_assignments,
+                    dataset.signature_matrix,
+                )
             return out
 
         if not assays:
@@ -1001,9 +1097,23 @@ class SiteRates:
                 "context": context,
             }
         )
-        rates = self._element_rates(
-            g_row, _NONSYN[cons], tau, weight, per_tumor
-        )
+        flat_kept = np.full(len(tau), -1, dtype=np.int64)
+        flat_kept[:] = np.asarray(flat, dtype=np.int64)[keep]
+        if self.placement is not None:
+            rates = self._element_rates(
+                g_row, _NONSYN[cons], tau, weight, True
+            ) * self._placement_factor(
+                np.array(CHANNELS, dtype=object)[cons],
+                g_row,
+                tau,
+                np.where(context == "coding", flat_kept, -1),
+            )
+            if not per_tumor:
+                rates = rates.sum(axis=1)
+        else:
+            rates = self._element_rates(
+                g_row, _NONSYN[cons], tau, weight, per_tumor
+            )
         spl_info, spl_rates = self._splice_snvs(
             chrom, pos, alt_code, per_tumor
         )
@@ -1522,6 +1632,7 @@ class SiteRates:
         r_var, r_gene, r_nonsyn, r_tau, r_w, r_cap, r_seen = (
             [] for _ in range(7)
         )
+        r_chan, r_flat = [], []
         for i, v in enumerate(variants):
             if genes is not None:
                 gene, change = genes[i], v.split(" ")[-1]
@@ -1543,6 +1654,12 @@ class SiteRates:
             caps = rec.get("capture") or [1.0] * n
             r_cap += list(caps)
             r_seen += list(rec["observable"])
+            r_chan += [rec["channel"]] * n
+            r_flat += (
+                list(np.asarray(rec["flat"], dtype=np.int64))
+                if rec.get("flat") is not None
+                else [-1] * n
+            )
             infos.append(
                 {
                     "variant": v,
@@ -1579,24 +1696,35 @@ class SiteRates:
             np.nan,
         )
         V = len(variants)
-        total = self._M_total[r_tau] * factor
-        rate_total = np.bincount(r_var, weights=total, minlength=V)
-        obs_total = np.bincount(
-            r_var, weights=total * r_seen, minlength=V
-        )
-        rate_total = rate_total.astype(float)
-        obs_total = obs_total.astype(float)
-        rate_total[failed] = obs_total[failed] = np.nan
+        r_chan = np.asarray(r_chan, dtype=object)
+        r_flat = np.asarray(r_flat, dtype=np.int64)
         rates = obs = None
-        if per_tumor:
+        if per_tumor or self.placement is not None:
             rates = np.zeros((V, len(self.tumors)))
             obs = np.zeros_like(rates)
             for s in range(0, len(r_var), chunk):
                 sl = slice(s, s + chunk)
                 contrib = self._M[:, r_tau[sl]].T * factor[sl, None]
+                if self.placement is not None:
+                    contrib = contrib * self._placement_factor(
+                        r_chan[sl], r_gene[sl], r_tau[sl], r_flat[sl]
+                    )
                 np.add.at(rates, r_var[sl], contrib)
                 np.add.at(obs, r_var[sl], contrib * r_seen[sl, None])
+            rate_total = rates.sum(axis=1)
+            obs_total = obs.sum(axis=1)
             rates[failed] = obs[failed] = np.nan
+        else:
+            total = self._M_total[r_tau] * factor
+            rate_total = np.bincount(
+                r_var, weights=total, minlength=V
+            )
+            obs_total = np.bincount(
+                r_var, weights=total * r_seen, minlength=V
+            )
+        rate_total = np.asarray(rate_total, dtype=float)
+        obs_total = np.asarray(obs_total, dtype=float)
+        rate_total[failed] = obs_total[failed] = np.nan
         info = pd.DataFrame(infos).set_index("variant")
         info["rate_total"] = rate_total
         info["observable_rate_total"] = obs_total

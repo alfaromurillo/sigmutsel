@@ -271,3 +271,179 @@ def test_opportunity_mode_site_rates_match_mu_ms(models, monkeypatch):
     np.testing.assert_allclose(
         observable.to_numpy(), mu_ms.to_numpy(), rtol=1e-9, atol=0
     )
+
+
+# --- the placement mode end to end, on the toy annotation ------------
+
+
+def _placement_rates(models, monkeypatch):
+    """The toy's site rates (production's planted weights) with the
+    placement mode on, and the variants' table with route contexts."""
+    from sigmutsel.site_weights import variant_route_contexts
+
+    monkeypatch.setattr(
+        sw_module, "position_context5", _fake_contexts
+    )
+    tables = _sr._tables(models)
+    mu_taus = _sr._mu_taus()
+    rates = _sr._site_rates(models, tables, mu_taus)
+    exp = _exposures(n=3)
+    exp.index = _sr.TUMORS
+    rates.with_placement(_factors(), exp, _emissions())
+    db = _sr._every_call(models)
+    variants = _sr._variant_db(models, db)
+    rc = variant_route_contexts(db, models, None)
+    variants["route_contexts"] = rc.reindex(variants.index).to_numpy()
+    return tables, mu_taus, rates, variants
+
+
+def test_placement_site_rates_match_mu_ms(models, monkeypatch):
+    """compute_mu_m_per_tumor and SiteRates multiply each route by the
+    same placement multiplier: every variant's rate agrees (rtol
+    1e-9), and the factor does move variant rates."""
+    from sigmutsel.channel_universe import CHANNELS
+    from sigmutsel.estimate_mus import (
+        compute_mu_g_channel_per_tumor,
+        compute_mu_m_per_tumor,
+    )
+
+    tables, mu_taus, rates, variants = _placement_rates(
+        models, monkeypatch
+    )
+    contexts = tables["contexts"]
+    type_opp = sum(tables[c] for c in CHANNELS)
+    nonsyn = tables["mis"] + tables["non"] + tables["spl"]
+    parts = []
+    channel = variants["channel"]
+    for part_of, tab, col in (
+        (~channel.isin(["syn", "esyn"]), nonsyn, "nonsyn"),
+        (channel == "syn", tables["syn"], "syn"),
+        (channel == "esyn", tables["esyn"], "syn"),
+    ):
+        g_rates = compute_mu_g_channel_per_tumor(
+            mu_taus,
+            tab,
+            contexts,
+            separate_per_tau=True,
+            type_opportunity=type_opp,
+        )
+        g_rates = {
+            tau: frame.mul(_sr.MULT[col], axis=0)
+            for tau, frame in g_rates.items()
+        }
+        parts.append(
+            compute_mu_m_per_tumor(
+                variants[part_of],
+                g_rates,
+                contexts,
+                opportunity_by_type=tab,
+                placement=rates.placement,
+            )
+        )
+    mu_ms = pd.concat(parts).loc[variants.index]
+    info, _, observable = rates.variant_rates(
+        list(variants.index), genes=list(variants["ensembl_gene_id"])
+    )
+    assert info["error"].isna().all()
+    np.testing.assert_allclose(
+        observable.to_numpy(), mu_ms.to_numpy(), rtol=1e-9, atol=0
+    )
+    plain, _, _ = _sr._mu_ms(tables, mu_taus, variants)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        moved = np.abs(np.log(mu_ms.to_numpy() / plain.to_numpy()))
+    assert np.nanmax(moved[np.isfinite(moved)]) > 0.05
+
+
+def test_placement_keeps_every_channel_total(models, monkeypatch):
+    """Summed over a gene's coding SNVs of one channel (observable
+    rates), the placement mode gives the same total in every tumor."""
+    _, _, rates, _ = _placement_rates(models, monkeypatch)
+    t = rates.table
+    m = t.models
+    chrom = np.repeat(m.chrom_of[t.idx], 3)
+    pos = np.repeat(m.gpos[t.idx], 3)
+    ref = m.codes[t.idx].astype(int)
+    minus = (m.selection["strand"].to_numpy() == "-")[
+        m.gene_of[t.idx]
+    ]
+    alt_c = (ref[:, None] + np.arange(1, 4)[None, :]) % 4
+    alt_g = np.where(minus[:, None], 3 - alt_c, alt_c).ravel()
+    alts = np.array(list("ACGT"))[alt_g]
+    info, with_ = rates.snv_rates(chrom, pos, alts, observable=True)
+    keep_placement = rates.placement
+    rates.placement = None
+    _, without = rates.snv_rates(chrom, pos, alts, observable=True)
+    rates.placement = keep_placement
+    key = (
+        info["ensembl_gene_id"]
+        + "|"
+        + info["channel"].replace({"mis": "nonsyn", "non": "nonsyn"})
+    )
+    coding = (info["context"] == "coding").to_numpy()
+    a = with_[coding].groupby(key[coding].to_numpy()).sum()
+    b = without[coding].groupby(key[coding].to_numpy()).sum()
+    np.testing.assert_allclose(a.to_numpy(), b.to_numpy(), rtol=1e-9)
+    assert not np.allclose(with_.to_numpy(), without.to_numpy())
+
+
+class _StubPlacement:
+    """Deterministic multipliers per (type, context, tumor)."""
+
+    def multipliers(
+        self, channels, genes, taus, contexts, tumors=None
+    ):
+        taus = [
+            (
+                canonical_types_order.index(t)
+                if isinstance(t, str)
+                else t
+            )
+            for t in taus
+        ]
+        j = np.arange(len(tumors))
+        return np.array(
+            [
+                0.5 + ((7 * t + 3 * c + j) % 5) / 4.0
+                for t, c in zip(taus, contexts)
+            ]
+        )
+
+
+@pytest.mark.slow
+def test_placement_draws_follow_mu_ms(tmp_path, monkeypatch):
+    """compute_mu_ms and the posterior draws apply the same placement
+    multipliers: ``draws / mu_ms`` is one number per draw, the same in
+    every tumor and every variant of the gene (rtol 1e-9), while the
+    multipliers do change mu_ms."""
+    from tests.test_estimate_rg import _fitted_model_with_variants
+
+    model = _fitted_model_with_variants(tmp_path)
+    t0, t1 = canonical_types_order[0], canonical_types_order[1]
+    model.dataset._variant_db = pd.DataFrame(
+        {
+            "ensembl_gene_id": ["ENSG_B"] * 3,
+            "mut_types": [t0, t0, [t0, t1]],
+            "route_weights": [None, [1.7], [0.6, 1.3]],
+            "route_contexts": [[2], [9], [16, 5]],
+            "channel": ["mis"] * 3,
+        },
+        index=["A", "B", "C"],
+    )
+    model.compute_mu_ms()
+    plain = model.mu_ms.copy()
+    model.site_context = object()  # on; the stub supplies the factor
+    monkeypatch.setattr(model, "_placement_context", _StubPlacement)
+    model.compute_mu_ms()
+    assert not np.allclose(model.mu_ms.to_numpy(), plain.to_numpy())
+    ratios = []
+    for v in model.dataset.variant_db.index:
+        draws = model.compute_mu_m_posterior_draws(
+            v, r_g_variant="none"
+        )
+        point = model.mu_ms.loc[v].reindex(draws.columns).to_numpy()
+        ratios.append(draws.to_numpy() / point[None, :])
+    for r in ratios:
+        np.testing.assert_allclose(r, ratios[0], rtol=1e-9)
+        np.testing.assert_allclose(
+            r, r[:, :1].repeat(r.shape[1], 1), rtol=1e-9
+        )

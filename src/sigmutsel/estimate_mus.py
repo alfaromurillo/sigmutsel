@@ -1341,6 +1341,7 @@ def compute_mu_m_per_tumor(
     contexts_by_gene: pd.DataFrame,
     prob_g_tau_tau_independent=False,
     opportunity_by_type: pd.DataFrame | None = None,
+    placement=None,
 ) -> pd.DataFrame:
     r"""Compute per-variant expected mutation rate per tumor.
 
@@ -1396,6 +1397,15 @@ def compute_mu_m_per_tumor(
         ``n^{channel}_{g,tau}`` instead of ``n_{g,c(tau)}``; see
         :func:`variant_site_denominators`. None (the default) keeps
         the merged-rate divisor.
+
+    placement : site_context.PlacementContext or None, default None
+        The pentanucleotide context factor in the placement mode: each
+        route's term is multiplied, per tumor, by its
+        :meth:`~site_context.PlacementContext.multipliers` (from the
+        variant's ``channel`` and each route's ``route_contexts``
+        entry, aligned with ``mut_types``; a variant without them takes
+        factor 1). Group totals are kept, so gene rates do not move.
+        None (the default) is no factor.
 
     Returns
     -------
@@ -1492,7 +1502,36 @@ def compute_mu_m_per_tumor(
         route_weights_of(t, w)
         for t, w in zip(routes["mut_types"], wcol)
     ]
-    routes = routes.explode(["mut_types", "route_weight"])
+    if placement is not None:
+        ccol = (
+            variants["route_contexts"].to_numpy()[
+                routes["row"].to_numpy()
+            ]
+            if "route_contexts" in variants.columns
+            else [None] * len(routes)
+        )
+        routes["route_context"] = [
+            (
+                list(c)
+                if isinstance(c, (list, tuple, np.ndarray))
+                and len(c) == len(t)
+                else [16] * len(t)
+            )
+            for t, c in zip(routes["mut_types"], ccol)
+        ]
+        routes["channel"] = (
+            variants["channel"].to_numpy()[routes["row"].to_numpy()]
+            if "channel" in variants.columns
+            else "mis"
+        )
+        routes = routes.explode(
+            ["mut_types", "route_weight", "route_context"]
+        )
+        routes["route_context"] = routes["route_context"].astype(
+            np.int64
+        )
+    else:
+        routes = routes.explode(["mut_types", "route_weight"])
     routes["route_weight"] = routes["route_weight"].astype(float)
 
     for tau, group in routes.groupby("mut_types"):
@@ -1519,6 +1558,14 @@ def compute_mu_m_per_tumor(
         )
         term = rates / n_sites[valid][:, None]
         term = term * group["route_weight"].to_numpy()[valid][:, None]
+        if placement is not None:
+            term = term * placement.multipliers(
+                group["channel"].to_numpy()[valid],
+                gene_ids[valid].to_numpy(),
+                [tau] * int(valid.sum()),
+                group["route_context"].to_numpy()[valid],
+                tumors=tumors,
+            )
         rows = group["row"].to_numpy()[valid]
         np.add.at(mu_m_j, rows, np.nan_to_num(term))
         any_term[rows] = True

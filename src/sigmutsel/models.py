@@ -4562,6 +4562,9 @@ class Model:
         self.cov_effects_posteriors = None
         self._mu_gs = None
         self.mu_ms = None
+        # Pentanucleotide context factors in the placement mode
+        # (set_site_context); None: off.
+        self.site_context = None
         self._mu_taus = None
         self._prob_g_tau_tau_independent = None
         self.gammas = {}
@@ -7863,10 +7866,13 @@ class Model:
         # Per-type gene rates: mu_ms needs the type-tau-specific share
         # of each gene's rate, not the gene total (self.mu_gs / self.
         # base_mus), so that dividing by the type's sites is correct.
-        variants = self.dataset.variant_db
+        variants = self._variants_with_route_contexts(
+            self.dataset.variant_db
+        )
         common = dict(
             contexts_by_gene=self.dataset.contexts_by_gene,
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
+            placement=self._placement_context(),
             **kwargs,
         )
         if not self.has_channel_base_mus():
@@ -7930,6 +7936,90 @@ class Model:
             )
         self.mu_ms = pd.concat(parts).loc[variants.index]
         return self.mu_ms
+
+    def set_site_context(self, factors):
+        """Turn the context factor's placement mode on (or off, None).
+
+        ``factors``: :class:`site_context.ContextFactors` (or a dict or
+        JSON path of one). Every variant rate -- :meth:`compute_mu_ms`
+        and :meth:`compute_mu_m_posterior_draws`, so gamma -- then
+        multiplies each coding route, per tumor, by its placement
+        multiplier (:meth:`site_context.PlacementContext.multipliers`):
+        the factor renormalised within the route's gene, channel table
+        and type, so gene rates, channel rates and everything fitted
+        on them are unchanged. Splice routes take factor 1. Recompute
+        ``mu_ms`` after changing it.
+        """
+        from .site_context import as_factors
+
+        self.site_context = as_factors(factors)
+        self.__dict__.pop("_placement_cache", None)
+
+    def _placement_context(self):
+        """The placement context of the current dataset or assay view."""
+        if self.site_context is None:
+            return None
+        from .site_context import PlacementContext
+        from .site_rates import site_table_of
+
+        cache = self.__dict__.setdefault("_placement_cache", {})
+        key = getattr(self.dataset, "assay_name", None)
+        if key not in cache:
+            base = getattr(self.dataset, "_dataset", self.dataset)
+            frame = (
+                next(iter(self._mu_taus.values()))
+                if isinstance(self._mu_taus, dict)
+                else self._mu_taus
+            )
+            cache[key] = PlacementContext(
+                self.site_context,
+                site_table_of(self.dataset),
+                base.sig_assignments,
+                base.signature_matrix,
+                list(frame.index),
+            )
+        return cache[key]
+
+    def _variants_with_route_contexts(self, variants):
+        """``variants`` with ``route_contexts`` (placement mode only).
+
+        Read from the base dataset's calls once (a route's context does
+        not depend on the assay) and kept on the model.
+        """
+        if self.site_context is None or "route_contexts" in variants:
+            return variants
+        if "_route_contexts" not in self.__dict__:
+            from .channel_universe import (
+                load_or_build_transcript_models,
+                territory_masks,
+            )
+            from .site_weights import variant_route_contexts
+
+            base = getattr(self.dataset, "_dataset", self.dataset)
+            params = base.channel_universe or {}
+            models = load_or_build_transcript_models()
+            coding_in = None
+            if params.get("territory", "mc3") == "mc3":
+                coding_in, _ = territory_masks(
+                    models,
+                    splice_padding=params.get("splice_padding", 0),
+                    exclude_repeats=params.get(
+                        "exclude_repeats", False
+                    ),
+                    exclude_overlaps=params.get(
+                        "exclude_overlaps", False
+                    ),
+                )
+            self.__dict__["_route_contexts"] = variant_route_contexts(
+                base.model_db, models, coding_in
+            )
+        rc = self.__dict__["_route_contexts"]
+        key = (
+            variants["variant"]
+            if "variant" in variants.columns
+            else variants.index.to_series()
+        )
+        return variants.assign(route_contexts=key.map(rc).to_numpy())
 
     def _silent_variant_labels(self):
         """Variant labels whose calls are synonymous, by channel.
@@ -12113,10 +12203,33 @@ class Model:
             prob_g_tau_tau_independent=self.prob_g_tau_tau_independent,
         )
 
+        # The placement mode multiplies each coding route per tumor,
+        # exactly as compute_mu_ms does.
+        placement = self._placement_context()
+        route_contexts = [16] * len(mut_types)
+        if placement is not None:
+            if spectrum_draws:
+                raise NotImplementedError(
+                    "spectrum_draws is not implemented with a "
+                    "placement context factor."
+                )
+            ctx = self._variants_with_route_contexts(
+                self.dataset.variant_db.loc[[variant]]
+            )["route_contexts"].iat[0]
+            if isinstance(ctx, (list, tuple, np.ndarray)) and len(
+                ctx
+            ) == len(mut_types):
+                route_contexts = [int(c) for c in ctx]
+            variant_channel = (
+                row["channel"] if "channel" in row.index else "mis"
+            )
+
         total = None
         tumor_index = None
         route_coefficients = {}
-        for tau, weight in zip(mut_types, weights):
+        for tau, weight, route_context in zip(
+            mut_types, weights, route_contexts
+        ):
             context = extract_context(tau)
             if (
                 gene_id not in contexts_by_gene.index
@@ -12148,6 +12261,17 @@ class Model:
                 * baseline_g_tau.to_numpy()[None, :]
                 / n_context
             )
+            if placement is not None:
+                contribution = (
+                    contribution
+                    * placement.multipliers(
+                        [variant_channel],
+                        [gene_id],
+                        [tau],
+                        [route_context],
+                        tumors=list(baseline_g_tau.index),
+                    )[0][None, :]
+                )
             total = (
                 contribution
                 if total is None

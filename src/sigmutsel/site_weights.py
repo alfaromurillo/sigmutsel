@@ -517,31 +517,16 @@ def _cpg_objective(
     return objective
 
 
-def variant_route_weights(
-    db, models, coding_in, sw, masked_keys=None, capture_w=None
-):
-    """Per variant, the weight of each of its routes, in route order.
+def _variant_coding_routes(db, models, coding_in):
+    """Each coding variant's routes with their sites, in route order.
 
     Routes are regenerated with their sites
     (:func:`channel_universe._routes`, ``with_sites=True``) from the
     variant's first in-universe coding call, in the order
-    :func:`channel_universe.classify_calls` wrote them, so the list
-    lines up with the variant's ``mut_types``. A route's weight is its
-    site weight (``sw``; 1 without one) times 0 if its allele is in
-    ``masked_keys``: the germline mask removes that element from the
-    opportunity, so it adds nothing to the rate of an observable call
-    (the article's ``upsilon_o``). A call whose codon is incomplete
-    has one route, its own site. Splice variants (one site, outside
-    the coding table) get weight 1: their only route is the call's
-    own allele, which ``model_calls`` keeps only when it is unmasked.
-    ``capture_w`` (:func:`capture.capture_weights`) multiplies every
-    route by its site's capture observability; a splice variant then
-    takes its splice site's.
-
-    Returns
-    -------
-    pandas.Series
-        variant -> list of float
+    :func:`channel_universe.classify_calls` wrote them, so they line up
+    with the variant's ``mut_types``. A call whose codon is incomplete
+    has one route, its own site. Yields ``(variant, types, sites)``,
+    ``sites`` a list of (flat position, coding alt).
     """
     from .channel_universe import (
         _BASES,
@@ -550,17 +535,6 @@ def variant_route_weights(
         _routes,
     )
 
-    dbin, orient = position_bins(models)
-    x = (
-        position_gc(models)
-        if sw is not None and sw.has_cpg()
-        else None
-    )
-    c5 = (
-        position_context5(models)
-        if sw is not None and sw.has_context()
-        else None
-    )
     calls = db[
         db["in_universe"].fillna(False).astype(bool)
         & db["channel"].isin(["syn", "esyn", "mis", "non"])
@@ -575,11 +549,6 @@ def variant_route_weights(
     keys_sorted, coding_sorted = keys[order], coding[order]
     minus_gene = models.selection["strand"].to_numpy() == "-"
     code_of = {"A": 0, "C": 1, "G": 2, "T": 3}
-    if masked_keys is not None:
-        masked_keys = np.unique(
-            np.asarray(masked_keys, dtype=np.int64)
-        )
-    out = {}
     for row in calls.itertuples(index=False):
         g = gene_index.get(str(row.ensembl_gene_id))
         alt = code_of.get(str(row.Tumor_Seq_Allele2))
@@ -623,6 +592,51 @@ def variant_route_weights(
             )
         if not types:
             continue
+        yield row.variant, types, sites
+
+
+def variant_route_weights(
+    db, models, coding_in, sw, masked_keys=None, capture_w=None
+):
+    """Per variant, the weight of each of its routes, in route order.
+
+    The routes are :func:`_variant_coding_routes`', so the list lines
+    up with the variant's ``mut_types``. A route's weight is its site
+    weight (``sw``; 1 without one) times 0 if its allele is in
+    ``masked_keys``: the germline mask removes that element from the
+    opportunity, so it adds nothing to the rate of an observable call
+    (the article's ``upsilon_o``). Splice variants (one site, outside
+    the coding table) get weight 1: their only route is the call's
+    own allele, which ``model_calls`` keeps only when it is unmasked.
+    ``capture_w`` (:func:`capture.capture_weights`) multiplies every
+    route by its site's capture observability; a splice variant then
+    takes its splice site's.
+
+    Returns
+    -------
+    pandas.Series
+        variant -> list of float
+    """
+    dbin, orient = position_bins(models)
+    x = (
+        position_gc(models)
+        if sw is not None and sw.has_cpg()
+        else None
+    )
+    c5 = (
+        position_context5(models)
+        if sw is not None and sw.has_context()
+        else None
+    )
+    minus_gene = models.selection["strand"].to_numpy() == "-"
+    if masked_keys is not None:
+        masked_keys = np.unique(
+            np.asarray(masked_keys, dtype=np.int64)
+        )
+    out = {}
+    for variant, types, sites in _variant_coding_routes(
+        db, models, coding_in
+    ):
         t_idx = np.array(
             [canonical_types_order.index(t) for t in types],
             dtype=np.int64,
@@ -642,9 +656,10 @@ def variant_route_weights(
             w = w * ~_route_alleles_masked(
                 models, sites, minus_gene, masked_keys
             )
-        out[row.variant] = [float(x) for x in w]
+        out[variant] = [float(x) for x in w]
     if capture_w is not None:
         # A splice variant has one route, its own site.
+        gene_index = models.gene_index
         spl = db[
             db["in_universe"].fillna(False).astype(bool)
             & (db["channel"] == "spl")
@@ -666,6 +681,33 @@ def variant_route_weights(
                 continue
             out[row.variant] = [float(capture_w[1][sp_order[k]])]
     return pd.Series(out, dtype=object)
+
+
+def variant_route_contexts(
+    db, models, coding_in, genome_dir="default"
+):
+    """Per variant, the outer bases of each route's pentamer.
+
+    Aligned with ``mut_types`` as :func:`variant_route_weights` is
+    (the same routes), from :func:`position_context5`; 16 where a
+    pentamer is unreadable. Splice variants are left out (their
+    routes take the context factor 1 in the placement mode).
+
+    Returns
+    -------
+    pandas.Series
+        variant -> list of int
+    """
+    c5 = position_context5(models, genome_dir)
+    return pd.Series(
+        {
+            variant: [int(c5[s]) for s, _ in sites]
+            for variant, _types, sites in _variant_coding_routes(
+                db, models, coding_in
+            )
+        },
+        dtype=object,
+    )
 
 
 def _route_alleles_masked(models, sites, minus_gene, masked_keys):

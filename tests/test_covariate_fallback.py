@@ -766,10 +766,8 @@ def test_imputed_gamma_is_still_marked(tmp_path, monkeypatch):
     _fake_gamma(monkeypatch, {})
     result = model._estimate_gamma_gene(_FALLBACK, store=False)
     assert result.posterior.attrs["covariate_fallback"] == 1
-    assert (
-        result.posterior.attrs["covariate_fallback_blocks"]
-        == "miss_b"
-    )
+    # The same block names as "project" mode writes.
+    assert result.posterior.attrs["covariate_fallback_blocks"] == "b"
 
 
 @pytest.mark.slow

@@ -5453,14 +5453,18 @@ class Model:
             )
         by_block = raw[numeric].isna().T.groupby(blocks).any().T
         by_block = by_block.loc[:, by_block.any()]
-        indicators = (
-            by_block.T.drop_duplicates()
-            .T.astype(float)
-            .add_prefix("miss_")
+        # Blocks missing on exactly the same genes give identical
+        # columns, whose coefficients are not separately identifiable:
+        # keep one. The design names them "miss_<block>"; the stored
+        # indicators keep the bare block names, as in "project" mode.
+        indicators = by_block.T.drop_duplicates().T.astype(float)
+        design = pd.concat(
+            [pcs, indicators.add_prefix("miss_")], axis=1
         )
-        design = pd.concat([pcs, indicators], axis=1)
         design.attrs = dict(pcs.attrs)
-        design.attrs["indicator_columns"] = list(indicators.columns)
+        design.attrs["indicator_columns"] = [
+            f"miss_{b}" for b in indicators.columns
+        ]
         self.cov_matrix = design
         self._fallback_cov = None
         self._fallback_indicators = indicators.loc[

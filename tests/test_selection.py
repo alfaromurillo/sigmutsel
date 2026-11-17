@@ -357,3 +357,76 @@ def test_table_is_saved_and_loaded(fitted):
     model.selection_prior = None
     model.save_model(tmp / "model2")
     assert Model.load_model(tmp / "model2").selection_table is None
+
+
+# ---- in parallel ---------------------------------------------------------
+def test_table_is_the_same_in_parallel(fitted):
+    # the per-gene work is deterministic and r_g's draw order is taken
+    # in gene order in the parent, so the table cannot depend on n_jobs
+    model, _ = fitted
+    kwargs = {"gene_tumor_dispersion": None, "store": False}
+    serial = model.gene_selection_table(n_jobs=1, **kwargs)
+    forked = model.gene_selection_table(n_jobs=2, **kwargs)
+    pd.testing.assert_frame_equal(serial, forked, check_exact=True)
+
+
+def test_gammas_are_the_same_in_parallel(fitted):
+    # seeded per item, a gamma does not depend on the processes or on
+    # the order the items ran in
+    model, _ = fitted
+    genes = list(pd.Index(model._rg_statistics["genes"])[:3])
+    requests = [
+        {
+            "item": g,
+            "level": "gene",
+            "use_mu_posterior": True,
+            "mu_uncertainty": "draws",
+            "r_g_variant": "evaluation",
+        }
+        for g in genes
+    ]
+
+    def values(results):
+        return [
+            np.asarray(r.posterior["gamma"].values).ravel()
+            for _, r in results
+        ]
+
+    serial = model.estimate_gammas(requests, seed=11, n_jobs=1)
+    keys = [k for k, _ in serial]
+    assert keys == genes
+    forked = model.estimate_gammas(requests[::-1], seed=11, n_jobs=2)
+    assert [k for k, _ in forked] == keys[::-1]
+    for a, b in zip(values(serial), values(forked)[::-1]):
+        np.testing.assert_array_equal(a, b)
+    for k, (_, r) in zip(keys[::-1], forked):
+        assert model.gammas[k] is r
+    # a failing item comes back as its exception, the rest are fitted
+    bad = model.estimate_gammas(
+        [{"item": "NOT_A_GENE", "level": "gene"}, *requests[:1]],
+        seed=11,
+        n_jobs=2,
+    )
+    assert bad[0][0] is None and isinstance(bad[0][1], Exception)
+    assert bad[1][0] == keys[0]
+
+
+def test_hold_out_lookup_matches_a_filter():
+    db = pd.DataFrame(
+        {
+            "ensembl_gene_id": ["G1", "G2", "G1", "G1", "G3"],
+            "Tumor_Sample_Barcode": ["t2", "t1", "t1", "t2", "t3"],
+        }
+    )
+    ds = MutationDataset.__new__(MutationDataset)
+    ds._homdel_db = db
+    for g in ("G1", "G2", "G3", "G9"):
+        direct = pd.Index(
+            db.loc[
+                db["ensembl_gene_id"] == g, "Tumor_Sample_Barcode"
+            ].unique()
+        )
+        assert list(ds.homdel_hits(g)) == list(direct)
+    # a new table object rebuilds the index
+    ds._homdel_db = db.iloc[:2]
+    assert list(ds.homdel_hits("G1")) == ["t2"]

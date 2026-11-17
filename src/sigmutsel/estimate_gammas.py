@@ -478,6 +478,7 @@ def estimate_gamma_from_mus(
     gamma_prior="uniform",
     n_grid=256,
     max_mu_draws=1000,
+    rng=None,
 ):
     """Estimate gamma from mu values using a Poisson observation model.
 
@@ -742,6 +743,13 @@ def estimate_gamma_from_mus(
         further bound expansion once ``current_bound`` has reached
         it, marking the result ``likelihood_saturated`` instead of
         continuing to chase the bound outward.
+
+    rng : numpy.random.Generator, optional
+        Draws gamma's posterior samples from the exact cut's grid
+        (``mu_uncertainty="draws"``). Default: a generator seeded by
+        ``constants.random_seed``. Pass one per item to make a gamma
+        independent of the order items are fitted in
+        (:func:`.parallel.item_rng`). The MCMC paths ignore it.
 
     Returns
     -------
@@ -1022,6 +1030,7 @@ def estimate_gamma_from_mus(
             cap_at_natural_ceiling=cap_at_natural_ceiling,
             n_zero_rate_absent=n_zero_rate_absent,
             use_mu_prior=use_mu_prior,
+            rng=rng,
         )
     current_kwargs = dict(kwargs)
     while attempt <= max_retries:
@@ -1366,6 +1375,7 @@ def _estimate_gamma_on_grid(
     cap_at_natural_ceiling,
     n_zero_rate_absent,
     use_mu_prior,
+    rng=None,
 ):
     """The exact cut (``mu_uncertainty="draws"``) of estimate_gamma_from_mus.
 
@@ -1381,7 +1391,8 @@ def _estimate_gamma_on_grid(
         absence_floor,
         presence_clip,
     )
-    rng = np.random.default_rng(constants.random_seed)
+    if rng is None:
+        rng = np.random.default_rng(constants.random_seed)
     expansions = 0
     likelihood_saturated = False
     while True:

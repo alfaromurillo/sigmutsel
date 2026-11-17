@@ -752,9 +752,20 @@ class GeneSelectionLikelihoods:
     n_draws: int
     seed: int
 
-    def marginal(self):
-        """``(G, U)`` marginal log-likelihoods on :func:`eb_grid`."""
+    def marginal(self, n_jobs=None):
+        """``(G, U)`` marginal log-likelihoods on :func:`eb_grid`.
+
+        ``n_jobs`` processes (:func:`.parallel.map_ordered`; default
+        :data:`.constants.n_jobs`, 1); the result does not depend on it.
+        """
+        from .parallel import map_ordered
+
         mask = eb_mask()
         return np.stack(
-            [lik.marginal(mask) for lik in self.likelihoods]
+            map_ordered(
+                lambda lik: lik.marginal(mask),
+                self.likelihoods,
+                n_jobs=n_jobs,
+                chunksize=64,
+            )
         )

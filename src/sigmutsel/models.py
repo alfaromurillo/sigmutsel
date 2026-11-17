@@ -745,15 +745,42 @@ class MutationDataset:
         db = self._multi_base_db
         if db is None or db.empty:
             return pd.Index([])
-        rows = db[db["ensembl_gene_id"] == gene_id]
-        if "in_universe" in rows.columns:
-            rows = rows[
-                rows["in_universe"].astype(bool)
-                & rows["channel"].isin(["mis", "non", "spl"])
-            ]
-        else:
-            rows = rows[rows["Variant_Classification"] != "Silent"]
-        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+
+        def non_silent(rows):
+            if "in_universe" in rows.columns:
+                return rows[
+                    rows["in_universe"].astype(bool)
+                    & rows["channel"].isin(["mis", "non", "spl"])
+                ]
+            return rows[rows["Variant_Classification"] != "Silent"]
+
+        return self._tumors_by_gene("multi_base", db, non_silent).get(
+            gene_id, pd.Index([])
+        )
+
+    def _tumors_by_gene(self, name, db, prepare=None):
+        """``{gene_id: tumors}`` of a per-call table, built once per table.
+
+        The hold-out lookups (:meth:`multi_base_hits`,
+        :meth:`homdel_hits`, :meth:`indel_hits`) are asked once per gene
+        and per gamma, and filtering the table each time was most of a
+        selection table's per-gene cost. The index is rebuilt whenever
+        the table object is replaced; ``prepare`` filters the rows
+        first. Each gene's tumors are in order of first appearance,
+        as ``rows["Tumor_Sample_Barcode"].unique()`` gives them.
+        """
+        cache = self.__dict__.setdefault("_tumors_by_gene_cache", {})
+        hit = cache.get(name)
+        if hit is None or hit[0] is not db:
+            rows = db if prepare is None else prepare(db)
+            index = {
+                gene: pd.Index(tumors.unique())
+                for gene, tumors in rows.groupby(
+                    "ensembl_gene_id", sort=False, observed=True
+                )["Tumor_Sample_Barcode"]
+            }
+            cache[name] = hit = (db, index)
+        return hit[1]
 
     def genes_present_channel(self, channel):
         """0/1 genes x tumors: a call of one consequence channel.
@@ -811,8 +838,9 @@ class MutationDataset:
         db = self._homdel_db
         if db is None or db.empty:
             return pd.Index([])
-        rows = db[db["ensembl_gene_id"] == gene_id]
-        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+        return self._tumors_by_gene("homdel", db).get(
+            gene_id, pd.Index([])
+        )
 
     @property
     def qc_ledger(self):
@@ -897,8 +925,9 @@ class MutationDataset:
         db = self._indel_db
         if db is None or db.empty:
             return pd.Index([])
-        rows = db[db["ensembl_gene_id"] == gene_id]
-        return pd.Index(rows["Tumor_Sample_Barcode"].unique())
+        return self._tumors_by_gene("indel", db).get(
+            gene_id, pd.Index([])
+        )
 
     @record_call
     def build_indel_db(self, location_gene_set=None):
@@ -5955,6 +5984,7 @@ class Model:
         shared_mu_uncertainty=False,
         mu_uncertainty=None,
         gamma_prior="uniform",
+        rng=None,
     ):
         """Estimate selection coefficient for a variant or gene.
 
@@ -6031,6 +6061,14 @@ class Model:
             checked with. With few carriers, "jeffreys" when the
             interval is read against gamma = 1, "uniform" when the
             estimate itself is reported (see there).
+        rng : numpy.random.Generator, optional
+            Draws the stage-1 posterior draws need (the ``r_g`` draws)
+            and the exact cut's gamma samples. Default: unseeded for
+            the former, ``constants.random_seed`` for the latter, as
+            before. One generator per item
+            (:func:`.parallel.item_rng`) makes a gamma independent of
+            the order items are fitted in, which is what lets
+            :meth:`estimate_gammas` run them in parallel.
         gene_tumor_dispersion : None, float or "fitted", default None
             Gene-tumor dispersion in the presence likelihood (see
             :func:`estimate_gammas.estimate_gamma_from_mus`). ``None``
@@ -6161,6 +6199,7 @@ class Model:
                 shared_mu_uncertainty=shared_mu_uncertainty,
                 mu_uncertainty=mu_uncertainty,
                 gamma_prior=gamma_prior,
+                rng=rng,
             )
         elif level == "gene":
             result = self._estimate_gamma_gene(
@@ -6182,6 +6221,7 @@ class Model:
                 shared_mu_uncertainty=shared_mu_uncertainty,
                 mu_uncertainty=mu_uncertainty,
                 gamma_prior=gamma_prior,
+                rng=rng,
             )
         else:
             raise ValueError(
@@ -6191,6 +6231,83 @@ class Model:
 
         self._report_gamma_posterior(result)
         return result
+
+    def estimate_gammas(self, requests, *, seed=None, n_jobs=None):
+        """Several gammas, one :meth:`estimate_gamma` call each, in parallel.
+
+        Each request is a dict of :meth:`estimate_gamma`'s arguments
+        with the item under ``"item"`` (``store`` and ``rng`` are set
+        here). The calls are independent, so they run across
+        ``n_jobs`` forked processes (:func:`.parallel.map_ordered`),
+        and each result is stored in :attr:`gammas` under the key
+        :meth:`estimate_gamma` gives it, as a serial call would.
+
+        With ``seed``, every item draws from its own generator
+        (:func:`.parallel.item_rng`, keyed by the item and its
+        channel), so its gamma is the same however many processes run
+        and in whatever order: ``n_jobs=1`` and ``n_jobs=8`` give equal
+        posteriors. Without it the draws are unseeded, as in a plain
+        :meth:`estimate_gamma` call.
+
+        Parameters
+        ----------
+        requests : list of dict
+        seed : int, optional
+        n_jobs : int, optional
+            Default :data:`.constants.n_jobs` (1, the serial path).
+
+        Returns
+        -------
+        list of (str or None, object)
+            Per request, in order: the key the gamma was stored under
+            and its result, or ``None`` and the exception
+            :meth:`estimate_gamma` raised (nothing is stored for it).
+            Each call's run-history entry is recorded on this model
+            either way.
+        """
+        from . import provenance
+        from .parallel import item_rng, map_ordered, numpy_backed
+
+        self.cov_effects_posteriors = numpy_backed(
+            self.cov_effects_posteriors
+        )
+
+        def one(request):
+            kwargs = dict(request)
+            item = kwargs.pop("item")
+            channel = kwargs.get("channel")
+            tag = f"{item}__{channel}" if channel else item
+            saved = getattr(self, "_run_history", None)
+            self._run_history = []
+            try:
+                result = self.estimate_gamma(
+                    item,
+                    store=True,
+                    rng=item_rng(seed, tag),
+                    **kwargs,
+                )
+                key = next(
+                    k for k, v in self.gammas.items() if v is result
+                )
+                out = (key, result)
+            except Exception as error:  # noqa: BLE001 -- returned
+                out = (None, error)
+            finally:
+                entries = self._run_history
+                self._run_history = saved
+            return out, entries
+
+        results = []
+        for (key, result), entries in map_ordered(
+            one, requests, n_jobs=n_jobs
+        ):
+            history = provenance._history(self)
+            for entry in entries:
+                provenance._append(history, entry)
+            if key is not None:
+                self.gammas[key] = result
+            results.append((key, result))
+        return results
 
     def _detect_item_level(self, item):
         """Detect whether item is a variant or gene.
@@ -6290,6 +6407,7 @@ class Model:
         shared_mu_uncertainty=False,
         mu_uncertainty=None,
         gamma_prior="uniform",
+        rng=None,
     ):
         """Estimate selection coefficient for a variant.
 
@@ -6412,7 +6530,10 @@ class Model:
                 variant,
                 r_g_variant=r_g_variant,
                 spectrum_draws=spectrum_draws,
+                rng=rng,
             )
+            if rng is not None:
+                extra["rng"] = rng
             result = estimate_gamma_from_mus(
                 draws.loc[:, yes_ids].to_numpy(),
                 draws.loc[:, no_ids].to_numpy(),
@@ -6751,6 +6872,7 @@ class Model:
         shared_mu_uncertainty=False,
         mu_uncertainty=None,
         gamma_prior="uniform",
+        rng=None,
     ):
         """Estimate selection coefficient for a gene.
 
@@ -6934,7 +7056,10 @@ class Model:
                 r_g_variant=r_g_variant,
                 channel=channel,
                 spectrum_draws=spectrum_draws,
+                rng=rng,
             )
+            if rng is not None:
+                extra["rng"] = rng
             result = estimate_gamma_from_mus(
                 draws.loc[
                     :, present_mask.index[present_mask]
@@ -10782,7 +10907,11 @@ class Model:
         if is_mcmc:
             import arviz as az
 
-            self.cov_effects_posteriors = result
+            from .parallel import numpy_backed
+
+            # NumPy, not NumPyro's JAX arrays: the same values, and
+            # readable in a forked worker (parallel.map_ordered).
+            self.cov_effects_posteriors = numpy_backed(result)
             self.cov_effects = (
                 az.extract(result, var_names=["c"])
                 .mean(dim="sample")
@@ -11258,7 +11387,11 @@ class Model:
         if is_mcmc:
             import arviz as az
 
-            self.cov_effects_posteriors = result
+            from .parallel import numpy_backed
+
+            # NumPy, not NumPyro's JAX arrays: the same values, and
+            # readable in a forked worker (parallel.map_ordered).
+            self.cov_effects_posteriors = numpy_backed(result)
             self.cov_effects = (
                 az.extract(result, var_names=["c"])
                 .mean(dim="sample")
@@ -11840,6 +11973,7 @@ class Model:
         hold_out_homdel=True,
         hold_out_indel=True,
         r_g_variant="evaluation",
+        n_jobs=None,
     ):
         """Each gene's gamma likelihood on the grid, over stage-1 draws.
 
@@ -11876,6 +12010,12 @@ class Model:
             :meth:`compute_mu_g_posterior_draws`'s with
             ``r_g_variant="none"``). The production ``r_g`` absorbs
             selection and is refused.
+        n_jobs : int, optional
+            Processes for the per-gene work
+            (:func:`.parallel.map_ordered`); default
+            :data:`.constants.n_jobs`, 1. The result does not depend on
+            it: the per-gene work is deterministic, and ``r_g``'s draw
+            order is taken from ``seed`` in gene order in this process.
 
         Returns
         -------
@@ -11885,9 +12025,14 @@ class Model:
         from scipy import stats as sps
 
         from .estimate_gammas import ABSENCE_FLOOR
+        from .parallel import map_ordered, numpy_backed
         from .selection import (
             FactoredGeneLikelihood,
             GeneSelectionLikelihoods,
+        )
+
+        self.cov_effects_posteriors = numpy_backed(
+            self.cov_effects_posteriors
         )
 
         if self.cov_effects_posteriors is None:
@@ -11981,8 +12126,10 @@ class Model:
             .fillna(0.0)
             .to_numpy(float)
         )
-        likelihoods, rows = [], []
-        for i, gene_id in enumerate(genes):
+
+        def prepare(i):
+            # Everything a gene's likelihood needs but r_g's draws.
+            gene_id = genes[i]
             present = pd.Series(pres_all[i], index=tumors)
             absent, held_by = self._gene_hold_outs(
                 gene_id,
@@ -12009,13 +12156,30 @@ class Model:
             }
             if not (total > 0 and np.isfinite(eta[i]).all()):
                 row["phi"] = np.nan
-                rows.append(row)
-                likelihoods.append(None)
-                continue
+                return row, None
             mask = pd.Series(fit, index=tumors)
             phi = self._resolve_gene_tumor_dispersion(
                 gene_tumor_dispersion, gene_id, mask
             )
+            row["phi"] = np.inf if phi is None else float(phi)
+            return row, (
+                b[fit] / total,
+                total,
+                present.to_numpy()[fit],
+                phi,
+            )
+
+        prepared = map_ordered(
+            prepare, range(len(genes)), n_jobs=n_jobs, chunksize=64
+        )
+        rows = [row for row, _ in prepared]
+        # r_g's draws, in gene order from one generator, as always: a
+        # gene's draws must not depend on how the genes were split.
+        log_scales = {}
+        for i, (_, part) in enumerate(prepared):
+            if part is None:
+                continue
+            gene_id = genes[i]
             shape = theta + float(stats["counts_silent"].loc[gene_id])
             rate = theta + float(expected_silent.loc[gene_id])
             log_r = np.log(
@@ -12023,18 +12187,31 @@ class Model:
             )[rng.permutation(len(idx))]
             if r_g_variant == "none":
                 log_r = np.zeros(len(idx))
-            likelihoods.append(
-                FactoredGeneLikelihood(
-                    b[fit] / total,
-                    total,
-                    present.to_numpy()[fit],
-                    eta[i] + log_r,
-                    phi=phi,
-                    absence_floor=floor,
-                )
+            log_scales[i] = eta[i] + log_r
+
+        def build(i):
+            shares, total, present, phi = prepared[i][1]
+            return FactoredGeneLikelihood(
+                shares,
+                total,
+                present,
+                log_scales[i],
+                phi=phi,
+                absence_floor=floor,
             )
-            row["phi"] = np.inf if phi is None else float(phi)
-            rows.append(row)
+
+        built = dict(
+            zip(
+                log_scales,
+                map_ordered(
+                    build,
+                    list(log_scales),
+                    n_jobs=n_jobs,
+                    chunksize=64,
+                ),
+            )
+        )
+        likelihoods = [built.get(i) for i in range(len(genes))]
         accounting = pd.DataFrame(rows).set_index("gene_id")
         keep = [lik is not None for lik in likelihoods]
         return GeneSelectionLikelihoods(
@@ -12179,6 +12356,7 @@ class Model:
         gene_tumor_dispersion="fitted",
         threshold=2.0,
         store=True,
+        n_jobs=None,
     ):
         """Whether and how strongly each gene is selected, in one table.
 
@@ -12212,6 +12390,11 @@ class Model:
         store : bool, default True
             Keep the table in :attr:`selection_table` and the prior in
             :attr:`selection_prior` (both saved with the model).
+        n_jobs : int, optional
+            Processes for the per-gene work (the likelihoods, the
+            marginals the prior is fitted on, the posteriors); default
+            :data:`.constants.n_jobs`, 1. The table does not depend on
+            it.
 
         Returns
         -------
@@ -12224,6 +12407,7 @@ class Model:
             and the fit's accounting (``n_tumors_without``,
             ``n_tumors_held_out``, ``phi``, ``covariate_fallback``).
         """
+        from .parallel import map_ordered
         from .selection import (
             benjamini_hochberg,
             cut_posterior,
@@ -12240,17 +12424,18 @@ class Model:
                 n_draws=n_draws,
                 seed=seed,
                 gene_tumor_dispersion=gene_tumor_dispersion,
+                n_jobs=n_jobs,
             )
         if prior is None:
             prior = fit_spike_slab(
-                likelihoods.marginal(),
+                likelihoods.marginal(n_jobs=n_jobs),
                 slab_coef=slab_coef,
                 guard=guard,
             )
         grid = flat_grid()
         mask = eb_mask(grid)
-        eb_rows, flat_rows = [], []
-        for lik in likelihoods.likelihoods:
+
+        def summaries(lik):
             ll = lik.loglik()
             flat = posterior_summary(cut_posterior(ll, grid), grid)
             eb = posterior_summary(
@@ -12258,8 +12443,16 @@ class Model:
                 prior.grid,
                 threshold=threshold,
             )
-            flat_rows.append(flat)
-            eb_rows.append(eb)
+            return flat, eb
+
+        both = map_ordered(
+            summaries,
+            likelihoods.likelihoods,
+            n_jobs=n_jobs,
+            chunksize=64,
+        )
+        flat_rows = [flat for flat, _ in both]
+        eb_rows = [eb for _, eb in both]
         idx = pd.Index(likelihoods.genes, name="gene_id")
         table = pd.DataFrame(
             {

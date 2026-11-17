@@ -24,6 +24,11 @@ nuts_chain_method = os.environ.get(
     "SIGMUTSEL_CHAIN_METHOD", "parallel"
 )
 
+# Processes for per-item work that parallelizes across genes (gammas,
+# the selection table's likelihoods; :mod:`.parallel`). 1 is the
+# serial path; -1 uses every core the process may run on.
+n_jobs = int(os.environ.get("SIGMUTSEL_N_JOBS", "1"))
+
 
 def _load_signature_etiology_lists():
     """Load ARTIFACT_SIGNATURES / TREATMENT_ASSOCIATED_SIGNATURES.

@@ -1533,6 +1533,9 @@ def compute_mu_m_per_tumor(
     else:
         routes = routes.explode(["mut_types", "route_weight"])
     routes["route_weight"] = routes["route_weight"].astype(float)
+    # Once for every route, not once per type: on a string column
+    # each isin call re-hashes the whole gene set (0.17 s a type).
+    routes["known"] = routes["ensembl_gene_id"].isin(valid_genes)
 
     for tau, group in routes.groupby("mut_types"):
         if tau not in mu_g_tau_j:
@@ -1542,7 +1545,7 @@ def compute_mu_m_per_tumor(
             continue
 
         gene_ids = group["ensembl_gene_id"]
-        known = gene_ids.isin(valid_genes).to_numpy()
+        known = group["known"].to_numpy()
         n_sites = np.full(len(group), np.nan)
         n_sites[known] = denominators.loc[
             gene_ids[known], tau

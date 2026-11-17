@@ -7961,28 +7961,76 @@ class Model:
         type_opportunity = getattr(
             self.dataset, "type_opportunity", None
         )
-        for tau in canonical_types_order if taus is None else taus:
-            if is_channel:
-                base_g_tau = compute_mu_g_channel_per_tumor(
-                    mu_taus=mu_taus_for_g_taus,
-                    channel_contexts_by_gene=channel_table,
-                    contexts_by_gene=self.dataset.contexts_by_gene,
-                    prob_g_tau_tau_independent=(
-                        self.prob_g_tau_tau_independent
-                    ),
-                    separate_per_tau=[tau],
-                    type_opportunity=type_opportunity,
-                )
+        # The baselines of a few types at a time: each call rebuilds
+        # the per-type probabilities over every gene (and checks the
+        # gene sets), which one type at a time was most of this
+        # method's cost; all 96 at once would hold 96 genes x tumors
+        # frames. Every type's rate is computed exactly as alone.
+        tau_order = canonical_types_order if taus is None else taus
+        batch = 1 if signature_separated else 8
+        batches = {}
+        for start in range(0, len(tau_order), batch):
+            chunk = list(tau_order[start : start + batch])
+            for tau in chunk:
+                batches[tau] = chunk
+        cached = {}
+        for tau in tau_order:
+            if tau not in cached:
+                cached.clear()
+                if is_channel:
+                    cached.update(
+                        compute_mu_g_channel_per_tumor(
+                            mu_taus=mu_taus_for_g_taus,
+                            channel_contexts_by_gene=channel_table,
+                            contexts_by_gene=self.dataset.contexts_by_gene,
+                            prob_g_tau_tau_independent=(
+                                self.prob_g_tau_tau_independent
+                            ),
+                            separate_per_tau=batches[tau],
+                            type_opportunity=type_opportunity,
+                        )
+                        if not signature_separated
+                        else {
+                            tau: compute_mu_g_channel_per_tumor(
+                                mu_taus=mu_taus_for_g_taus,
+                                channel_contexts_by_gene=channel_table,
+                                contexts_by_gene=self.dataset.contexts_by_gene,
+                                prob_g_tau_tau_independent=(
+                                    self.prob_g_tau_tau_independent
+                                ),
+                                separate_per_tau=[tau],
+                                type_opportunity=type_opportunity,
+                            )
+                        }
+                    )
+                else:
+                    cached.update(
+                        compute_mu_g_per_tumor(
+                            mu_taus=mu_taus_for_g_taus,
+                            contexts_by_gene=self.dataset.contexts_by_gene,
+                            prob_g_tau_tau_independent=(
+                                self.prob_g_tau_tau_independent
+                            ),
+                            separate_per_tau=batches[tau],
+                            type_opportunity=type_opportunity,
+                        )
+                        if not signature_separated
+                        else {
+                            tau: compute_mu_g_per_tumor(
+                                mu_taus=mu_taus_for_g_taus,
+                                contexts_by_gene=self.dataset.contexts_by_gene,
+                                prob_g_tau_tau_independent=(
+                                    self.prob_g_tau_tau_independent
+                                ),
+                                separate_per_tau=[tau],
+                                type_opportunity=type_opportunity,
+                            )
+                        }
+                    )
+            if signature_separated:
+                base_g_tau = cached.pop(tau)
             else:
-                base_g_tau = compute_mu_g_per_tumor(
-                    mu_taus=mu_taus_for_g_taus,
-                    contexts_by_gene=self.dataset.contexts_by_gene,
-                    prob_g_tau_tau_independent=(
-                        self.prob_g_tau_tau_independent
-                    ),
-                    separate_per_tau=[tau],
-                    type_opportunity=type_opportunity,
-                )
+                base_g_tau = {tau: cached.pop(tau)}
 
             if signature_separated:
                 baseline_tau = {

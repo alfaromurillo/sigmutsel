@@ -17,6 +17,14 @@ random_seed = None
 # basis could not be rebuilt from its inputs.
 pca_random_seed = 0
 
+# Solver of the covariate PCA unless a caller names one. "full" is the
+# exact decomposition (LAPACK's SVD): a component does not depend on
+# how many are asked for, so a model's first k components equal any
+# larger decomposition's first k, a published one included.
+# scikit-learn's own default picks a randomized solver for wide
+# matrices, whose trailing components are approximate.
+pca_svd_solver = "full"
+
 # How NumPyro runs NUTS's chains. "parallel" needs one device per chain
 # (the CPU default, with XLA's forced host devices); "vectorized" runs
 # all chains on one device, as a single GPU requires.

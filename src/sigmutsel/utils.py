@@ -199,13 +199,16 @@ def run_pca_on_covariates(
         number of covariates, then the number of covariates).
     **pca_kwargs
         Extra keyword arguments forwarded to
-        sklearn.decomposition.PCA (e.g., whiten=True,
-        svd_solver='full'). ``random_state`` defaults to
+        sklearn.decomposition.PCA (e.g., whiten=True).
+        ``svd_solver`` defaults to
+        ``sigmutsel.constants.pca_svd_solver`` ("full", the exact
+        decomposition, so the first k components do not depend on
+        ``n_components``). ``random_state`` defaults to
         ``sigmutsel.constants.random_seed``, or to
         ``sigmutsel.constants.pca_random_seed`` when that is None:
-        svd_solver='randomized', used automatically for wide covariate
-        matrices, otherwise draws from an unseeded global RNG, and the
-        trailing components then differ from run to run.
+        svd_solver='randomized' otherwise draws from an unseeded
+        global RNG, and the trailing components then differ from run
+        to run.
 
     Returns
     -------
@@ -223,6 +226,8 @@ def run_pca_on_covariates(
           what :func:`project_onto_pca` needs to place a row that was
           not in the fit -- one with missing values, say -- in the
           same basis.
+        - ``svd_solver``, ``random_state``, ``dropna`` : how the
+          decomposition was computed.
 
     Examples
     --------
@@ -281,6 +286,7 @@ def run_pca_on_covariates(
         "random_state",
         constants.pca_random_seed if seed is None else seed,
     )
+    pca_kwargs.setdefault("svd_solver", constants.pca_svd_solver)
     pca = PCA(n_components=n_components, **pca_kwargs)
     scores = pca.fit_transform(X)
 
@@ -298,6 +304,9 @@ def run_pca_on_covariates(
     result.attrs["center"] = center
     result.attrs["scale"] = scale
     result.attrs["pca_mean"] = pca.mean_
+    result.attrs["svd_solver"] = pca_kwargs["svd_solver"]
+    result.attrs["random_state"] = pca_kwargs["random_state"]
+    result.attrs["dropna"] = dropna
 
     return result
 

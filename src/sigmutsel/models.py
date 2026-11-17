@@ -4817,6 +4817,107 @@ class Model:
             return ind.index[ind.to_numpy().any(axis=1)]
         return self.covariate_fallback_genes
 
+    @property
+    def pca_basis(self):
+        """The covariate PCA's basis, as the model saves it.
+
+        ``None`` unless ``cov_matrix`` is a PCA (its attrs hold the
+        decomposition, :func:`utils.run_pca_on_covariates`). Otherwise
+        a dict:
+
+        - ``"loadings"``: components x input columns, float32 (the
+          principal axes in standardized column space);
+        - ``"columns"``: per input column its ``center`` and ``scale``
+          (the mean and standard deviation that standardized it) and
+          ``pca_mean`` (the PCA's own centring of the standardized
+          column, ~0);
+        - ``"genes"``: every gene in the PCA's fit with ``complete``
+          (all input columns observed; under ``incomplete="impute"``
+          the others had their missing values set to the column mean
+          before standardizing, i.e. to 0);
+        - ``"meta"``: solver, random state, how missing values were
+          handled, the number of components, the explained variance
+          ratios and the indicator columns (``"impute"`` mode).
+
+        A gene's scores are ``((x - center) / scale - pca_mean) @
+        loadings.T`` (:func:`utils.project_onto_pca`).
+        """
+        cov = self.cov_matrix
+        if cov is None or "components" not in cov.attrs:
+            return None
+        attrs = cov.attrs
+        columns = list(attrs["input_columns"])
+        pcs = [c for c in cov.columns if str(c).startswith("PC")]
+        components = np.asarray(attrs["components"])[: len(pcs)]
+        loadings = pd.DataFrame(
+            components.astype(np.float32), index=pcs, columns=columns
+        )
+        table = pd.DataFrame(
+            {
+                "center": pd.Series(attrs["center"]).reindex(columns),
+                "scale": pd.Series(attrs["scale"]).reindex(columns),
+                "pca_mean": np.asarray(
+                    attrs["pca_mean"], dtype=float
+                ),
+            },
+            index=pd.Index(columns, name="column"),
+        )
+        incomplete = self.covariate_incomplete_genes
+        genes = pd.DataFrame(
+            {"complete": ~cov.index.isin(incomplete)},
+            index=pd.Index(cov.index, name="gene"),
+        )
+        ratio = attrs.get("explained_variance_ratio")
+        meta = {
+            "n_components": len(pcs),
+            "n_input_columns": len(columns),
+            "svd_solver": attrs.get("svd_solver"),
+            "random_state": attrs.get("random_state"),
+            "dropna": attrs.get("dropna"),
+            "incomplete": self._covariate_incomplete,
+            "explained_variance_ratio": (
+                None
+                if ratio is None
+                else [float(v) for v in np.asarray(ratio)[: len(pcs)]]
+            ),
+            "indicator_columns": list(
+                attrs.get("indicator_columns", [])
+            ),
+        }
+        return {
+            "loadings": loadings,
+            "columns": table,
+            "genes": genes,
+            "meta": meta,
+        }
+
+    def _restore_pca_attrs(self, basis_files, meta, directory):
+        """Put a saved :attr:`pca_basis` back into ``cov_matrix.attrs``.
+
+        The loadings come back as float32 values: a projection with
+        them agrees with the fit to ~1e-6, not bit for bit.
+        """
+        loadings = pd.read_parquet(
+            directory / basis_files["loadings"]
+        )
+        table = pd.read_parquet(directory / basis_files["columns"])
+        attrs = self.cov_matrix.attrs
+        attrs["components"] = loadings.to_numpy(dtype=float)
+        attrs["input_columns"] = list(loadings.columns)
+        attrs["center"] = table["center"]
+        attrs["scale"] = table["scale"]
+        attrs["pca_mean"] = table["pca_mean"].to_numpy()
+        for key in ("svd_solver", "random_state", "dropna"):
+            attrs[key] = meta.get(key)
+        if meta.get("explained_variance_ratio") is not None:
+            attrs["explained_variance_ratio"] = np.asarray(
+                meta["explained_variance_ratio"]
+            )
+        if meta.get("indicator_columns"):
+            attrs["indicator_columns"] = list(
+                meta["indicator_columns"]
+            )
+
     def _fallback_projection_usable(self):
         """Whether fallback genes can be placed in the PC basis.
 
@@ -8358,6 +8459,8 @@ class Model:
             directory/
             ├── model_manifest.json       # Metadata and file registry
             ├── cov_matrix.parquet        # Covariate matrix
+            ├── pca_basis/                # The PCA's loadings,
+            │                             # centres, scales, genes
             ├── mu_taus.parquet           # Per-type mutation rates
             │   └── (or mu_taus/*.parquet for multi-signature)
             ├── base_mus.parquet          # Baseline gene rates
@@ -8493,6 +8596,17 @@ class Model:
             frame = getattr(self, f"_{key}")
             if frame is not None:
                 files[key] = _save_dataframe(frame, f"{key}.parquet")
+        basis = self.pca_basis
+        pca_basis_meta = None
+        if basis is not None:
+            (directory / "pca_basis").mkdir(exist_ok=True)
+            files["pca_basis"] = {
+                key: _save_dataframe(
+                    basis[key], f"pca_basis/{key}.parquet"
+                )
+                for key in ("loadings", "columns", "genes")
+            }
+            pca_basis_meta = basis["meta"]
 
         if self._mu_taus is not None:
             if isinstance(self._mu_taus, dict):
@@ -8696,6 +8810,9 @@ class Model:
             ),
             "baseline_calls_masked": self._baseline_calls_masked,
             "covariate_incomplete": self._covariate_incomplete,
+            # How the covariate PCA was computed (files.pca_basis
+            # holds its loadings, centres and scales, and genes).
+            "pca_basis": pca_basis_meta,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -8889,6 +9006,12 @@ class Model:
         model._covariate_incomplete = manifest.get(
             "covariate_incomplete", "project"
         )
+        if "pca_basis" in files and model.cov_matrix is not None:
+            model._restore_pca_attrs(
+                files["pca_basis"],
+                manifest.get("pca_basis") or {},
+                directory,
+            )
         shifts = manifest.get("fallback_shifts")
         model._fallback_shifts = (
             None if shifts is None else pd.Series(shifts, dtype=float)

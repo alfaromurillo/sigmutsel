@@ -192,6 +192,22 @@ def test_guard_refits_a_spike_that_excludes_one():
     assert not sel.prior_excludes_one(guarded.log_density, grid)
 
 
+def test_spike_trigger_catches_what_the_whole_prior_misses():
+    # a narrow spike at e^0.047 whose interval excludes one, inside a
+    # prior whose smooth component's tails stretch its interval over one
+    grid = sel.eb_grid()
+    lg = sel.spike_slab_log_density(
+        grid, np.zeros(sel.SLAB_DF), 0.95, 0.047, 0.027
+    )
+    assert not sel.prior_excludes_one(lg, grid)
+    assert sel.spike_excludes_one(0.047, 0.027, grid)
+    assert not sel.spike_excludes_one(0.011, 0.02, grid)
+    prior = sel.SpikeSlabPrior(
+        grid, lg, 0.95, 0.047, 0.027, np.zeros(sel.SLAB_DF)
+    )
+    assert sel.guard_triggers(prior)
+
+
 def test_guard_leaves_a_prior_covering_one_alone():
     rng = np.random.default_rng(6)
     ll = _synthetic_logliks(rng, 2000, centre=0.0, spread=0.05)

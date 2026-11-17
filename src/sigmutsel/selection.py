@@ -31,11 +31,12 @@ over several cohorts, each keeping its own spike
 
 **The guard.** A spike fitted narrower than the likelihood can
 resolve can sit just off ``gamma = 1`` with all its mass on one side;
-an uninformative gene's posterior is then the prior, and every such
-gene's interval excludes one. When the fitted prior's own central
-interval excludes ``gamma = 1``, the spike is refitted with its
-centre at one (:func:`prior_excludes_one`). Where the prior already
-covers one, the guard changes nothing.
+an uninformative gene's posterior is then the prior, and a weakly
+informed one's nearly the spike, so every such gene's interval
+excludes one. When the fitted prior's own central interval, or its
+spike's, excludes ``gamma = 1``, the spike is refitted with its
+centre at one (:func:`guard_triggers`). Where both cover one, the
+guard changes nothing.
 
 The likelihood: a gene's rate in tumor ``j`` on stage-1 draw ``d`` is
 ``exp(sigma_d) b_j`` (a per-gene, per-draw scale times a fixed
@@ -610,8 +611,39 @@ def prior_excludes_one(log_density, grid, prob=GUARD_PROB):
     return bool(lo > 0 or hi < 0)
 
 
+def spike_excludes_one(centre, sd, grid, prob=GUARD_PROB):
+    """True when the narrow component's own central interval excludes one.
+
+    The normal of centre ``centre`` and sd ``sd`` (log scale),
+    discretised on ``grid``. A gene with a little information keeps
+    little of the smooth component, whose mass lies where any data
+    rule it out, so its posterior is nearly the narrow component: when
+    that component's interval excludes gamma = 1, so do the intervals
+    of most genes, even if the whole prior's interval, widened by the
+    smooth component's tails, still covers one.
+    """
+    w = np.exp(-0.5 * ((np.asarray(grid) - centre) / sd) ** 2)
+    c = (np.cumsum(w) - 0.5 * w) / w.sum()
+    tail = (1 - prob) / 2
+    lo, hi = np.interp(tail, c, grid), np.interp(1 - tail, c, grid)
+    return bool(lo > 0 or hi < 0)
+
+
+def guard_triggers(prior):
+    """The guard's trigger: the prior's or its narrow component's interval.
+
+    Either central 89% interval (:func:`prior_excludes_one`,
+    :func:`spike_excludes_one`) excluding gamma = 1.
+    """
+    return prior_excludes_one(
+        prior.log_density, prior.grid
+    ) or spike_excludes_one(
+        prior.spike_centre, prior.spike_sd, prior.grid
+    )
+
+
 def _guarded(prior, refit):
-    if not prior_excludes_one(prior.log_density, prior.grid):
+    if not guard_triggers(prior):
         return prior
     new = refit()
     new.guard_triggered = True

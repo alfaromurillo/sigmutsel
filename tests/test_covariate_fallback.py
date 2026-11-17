@@ -648,3 +648,143 @@ def test_fit_without_variant_rates_is_the_same_fit(tmp_path):
         full._rg_delta_intercept, rel=1e-9
     )
     pd.testing.assert_frame_equal(full.mu_gs, lean.mu_gs)
+
+
+# --- incomplete="impute": zero-imputed PCs over every gene plus block
+# indicators (no gene falls back) ---
+
+
+def _pca_imputed_model(tmp_path):
+    """``_pca_fallback_model``'s matrix with ``incomplete="impute"``."""
+    model = _model_with_channels(tmp_path)
+    model.dataset.compute_gene_counts_channels()
+    raw = pd.DataFrame(
+        {
+            "a1": [0.5, -0.5, 0.2],
+            "a2": [1.0, 3.0, 2.5],
+            "b1": [2.0, 1.0, np.nan],
+        },
+        index=["ENSG_A", "ENSG_B", "ENSG_C"],
+    )
+    model.assign_cov_matrix(
+        raw,
+        run_pca=True,
+        pca_kwargs={"n_components": 1, "svd_solver": "full"},
+        missing_blocks={"a1": "a", "a2": "a", "b1": "b"},
+        incomplete="impute",
+    )
+    return model, raw
+
+
+def test_imputed_design_is_pcs_of_the_filled_matrix_plus_indicators(
+    tmp_path,
+):
+    model, raw = _pca_imputed_model(tmp_path)
+    design = model.cov_matrix
+    assert list(design.columns) == ["PC1", "miss_b"]
+    assert not design.isna().any().any()
+    # Every gene is in the design, the incomplete one included.
+    assert set(design.index) >= {"ENSG_A", "ENSG_B", _FALLBACK}
+    np.testing.assert_array_equal(
+        design.loc[["ENSG_A", "ENSG_B", _FALLBACK], "miss_b"],
+        [0, 0, 1],
+    )
+    # The PCs are those of the mean-filled matrix over every gene.
+    pcs = run_pca_on_covariates(
+        raw.reindex(design.index),
+        n_components=1,
+        svd_solver="full",
+        dropna="none",
+    )
+    np.testing.assert_allclose(design["PC1"], pcs["PC1"])
+    assert model.covariate_fallback_genes.empty
+    assert list(model.covariate_incomplete_genes) == [_FALLBACK]
+    assert model._fallback_cov is None
+
+
+def test_imputed_rejects_complete_case_pca_and_raw_covariates(
+    tmp_path,
+):
+    model, raw = _pca_imputed_model(tmp_path)
+    with pytest.raises(ValueError, match="dropna"):
+        model.assign_cov_matrix(
+            raw,
+            run_pca=True,
+            pca_kwargs={"n_components": 1, "dropna": "any"},
+            incomplete="impute",
+        )
+    with pytest.raises(ValueError, match="dr_method='pca'"):
+        model.assign_cov_matrix(raw, incomplete="impute")
+    with pytest.raises(ValueError, match="incomplete"):
+        model.assign_cov_matrix(
+            raw,
+            run_pca=True,
+            pca_kwargs={"n_components": 1},
+            incomplete="drop",
+        )
+
+
+def test_imputed_reassignment_back_to_project_resets_the_mode(
+    tmp_path,
+):
+    model, raw = _pca_imputed_model(tmp_path)
+    model.assign_cov_matrix(
+        raw,
+        run_pca=True,
+        pca_kwargs={"n_components": 1, "svd_solver": "full"},
+        missing_blocks={"a1": "a", "a2": "a", "b1": "b"},
+    )
+    assert list(model.covariate_fallback_genes) == [_FALLBACK]
+    assert list(model.covariate_incomplete_genes) == [_FALLBACK]
+
+
+@pytest.mark.slow
+def test_imputed_fit_covers_every_gene_with_no_shift(tmp_path):
+    """c is fitted on every gene, the indicator's coefficient is the
+    block's shift, and the rate is the design times c plus delta."""
+    model, _ = _pca_imputed_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    assert model._fallback_shifts is None
+    c = np.asarray(model.cov_effects)
+    assert c.shape == (1 + 2,)
+    x = model.cov_matrix.loc[_FALLBACK].to_numpy()
+    np.testing.assert_allclose(
+        model.compute_channel_mu_gs("nonsyn").loc[_FALLBACK],
+        model.base_mus_nonsyn.loc[_FALLBACK]
+        * np.exp(c[0] + x @ c[1:] + model._rg_delta_intercept),
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.slow
+def test_imputed_gamma_is_still_marked(tmp_path, monkeypatch):
+    model, _ = _pca_imputed_model(tmp_path)
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    model.dataset.genes_present_non_silent = pd.DataFrame(
+        [[1, 0, 1]], index=[_FALLBACK], columns=["T1", "T2", "T3"]
+    )
+    _fake_gamma(monkeypatch, {})
+    result = model._estimate_gamma_gene(_FALLBACK, store=False)
+    assert result.posterior.attrs["covariate_fallback"] == 1
+    assert (
+        result.posterior.attrs["covariate_fallback_blocks"]
+        == "miss_b"
+    )
+
+
+@pytest.mark.slow
+def test_imputed_mode_survives_save_and_load(tmp_path):
+    model, _ = _pca_imputed_model(tmp_path / "work")
+    model.dataset.save_dataset(tmp_path / "ds")
+    model.dataset = MutationDataset.load_dataset(tmp_path / "ds")
+    model.estimate_channel_rg_cov_effects(sample="MAP")
+    before = model.compute_channel_mu_gs("nonsyn")
+
+    model.save_model(tmp_path / "model")
+    loaded = Model.load_model(tmp_path / "model")
+    assert loaded._covariate_incomplete == "impute"
+    assert list(loaded.covariate_incomplete_genes) == [_FALLBACK]
+    assert loaded.covariate_fallback_genes.empty
+    pd.testing.assert_frame_equal(
+        loaded.compute_channel_mu_gs("nonsyn"), before
+    )

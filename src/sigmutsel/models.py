@@ -4472,6 +4472,7 @@ class Model:
     _fallback_cov: pd.DataFrame = None
     _fallback_indicators: pd.DataFrame = None
     _fallback_shifts: pd.Series = None
+    _covariate_incomplete: str = "project"
     _rg_separate_c: bool | str = False
     _rg_delta_intercept: float = None
     _baseline_germline_mask_af: float = None
@@ -4548,6 +4549,7 @@ class Model:
         self._fallback_cov = None
         self._fallback_indicators = None
         self._fallback_shifts = None
+        self._covariate_incomplete = "project"
         self._rg_separate_c = False
         self._rg_delta_intercept = None
         self._baseline_germline_mask_af = None
@@ -4770,6 +4772,22 @@ class Model:
             covariate_complete_genes(self.cov_matrix)
         )
 
+    @property
+    def covariate_incomplete_genes(self):
+        """Genes whose covariate row is incomplete, however they enter.
+
+        With ``incomplete="project"`` these are
+        :attr:`covariate_fallback_genes`; with ``"impute"`` no gene
+        falls back, and these are the genes with an imputed value
+        (any block indicator set).
+        """
+        if self._covariate_incomplete == "impute":
+            ind = self._fallback_indicators
+            if ind is None:
+                return pd.Index([])
+            return ind.index[ind.to_numpy().any(axis=1)]
+        return self.covariate_fallback_genes
+
     def _fallback_projection_usable(self):
         """Whether fallback genes can be placed in the PC basis.
 
@@ -4862,16 +4880,17 @@ class Model:
 
         Written into ``posterior.attrs`` beside the sample accounting:
         ``covariate_fallback`` is 1 if any gene behind the gamma lacks
-        complete covariates (see :attr:`covariate_fallback_genes`),
-        else 0, and ``covariate_fallback_blocks`` names the blocks
-        they miss. A model without covariates writes nothing.
+        complete covariates (see :attr:`covariate_incomplete_genes`:
+        projected and shifted, or imputed), else 0, and
+        ``covariate_fallback_blocks`` names the blocks they miss. A
+        model without covariates writes nothing.
         """
         if (
             not hasattr(result, "posterior")
             or self.cov_matrix is None
         ):
             return result
-        fallback = self.covariate_fallback_genes
+        fallback = self.covariate_incomplete_genes
         hit = [g for g in gene_ids if g in fallback]
         result.posterior.attrs["covariate_fallback"] = int(bool(hit))
         blocks = set()
@@ -5163,6 +5182,7 @@ class Model:
         dr_method=None,
         dr_kwargs=None,
         missing_blocks=None,
+        incomplete="project",
     ):
         """Assign covariate matrix, restricting to dataset genes.
 
@@ -5218,6 +5238,21 @@ class Model:
             block indicators (see :meth:`_fallback_eta`). ``None``
             makes every column one block. Columns absent from the
             mapping form a block ``"other"``. Only used with PCA.
+        incomplete : {"project", "impute"}, default "project"
+            How genes with incomplete covariates enter (PCA only).
+            ``"project"``: the PCA, and later ``c``, are fitted on the
+            complete genes; each incomplete gene is projected onto that
+            basis from the columns it has and shifted by one fitted
+            factor per block it misses (:meth:`_fallback_eta`), so the
+            complete genes are exactly what they would be without it.
+            ``"impute"``: every gene's missing standardized values are
+            set to 0 (the column mean), the PCA is fitted on every gene,
+            and one 0/1 column per block ("this gene misses part of
+            block B") is appended to the components, so ``c`` and the
+            blocks' coefficients are fitted on every gene together and
+            no gene falls back. Columns with no observed value or a
+            single value are left out of the PCA; identical indicator
+            columns are kept once.
 
         Returns
         -------
@@ -5340,6 +5375,17 @@ class Model:
                 if dr_kwargs is not None
                 else (pca_kwargs or {})
             )
+            if incomplete == "impute":
+                self._assign_imputed_covariates(
+                    reindexed, missing_blocks, kwargs
+                )
+                self._fallback_shifts = None
+                return self.cov_matrix
+            if incomplete != "project":
+                raise ValueError(
+                    "incomplete must be 'project' or 'impute', got "
+                    f"{incomplete!r}"
+                )
             self.cov_matrix = run_pca_on_covariates(
                 reindexed, **kwargs
             )
@@ -5356,10 +5402,71 @@ class Model:
             self.cov_matrix = reindexed
 
         if dr_method != "pca":
+            if incomplete != "project":
+                raise ValueError(
+                    "incomplete='impute' needs dr_method='pca': zero is "
+                    "the mean only for standardized columns"
+                )
             self._fallback_cov = None
             self._fallback_indicators = None
+        self._covariate_incomplete = "project"
         self._fallback_shifts = None
         return self.cov_matrix
+
+    def _assign_imputed_covariates(self, raw, missing_blocks, kwargs):
+        """``incomplete="impute"``: zero-imputed PCs over every gene
+        plus one 0/1 column per block a gene misses (part of).
+
+        The indicators of the incomplete genes are kept in
+        ``_fallback_indicators`` (saved with the model), so gammas on
+        them are still flagged (:meth:`_record_covariate_fallback`).
+        """
+        from .utils import run_pca_on_covariates
+
+        kwargs = dict(kwargs)
+        if kwargs.get("dropna", "none") != "none":
+            raise ValueError(
+                "incomplete='impute' fits the PCA on every gene; "
+                "dropna must be 'none'"
+            )
+        kwargs["dropna"] = "none"
+        columns = kwargs.pop("columns", None)
+        numeric = [
+            c
+            for c in (raw.columns if columns is None else columns)
+            if pd.api.types.is_numeric_dtype(raw[c])
+        ]
+        usable = [
+            c
+            for c in numeric
+            if raw[c].notna().any()
+            and raw[c].nunique(dropna=True) > 1
+        ]
+        pcs = run_pca_on_covariates(raw, columns=usable, **kwargs)
+        if missing_blocks is None:
+            blocks = pd.Series("covariates", index=numeric)
+        else:
+            blocks = (
+                pd.Series(missing_blocks)
+                .reindex(numeric)
+                .fillna("other")
+            )
+        by_block = raw[numeric].isna().T.groupby(blocks).any().T
+        by_block = by_block.loc[:, by_block.any()]
+        indicators = (
+            by_block.T.drop_duplicates()
+            .T.astype(float)
+            .add_prefix("miss_")
+        )
+        design = pd.concat([pcs, indicators], axis=1)
+        design.attrs = dict(pcs.attrs)
+        design.attrs["indicator_columns"] = list(indicators.columns)
+        self.cov_matrix = design
+        self._fallback_cov = None
+        self._fallback_indicators = indicators.loc[
+            indicators.to_numpy().any(axis=1)
+        ]
+        self._covariate_incomplete = "impute"
 
     def _assign_fallback_projection(self, raw, missing_blocks):
         """Project the incomplete rows of ``raw`` onto the new PC basis.
@@ -8411,6 +8518,7 @@ class Model:
                 self._baseline_spectrum_shrinkage
             ),
             "baseline_calls_masked": self._baseline_calls_masked,
+            "covariate_incomplete": self._covariate_incomplete,
             "fallback_shifts": (
                 None
                 if self._fallback_shifts is None
@@ -8600,6 +8708,9 @@ class Model:
         )
         model._baseline_calls_masked = manifest.get(
             "baseline_calls_masked"
+        )
+        model._covariate_incomplete = manifest.get(
+            "covariate_incomplete", "project"
         )
         shifts = manifest.get("fallback_shifts")
         model._fallback_shifts = (
@@ -8902,6 +9013,7 @@ class Model:
         # shifts are a result and are refitted like the rest.
         new_model._fallback_cov = self._fallback_cov
         new_model._fallback_indicators = self._fallback_indicators
+        new_model._covariate_incomplete = self._covariate_incomplete
         new_model._prob_g_tau_tau_independent = (
             self._prob_g_tau_tau_independent
         )

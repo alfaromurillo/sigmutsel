@@ -4569,6 +4569,9 @@ class Model:
         self._prob_g_tau_tau_independent = None
         self.gammas = {}
         self._gammas_loaded_from_disk = {}
+        # The gene selection table and its prior (gene_selection_table).
+        self.selection_table = None
+        self.selection_prior = None
 
         self._auto_mu_taus_kwargs = {
             "L_low": L_low,
@@ -8370,6 +8373,11 @@ class Model:
                 )
                 files[key] = _save_dataframe(frame, f"{key}.parquet")
 
+        if self.selection_table is not None:
+            files["selection_table"] = _save_dataframe(
+                self.selection_table, "selection_table.parquet"
+            )
+
         dataset_snapshot = getattr(
             self.dataset, "dataset_directory", None
         )
@@ -8418,6 +8426,8 @@ class Model:
             "prob_g_tau_tau_independent": (
                 self._prob_g_tau_tau_independent
             ),
+            # The prior behind selection_table (gene_selection_table).
+            "selection_prior": self.selection_prior,
             "files": files,
         }
 
@@ -8639,6 +8649,11 @@ class Model:
         model._prob_g_tau_tau_independent = manifest.get(
             "prob_g_tau_tau_independent"
         )
+        if "selection_table" in files:
+            model.selection_table = _load_dataframe(
+                files["selection_table"]
+            )
+        model.selection_prior = manifest.get("selection_prior")
         model._saved_location = str(directory.resolve())
 
         return model
@@ -11695,6 +11710,503 @@ class Model:
             mu_draws = mu_draws.mul(r_g_draws, axis=0)
 
         return mu_draws
+
+    def gene_selection_likelihoods(
+        self,
+        genes=None,
+        *,
+        excluded_samples=None,
+        n_draws=200,
+        seed=0,
+        gene_tumor_dispersion="fitted",
+        absence_floor=None,
+        hold_out_multi_base=True,
+        hold_out_homdel=True,
+        hold_out_indel=True,
+        r_g_variant="evaluation",
+    ):
+        """Each gene's gamma likelihood on the grid, over stage-1 draws.
+
+        The gene gamma's likelihood (non-silent presence, the
+        non-synonymous channel's rate, evaluation ``r_g``, the absence
+        floor, the hold-outs and the fitted gene-tumor dispersion, as
+        :meth:`estimate_gamma` with ``use_mu_posterior=True,
+        r_g_variant="evaluation", mu_uncertainty="draws"``), for many
+        genes at once: every draw's rate is the draw's covariate scale
+        times the gene's ``r_g`` draw times the fixed per-tumor
+        baseline, so each gene is tabulated once
+        (:class:`.selection.FactoredGeneLikelihood`).
+
+        Parameters
+        ----------
+        genes : iterable, optional
+            ensembl_gene_ids. Default: the genes with complete
+            covariates in the ``r_g`` fit.
+        excluded_samples : collection of str, optional
+            Tumors dropped from both sets, as in :meth:`estimate_gamma`.
+        n_draws : int, default 200
+            Stage-1 draws used, evenly spaced over the posterior's.
+            ``r_g`` takes stratified quantiles of its silent-only
+            posterior, one per draw, in an order drawn from ``seed``.
+        seed : int, default 0
+        gene_tumor_dispersion : None, float or "fitted"
+            As in :meth:`estimate_gamma`.
+        absence_floor : float, optional
+            Default :data:`.estimate_gammas.ABSENCE_FLOOR`.
+        hold_out_multi_base, hold_out_homdel, hold_out_indel : bool
+            As in :meth:`estimate_gamma`.
+        r_g_variant : {"evaluation", "none"}, default "evaluation"
+            "none" leaves ``r_g`` out (the draws are then exactly
+            :meth:`compute_mu_g_posterior_draws`'s with
+            ``r_g_variant="none"``). The production ``r_g`` absorbs
+            selection and is refused.
+
+        Returns
+        -------
+        selection.GeneSelectionLikelihoods
+        """
+        import arviz as az
+        from scipy import stats as sps
+
+        from .estimate_gammas import ABSENCE_FLOOR
+        from .selection import (
+            FactoredGeneLikelihood,
+            GeneSelectionLikelihoods,
+        )
+
+        if self.cov_effects_posteriors is None:
+            raise ValueError(
+                "No covariate-effect posterior available. Call "
+                "estimate_channel_rg_cov_effects(sample='full') first."
+            )
+        if self._rg_statistics is None or self._rg_theta is None:
+            raise ValueError(
+                "No r_g fit available. Call "
+                "estimate_channel_rg_cov_effects() first."
+            )
+        if r_g_variant not in ("evaluation", "none"):
+            raise ValueError(
+                "r_g_variant must be 'evaluation' or 'none'; got "
+                f"{r_g_variant!r} (the production r_g absorbs selection)."
+            )
+        floor = (
+            ABSENCE_FLOOR if absence_floor is None else absence_floor
+        )
+        c_draws = az.extract(
+            self.cov_effects_posteriors, var_names=["c"]
+        ).values
+        if c_draws.ndim != 2:
+            raise NotImplementedError(
+                "gene_selection_likelihoods needs one covariate scale "
+                "(not a separate_c=True fit)."
+            )
+        available = c_draws.shape[1]
+        if n_draws > available:
+            raise ValueError(
+                f"Requested {n_draws} draws but only {available} are "
+                "available."
+            )
+        idx = (
+            np.arange(available)
+            if n_draws == available
+            else np.linspace(0, available - 1, n_draws).astype(int)
+        )
+        c_sel = c_draws[:, idx]
+        if self._rg_delta_intercept is not None:
+            delta = az.extract(
+                self.cov_effects_posteriors,
+                var_names=["delta_intercept"],
+            ).values[idx]
+        else:
+            delta = np.zeros(len(idx))
+
+        baseline = self._channel_baseline("nonsyn")
+        core = pd.Index(self._rg_statistics["genes"])
+        genes = core if genes is None else pd.Index(genes)
+        genes = genes[genes.isin(baseline.index)]
+        stats = self._rg_statistics_with_fallback()
+        genes = genes[genes.isin(pd.Index(stats["genes"]))]
+        tumors = baseline.columns
+        if excluded_samples is not None:
+            tumors = tumors[~tumors.isin(list(excluded_samples))]
+
+        x = self.cov_matrix.reindex(genes).to_numpy(float)
+        complete = np.isfinite(x).all(axis=1)
+        eta = np.zeros((len(genes), len(idx)))
+        eta[complete] = c_sel[0][None, :] + x[complete] @ c_sel[1:]
+        fallback = genes[~complete]
+        if len(fallback) and self._fallback_projection_usable():
+            xf = self._fallback_covariates(fallback).to_numpy(float)
+            shift = self._fallback_shift_terms(fallback).to_numpy(
+                float
+            )
+            eta[~complete] = (
+                c_sel[0][None, :] + xf @ c_sel[1:] + shift[:, None]
+            )
+        eta = eta + delta[None, :]
+
+        expected_silent, _ = self._rg_expectations(
+            include_fallback=True
+        )
+        theta = float(self._rg_theta)
+        quantiles = (np.arange(len(idx)) + 0.5) / len(idx)
+        rng = np.random.default_rng(seed)
+        presence = self.dataset.genes_present_non_silent
+        pres_all = (
+            presence.reindex(
+                index=genes, columns=tumors, fill_value=0
+            )
+            .to_numpy()
+            .astype(float)
+            == 1
+        )
+        base_all = (
+            baseline.reindex(index=genes, columns=tumors)
+            .fillna(0.0)
+            .to_numpy(float)
+        )
+        likelihoods, rows = [], []
+        for i, gene_id in enumerate(genes):
+            present = pd.Series(pres_all[i], index=tumors)
+            absent, held_by = self._gene_hold_outs(
+                gene_id,
+                ~present,
+                multi_base=hold_out_multi_base,
+                homdel=hold_out_homdel,
+                indel=hold_out_indel,
+            )
+            fit = (present | absent).to_numpy().copy()
+            b = np.where(fit, base_all[i], 0.0)
+            # a carrier with no rate cannot be scored; it is left out
+            zero_present = fit & present.to_numpy() & (b <= 0)
+            fit &= ~zero_present
+            total = b[fit].sum()
+            row = {
+                "gene_id": gene_id,
+                "covariate_fallback": not bool(complete[i]),
+                "n_tumors_with": int(
+                    (present.to_numpy() & fit).sum()
+                ),
+                "n_tumors_without": int(absent.sum()),
+                "n_tumors_held_out": int(sum(held_by.values())),
+                "n_present_zero_rate": int(zero_present.sum()),
+            }
+            if not (total > 0 and np.isfinite(eta[i]).all()):
+                row["phi"] = np.nan
+                rows.append(row)
+                likelihoods.append(None)
+                continue
+            mask = pd.Series(fit, index=tumors)
+            phi = self._resolve_gene_tumor_dispersion(
+                gene_tumor_dispersion, gene_id, mask
+            )
+            shape = theta + float(stats["counts_silent"].loc[gene_id])
+            rate = theta + float(expected_silent.loc[gene_id])
+            log_r = np.log(
+                sps.gamma.ppf(quantiles, shape, scale=1.0 / rate)
+            )[rng.permutation(len(idx))]
+            if r_g_variant == "none":
+                log_r = np.zeros(len(idx))
+            likelihoods.append(
+                FactoredGeneLikelihood(
+                    b[fit] / total,
+                    total,
+                    present.to_numpy()[fit],
+                    eta[i] + log_r,
+                    phi=phi,
+                    absence_floor=floor,
+                )
+            )
+            row["phi"] = np.inf if phi is None else float(phi)
+            rows.append(row)
+        accounting = pd.DataFrame(rows).set_index("gene_id")
+        keep = [lik is not None for lik in likelihoods]
+        return GeneSelectionLikelihoods(
+            genes=genes[keep],
+            likelihoods=[
+                lik for lik in likelihoods if lik is not None
+            ],
+            accounting=accounting,
+            n_draws=len(idx),
+            seed=seed,
+        )
+
+    def gene_selection_null_test(
+        self,
+        genes,
+        *,
+        excluded_samples=None,
+        gene_tumor_dispersion="fitted",
+        n_nodes=None,
+    ):
+        """Upper mid-p of each gene's carrier count at gamma = 1.
+
+        The number of tumors with a non-silent call in the gene,
+        against its Poisson-binomial distribution under the point
+        non-synonymous rates (:meth:`compute_channel_mu_gs`), with the
+        gene-tumor dispersion at the gene's count and ``r_g``
+        integrated over its silent-only posterior by quadrature
+        (:func:`.selection.r_posterior_nodes`). Every kept tumor
+        counts; no hold-out applies (the test asks about the calls,
+        and a held-out tumor can only make it conservative).
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by gene: ``n_tumors_with``, ``expected_with`` (at
+            gamma = 1, ``r_g`` integrated), ``p_mid``.
+        """
+        from .gene_tumor_dispersion import phi_for_count
+        from .selection import (
+            TEST_NODES,
+            log_absent_null,
+            poisson_binomial_tail,
+            r_posterior_nodes,
+        )
+
+        n_nodes = TEST_NODES if n_nodes is None else n_nodes
+        nu_all = self.compute_channel_mu_gs("nonsyn")
+        presence = self.dataset.genes_present_non_silent
+        counts = self.dataset.genes_counts_non_silent
+        tumors = nu_all.columns.intersection(presence.columns)
+        if excluded_samples is not None:
+            tumors = tumors[~tumors.isin(list(excluded_samples))]
+        genes = pd.Index(genes)
+        stats = self._rg_statistics_with_fallback()
+        expected_silent, _ = self._rg_expectations(
+            include_fallback=True
+        )
+        theta = float(self._rg_theta)
+        trend = self.gene_tumor_dispersion_trend
+        if gene_tumor_dispersion == "fitted" and trend is None:
+            raise ValueError(
+                "gene_tumor_dispersion='fitted' needs a fitted trend -- "
+                "call estimate_gene_tumor_dispersion() first."
+            )
+        nu_arr = nu_all.reindex(index=genes, columns=tumors).to_numpy(
+            float
+        )
+        pres_arr = (
+            presence.reindex(
+                index=genes, columns=tumors, fill_value=0
+            )
+            .to_numpy()
+            .astype(float)
+            == 1
+        )
+        nmut = (
+            counts.reindex(index=genes, columns=tumors, fill_value=0)
+            .sum(axis=1)
+            .to_numpy(float)
+        )
+        alloc = (
+            self._dispersion_baseline()
+            .reindex(index=genes, columns=tumors)
+            .to_numpy(float)
+        )
+        rows = []
+        for k, gene_id in enumerate(genes):
+            nu = nu_arr[k]
+            row = {
+                "gene_id": gene_id,
+                "n_tumors_with": int(pres_arr[k].sum()),
+            }
+            if (
+                not np.isfinite(nu).all()
+                or nu.sum() <= 0
+                or not np.isfinite(alloc[k]).all()
+                or alloc[k].sum() <= 0
+            ):
+                rows.append(
+                    row | {"expected_with": np.nan, "p_mid": np.nan}
+                )
+                continue
+            if gene_tumor_dispersion == "fitted":
+                phi = phi_for_count(trend, nmut[k])
+            elif gene_tumor_dispersion is None:
+                phi = None
+            else:
+                phi = float(gene_tumor_dispersion)
+            shares = alloc[k] / alloc[k].sum()
+            shape = theta + float(stats["counts_silent"].loc[gene_id])
+            rate = theta + float(expected_silent.loc[gene_id])
+            r, w = r_posterior_nodes(shape, rate, n_nodes)
+            la = log_absent_null(
+                r[:, None] * nu[None, :], phi, shares[None, :]
+            )
+            n = row["n_tumors_with"]
+            p_lt, p_eq = poisson_binomial_tail(la, n, w)
+            rows.append(
+                row
+                | {
+                    "expected_with": float(
+                        w @ (-np.expm1(la)).sum(axis=1)
+                    ),
+                    "p_mid": max(0.0, 1.0 - p_lt - 0.5 * p_eq),
+                }
+            )
+        return pd.DataFrame(rows).set_index("gene_id")
+
+    @record_call
+    def gene_selection_table(
+        self,
+        genes=None,
+        *,
+        prior=None,
+        slab_coef=None,
+        guard=True,
+        likelihoods=None,
+        excluded_samples=None,
+        fdr=0.1,
+        n_draws=200,
+        seed=0,
+        gene_tumor_dispersion="fitted",
+        threshold=2.0,
+        store=True,
+    ):
+        """Whether and how strongly each gene is selected, in one table.
+
+        **The call** is the null test (:meth:`gene_selection_null_test`)
+        with Benjamini-Hochberg over the genes in the table: ``called``
+        when ``q < fdr``. **The strength** is gamma's posterior under
+        the empirical-Bayes spike + slab prior (:mod:`.selection`),
+        fitted on the same genes (or given), with the guard. The flat
+        prior's interval is kept beside it, as an estimate only: read
+        across many genes it calls neutral genes above one.
+
+        Parameters
+        ----------
+        genes : iterable, optional
+            Default: every gene with complete covariates in the
+            ``r_g`` fit, drivers included.
+        prior : selection.SpikeSlabPrior, optional
+            Use this prior instead of fitting one.
+        slab_coef : array, optional
+            A pooled slab (:func:`.selection.fit_pooled_spike_slab`):
+            only this cohort's spike is fitted.
+        guard : bool, default True
+            See :func:`.selection.fit_spike_slab`.
+        likelihoods : selection.GeneSelectionLikelihoods, optional
+            From :meth:`gene_selection_likelihoods` (computed if None,
+            with ``excluded_samples``, ``n_draws``, ``seed`` and
+            ``gene_tumor_dispersion``).
+        fdr : float, default 0.1
+        threshold : float, default 2.0
+            ``eb_p_above`` is the posterior P(gamma > threshold).
+        store : bool, default True
+            Keep the table in :attr:`selection_table` and the prior in
+            :attr:`selection_prior` (both saved with the model).
+
+        Returns
+        -------
+        pandas.DataFrame
+            Indexed by gene_id: ``n_tumors_with``, ``expected_with``,
+            ``p_mid``, ``q``, ``called``, ``eb_median``, ``eb_lower``,
+            ``eb_upper`` (89%), ``eb_p_above``, ``flat_median``,
+            ``flat_lower``, ``flat_upper``, ``upper_bound_only`` (no
+            carrier: the flat interval bounds gamma from above only),
+            and the fit's accounting (``n_tumors_without``,
+            ``n_tumors_held_out``, ``phi``, ``covariate_fallback``).
+        """
+        from .selection import (
+            benjamini_hochberg,
+            cut_posterior,
+            eb_mask,
+            fit_spike_slab,
+            flat_grid,
+            posterior_summary,
+        )
+
+        if likelihoods is None:
+            likelihoods = self.gene_selection_likelihoods(
+                genes,
+                excluded_samples=excluded_samples,
+                n_draws=n_draws,
+                seed=seed,
+                gene_tumor_dispersion=gene_tumor_dispersion,
+            )
+        if prior is None:
+            prior = fit_spike_slab(
+                likelihoods.marginal(),
+                slab_coef=slab_coef,
+                guard=guard,
+            )
+        grid = flat_grid()
+        mask = eb_mask(grid)
+        eb_rows, flat_rows = [], []
+        for lik in likelihoods.likelihoods:
+            ll = lik.loglik()
+            flat = posterior_summary(cut_posterior(ll, grid), grid)
+            eb = posterior_summary(
+                cut_posterior(ll[:, mask], prior.log_density),
+                prior.grid,
+                threshold=threshold,
+            )
+            flat_rows.append(flat)
+            eb_rows.append(eb)
+        idx = pd.Index(likelihoods.genes, name="gene_id")
+        table = pd.DataFrame(
+            {
+                "eb_median": [r["median"] for r in eb_rows],
+                "eb_lower": [r["lower"] for r in eb_rows],
+                "eb_upper": [r["upper"] for r in eb_rows],
+                "eb_p_above": [r["p_above"] for r in eb_rows],
+                "flat_median": [r["median"] for r in flat_rows],
+                "flat_lower": [r["lower"] for r in flat_rows],
+                "flat_upper": [r["upper"] for r in flat_rows],
+            },
+            index=idx,
+        )
+        test = self.gene_selection_null_test(
+            idx,
+            excluded_samples=excluded_samples,
+            gene_tumor_dispersion=gene_tumor_dispersion,
+        )
+        table = test.join(table, how="left")
+        table["q"] = benjamini_hochberg(table["p_mid"].to_numpy())
+        table["called"] = table["q"] < fdr
+        acc = likelihoods.accounting.reindex(table.index)
+        table["upper_bound_only"] = (
+            acc["n_tumors_with"].to_numpy() == 0
+        )
+        for col in (
+            "n_tumors_without",
+            "n_tumors_held_out",
+            "phi",
+            "covariate_fallback",
+        ):
+            table[col] = acc[col].to_numpy()
+        table = table[
+            [
+                "n_tumors_with",
+                "expected_with",
+                "p_mid",
+                "q",
+                "called",
+                "eb_median",
+                "eb_lower",
+                "eb_upper",
+                "eb_p_above",
+                "flat_median",
+                "flat_lower",
+                "flat_upper",
+                "upper_bound_only",
+                "n_tumors_without",
+                "n_tumors_held_out",
+                "phi",
+                "covariate_fallback",
+            ]
+        ]
+        if store:
+            self.selection_table = table
+            self.selection_prior = prior.to_dict() | {
+                "fdr": float(fdr),
+                "threshold": float(threshold),
+                "n_draws": int(likelihoods.n_draws),
+                "seed": int(likelihoods.seed),
+                "n_genes": len(table),
+            }
+        return table
 
     def _covariate_scale_draws(
         self, gene_id, n_draws=None, rng=None, include_delta=True

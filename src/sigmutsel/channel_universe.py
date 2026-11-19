@@ -92,6 +92,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +101,9 @@ import pandas as pd
 from .constants import canonical_types_order
 
 logger = logging.getLogger(__name__)
+
+# sigprofiler_genome_dir warns once per process when the genome is missing.
+_GENOME_WARNED = False
 
 CHANNELS = ("syn", "mis", "non", "spl", "esyn")
 NONSYN_CHANNELS = ("mis", "non", "spl")
@@ -2092,19 +2096,38 @@ def sigprofiler_genome_dir(build="GRCh38"):
     the base being ``byte % 4`` (A, C, G, T) for bytes below 16 and N
     otherwise (the higher bits carry transcriptional-strand
     annotation). It is present only once ``genInstall`` has run.
+
+    Without it every base read from the genome is "unknown": the
+    pentamer contexts, splice-flank compositions and whatever else
+    reads the genome silently fall back, and rates built that way
+    differ from those of an environment that has the genome. So its
+    absence is warned about, once per process.
     """
+    global _GENOME_WARNED
     try:
         import SigProfilerMatrixGenerator
     except ImportError:
-        return None
-    path = (
-        Path(SigProfilerMatrixGenerator.__file__).parent
-        / "references"
-        / "chromosomes"
-        / "tsb"
-        / build
-    )
-    return path if path.is_dir() else None
+        path = None
+    else:
+        path = (
+            Path(SigProfilerMatrixGenerator.__file__).parent
+            / "references"
+            / "chromosomes"
+            / "tsb"
+            / build
+        )
+        path = path if path.is_dir() else None
+    if path is None and not _GENOME_WARNED:
+        _GENOME_WARNED = True
+        warnings.warn(
+            f"No installed {build} genome (SigProfilerMatrixGenerator's "
+            "references/chromosomes/tsb): every base read from it is "
+            "unknown, so genome-dependent contexts and opportunities fall "
+            "back and rates will differ from an environment that has it.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return path
 
 
 def splice_flank_composition(

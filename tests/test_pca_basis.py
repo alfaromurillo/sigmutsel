@@ -11,6 +11,9 @@ components without it.
 import numpy as np
 import pandas as pd
 
+from sigmutsel.channel_universe import (
+    sigprofiler_genome_dir as _real_genome_dir,
+)
 from sigmutsel.models import Model, MutationDataset
 from sigmutsel.utils import run_pca_on_covariates
 
@@ -133,3 +136,29 @@ def test_basis_survives_save_and_load(tmp_path):
     )
     pd.testing.assert_frame_equal(loaded["genes"], saved["genes"])
     assert loaded["meta"] == saved["meta"]
+
+
+def test_a_missing_genome_is_warned_about_once(monkeypatch, tmp_path):
+    import types
+
+    import pytest
+
+    from sigmutsel import channel_universe as cu
+
+    fake = types.ModuleType("SigProfilerMatrixGenerator")
+    fake.__file__ = str(
+        tmp_path / "SigProfilerMatrixGenerator" / "__init__.py"
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules, "SigProfilerMatrixGenerator", fake
+    )
+    monkeypatch.setattr(cu, "_GENOME_WARNED", False)
+    with pytest.warns(
+        RuntimeWarning, match="No installed GRCh38 genome"
+    ):
+        assert _real_genome_dir() is None
+    import warnings as w
+
+    with w.catch_warnings():
+        w.simplefilter("error")
+        assert _real_genome_dir() is None

@@ -650,6 +650,20 @@ class SiteRates:
         site_context : site_context.ContextFactors, optional
             The pentanucleotide context factor in the placement mode
             (:meth:`with_placement`), each assay on its own table.
+
+        Returns
+        -------
+        SiteRates or AssaySiteRates
+            One :class:`AssaySiteRates` when the dataset's tumors are on
+            several assays, else one :class:`SiteRates`.
+
+        Examples
+        --------
+        About a minute and 2 GB on top of the model; queries then take
+        about a millisecond per variant.
+
+        >>> from sigmutsel.site_rates import SiteRates
+        >>> site_rates = SiteRates.from_model(model, r_g="evaluation")
         """
         from .channel_universe import (
             load_or_build_transcript_models,
@@ -1019,6 +1033,20 @@ class SiteRates:
         A position coding in several genes gives one row per gene; a
         position that is none of the table's elements gives none.
 
+        Parameters
+        ----------
+        chrom : sequence of str
+            Chromosomes, with or without ``chr``.
+        pos : sequence of int
+            1-based GRCh38 positions (a MAF's ``Start_Position``).
+        alt : sequence of str
+            The alternate base on the plus strand.
+        per_tumor : bool, default True
+            Also return the per-tumor rates.
+        observable : bool, default False
+            Per-tumor rates of an observable call (the ones to compare
+            with calls) instead of mutation rates.
+
         Returns
         -------
         (pandas.DataFrame, pandas.DataFrame or None)
@@ -1027,6 +1055,14 @@ class SiteRates:
             observable_rate_total; and, with ``per_tumor``, rows x
             tumors mutation rates, or observable rates (each times
             ``capture`` and ``observable``) with ``observable=True``.
+
+        Examples
+        --------
+        PIK3CA E545K is chr3:179218303 G>A on GRCh38:
+
+        >>> info, per_tumor = site_rates.snv_rates(
+        ...     ["chr3"], [179218303], ["A"], observable=True)
+        >>> info[["ensembl_gene_id", "channel", "observable_rate_total"]]
         """
         t = self.table
         m = t.models
@@ -1651,6 +1687,13 @@ class SiteRates:
             routes, route_weights, context, rate_total,
             observable_rate_total, or ``error``), then the per-tumor
             mutation rates and observable rates.
+
+        Examples
+        --------
+        >>> info, rates, observable = site_rates.variant_rates(
+        ...     ["PIK3CA p.E545K", "PIK3CA p.H1047R"])
+        >>> info[["channel", "n_routes", "routes"]]  # indexed by variant
+        >>> observable.sum(axis=1)  # tumors expected to carry each, if neutral
         """
         variants = list(variants)
         type_index = {

@@ -313,7 +313,31 @@ def heldout_spectrum_scores(
     from the other parts' passenger calls. Arms: every ``(kappa_1,
     kappa_2)`` of the grids plus the floor alone (``kappa_2`` None)
     at every ``kappa_1``, and ``"none"``, the signature spectrum as
-    is.
+    is. It refits the signatures ``folds`` times: about a minute for a
+    cohort of a few hundred exomes.
+
+    Parameters
+    ----------
+    db : pandas.DataFrame
+        The dataset's ``mutation_db``.
+    sig_matrix : pandas.DataFrame
+        The cohort's signature matrix, indexed by the 96 types
+        (``dataset.signature_matrix.set_index("MutationType")``).
+    kappa_1_grid, kappa_2_grid : sequence of float
+        The grids of the two shrinkage strengths.
+    floor_signature : str, default "SBS5"
+        The signature mixed into the cohort pool.
+    floor_share : float, default 0.1
+        Its share of the pool.
+    folds : int, default 5
+        Parts each tumor's calls are split into.
+    seed : int, default 0
+        The split's seed.
+    fit : callable, optional
+        ``fit(matrix, signatures, workdir)`` returning exposures;
+        default SigProfilerAssignment.
+    workdir : str or Path, optional
+        Scratch directory for the fits; default a temporary one.
 
     Returns
     -------
@@ -325,6 +349,16 @@ def heldout_spectrum_scores(
         Every shrunk arm scores every call, since the prior has no
         zero type; compare an arm with ``"none"`` only on tumors with
         ``none_impossible == 0``, or on the arm-to-arm differences.
+
+    Examples
+    --------
+    >>> from sigmutsel.spectrum_shrinkage import (
+    ...     heldout_spectrum_scores, select_kappas)
+    >>> signatures = dataset.signature_matrix  # 96 types x signatures
+    >>> scores = heldout_spectrum_scores(dataset.mutation_db, signatures)
+    >>> kept = scores.drop(index=scores.index.intersection(excluded))
+    >>> kept.attrs.update(scores.attrs)
+    >>> dataset.set_spectrum_shrinkage(select_kappas(kept))
     """
     import tempfile
     from pathlib import Path
@@ -422,8 +456,6 @@ def select_kappas(
 ):
     """Choose the kappas, and measure the choice's optimism.
 
-    ``scores``: :func:`heldout_spectrum_scores`'s table. ``family``:
-    ``"hybrid"`` (both kappas) or ``"floor"`` (``kappa_1`` alone).
     The chosen pair maximizes the summed held-out log-probability over
     every tumor. The nested estimate splits the tumors into
     ``outer_folds`` groups, chooses on all groups but one and scores
@@ -432,11 +464,34 @@ def select_kappas(
     ``kappa_1`` of the grid (an arm that scores every call), and
     against ``"none"`` on the tumors it can score.
 
+    Parameters
+    ----------
+    scores : pandas.DataFrame
+        :func:`heldout_spectrum_scores`'s table (QC-flagged tumors
+        dropped, its ``attrs`` kept).
+    family : {"hybrid", "floor"}, default "hybrid"
+        Both kappas, or ``kappa_1`` alone.
+    outer_folds : int, default 5
+        Groups of tumors of the nested estimate.
+    seed : int, default 0
+        The groups' seed.
+    floor_signature, floor_share
+        As in :func:`heldout_spectrum_scores`, recorded with the
+        choice.
+
     Returns
     -------
     SpectrumShrinkage
         With ``selection`` recording the grid, the nested and
         in-sample gains, the optimism and each outer fold's choice.
+
+    Examples
+    --------
+    >>> chosen = select_kappas(kept)
+    >>> chosen.label()
+    'kappa_1 100, kappa_2 1000'
+    >>> round(chosen.selection["optimism"])  # nats, HNSC
+    71
     """
     if family not in ("hybrid", "floor"):
         raise ValueError("family must be 'hybrid' or 'floor'")

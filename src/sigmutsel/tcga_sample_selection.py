@@ -395,6 +395,20 @@ def select_tcga_maf_files(
     -------
     list[pathlib.Path]
         Selected MAF file paths, sorted.
+
+    Examples
+    --------
+    The defaults keep every aliquot; for one treatment-naive primary
+    tumor per patient, pass:
+
+    >>> from sigmutsel.tcga_sample_selection import select_tcga_maf_files
+    >>> chosen = select_tcga_maf_files(
+    ...     "hnsc/all_maf_files_raw",
+    ...     duplicate_policy="newest",
+    ...     exclude_prior_treatment=True,
+    ...     project="HNSC")
+    >>> len(chosen)  # of 511 HNSC files in 2026
+    410
     """
     catalog = catalog_maf_files(maf_dir)
     catalog = filter_by_sample_type(

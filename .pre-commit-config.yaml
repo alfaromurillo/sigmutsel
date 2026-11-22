@@ -16,8 +16,8 @@ repos:
         types: [python]
         files: ^(src|tests)/.*\.py$
       - id: no-private-refs
-        name: no private repo/path refs in docs
+        name: no private repo/machine/path refs in tracked files
         entry: python scripts/check_no_private_refs.py
         language: system
         pass_filenames: false
-        files: \.md$
+        always_run: true

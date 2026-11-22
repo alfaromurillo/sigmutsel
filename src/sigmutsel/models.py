@@ -162,44 +162,42 @@ class MutationDataset:
         Genome build passed to signature decomposition. Populated when
         run_signature_decomposition() succeeds.
 
+    Parameters
+    ----------
+    location_maf_files : str or Path
+        Directory of per-tumor ``.maf`` files (one per tumor;
+        select TCGA's with
+        :func:`~sigmutsel.tcga_sample_selection.select_tcga_maf_files`).
+    signature_class : str, default "SBS"
+        COSMIC signature class (see Attributes). The rate model and
+        selection estimates are built on SBS.
+    source_maf : str or Path, optional
+        One multi-tumor MAF to split into ``location_maf_files``.
+
     Examples
     --------
-    >>> from models import MutationDataset
-    >>> from coad_locations import location_all_maf_files
-    >>>
-    >>> # Create SBS dataset (default)
-    >>> dataset = MutationDataset(
-    ...     location_maf_files=location_all_maf_files,
-    ...     signature_class="SBS")
-    >>>
-    >>> # Generate mutation database (optionally saving to disk)
-    >>> dataset.generate_mutation_db("data/mutations_sbs.parquet")
-    >>>
-    >>> # Access data and compute derived matrices
-    >>> print(f"Loaded {dataset.n_samples} samples")
-    >>> dataset.compute_gene_presence()
-    >>> dataset.generate_variant_db()
-    >>> dataset.compute_variants_present()
-    >>>
-    >>> # Run signature decomposition (auto-generates matrices if needed)
-    >>> assignments = dataset.run_signature_decomposition(
-    ...     exome=True,
-    ...     cosmic_version=3.4,
-    ...     genome_build='GRCh38')
-    >>> print(f"Found {assignments.shape[1]} active signatures")
-    >>>
-    >>> # Load trinucleotide contexts by gene
-    >>> from locations import location_cds_fasta
-    >>> contexts = dataset.generate_contexts_by_gene(
-    ...     location_cds_fasta)
-    >>> print(f"Contexts for {contexts.shape[0]} genes")
-    >>>
-    >>> # Create ID (indel) dataset
-    >>> dataset_id = MutationDataset(
-    ...     location_maf_files=location_all_maf_files,
-    ...     signature_class="ID")
-    >>> dataset_id.generate_mutation_db("data/mutations_id.parquet")
+    The recommended build (each step explained in the tutorial,
+    ``tutorials/selection_in_hnsc.md``):
 
+    >>> from sigmutsel import MutationDataset
+    >>> from sigmutsel.qc import load_repeat_intervals
+    >>> from sigmutsel.setup import download_repeatmasker_bed
+    >>> dataset = MutationDataset("hnsc/all_maf_files", signature_class="SBS")
+    >>> dataset.generate_mutation_db(
+    ...     qc_mode=True,
+    ...     qc_kwargs={"repeat_intervals": load_repeat_intervals(
+    ...         download_repeatmasker_bed("hg38"))},
+    ...     germline_mask_af=1.5e-4)
+    >>> dataset.run_two_pass_signature_decomposition(
+    ...     exclude_signature_subgroups="HNSC", treatment_naive=True,
+    ...     genome_build="GRCh38", exome=True, cosmic_version=3.6,
+    ...     treatment_load_threshold=0.2,
+    ...     prevalence_override_min_fraction=0.15)
+    >>> dataset.build_full_dataset(gene_universe="wes_target",
+    ...                            regenerate_mutation_db=False)
+    >>> dataset.save_dataset("hnsc/HNSC_dataset")
+    >>> dataset.n_samples, len(dataset.model_db)
+    (392, 59453)
     """
 
     location_maf_files: str
@@ -343,6 +341,15 @@ class MutationDataset:
             prompts interactively, which is right at a console but
             hangs an unattended pipeline -- pass True from scripts,
             mirroring :meth:`Model.save_model`.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> dataset.save_dataset("hnsc/HNSC_dataset")
+        >>> dataset.save_dataset("hnsc/HNSC_dataset", overwrite=True)
         """
 
         directory = Path(directory)
@@ -609,7 +616,27 @@ class MutationDataset:
 
     @classmethod
     def load_dataset(cls, directory):
-        """Load dataset artifacts from a directory created by save_dataset."""
+        """Load dataset artifacts from a directory created by save_dataset.
+
+        Parameters
+        ----------
+        directory : str or Path
+            A directory written by :meth:`save_dataset`.
+
+        Returns
+        -------
+        MutationDataset
+            With every table that was saved; the MAF files are not
+            needed again. A dataset saved by an older version warns
+            when its provenance stamp differs.
+
+        Examples
+        --------
+        >>> from sigmutsel import MutationDataset
+        >>> dataset = MutationDataset.load_dataset("hnsc/HNSC_dataset")
+        >>> dataset.n_samples
+        392
+        """
 
         directory = Path(directory)
         manifest_path = directory / "dataset_manifest.json"
@@ -954,6 +981,11 @@ class MutationDataset:
         -------
         pandas.Series
             Calls per ``Variant_Classification``.
+
+        Examples
+        --------
+        >>> dataset.build_indel_db()
+        >>> dataset.save_dataset("hnsc/HNSC_dataset", overwrite=True)
         """
         from .load_maf_files import read_coding_indels
 
@@ -1039,8 +1071,27 @@ class MutationDataset:
 
         Like :meth:`set_site_weights`, a per-cohort parameter chosen
         once and saved with the dataset; no table changes here, and
-        models built after it take it into their baselines. Accepts a
-        :class:`spectrum_shrinkage.SpectrumShrinkage` or its dict.
+        models built after it take it into their baselines.
+
+        Parameters
+        ----------
+        shrinkage : spectrum_shrinkage.SpectrumShrinkage, dict or None
+            The chosen kappas (:func:`spectrum_shrinkage.select_kappas`)
+            or their dict; None clears them.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> from sigmutsel.spectrum_shrinkage import (
+        ...     heldout_spectrum_scores, select_kappas)
+        >>> signatures = dataset.signature_matrix  # 96 types x signatures
+        >>> scores = heldout_spectrum_scores(dataset.mutation_db, signatures)
+        >>> dataset.set_spectrum_shrinkage(select_kappas(scores))
+        >>> dataset.spectrum_shrinkage.label()
+        'kappa_1 100, kappa_2 1000'
         """
         from .spectrum_shrinkage import SpectrumShrinkage
 
@@ -1298,12 +1349,24 @@ class MutationDataset:
         placed again (a call in a repeat, rare after the QC, leaves
         the universe as ``outside_territory``), the opportunity tables
         are rebuilt with the same mask and site weights, and every
-        table built from the calls is recomputed.
+        table built from the calls is recomputed. Saved with the
+        dataset; the first call on a dataset takes minutes (it
+        rebuilds the opportunity).
+
+        Parameters
+        ----------
+        exclude : bool, default True
+            Take the repeats out (True) or put them back (False).
 
         Returns
         -------
         pandas.Series
             Calls per ``universe_reason`` after the change.
+
+        Examples
+        --------
+        >>> if not (dataset.channel_universe or {}).get("exclude_repeats"):
+        ...     dataset.set_exclude_repeats(True)
         """
         from .channel_universe import (
             classify_calls,
@@ -1370,11 +1433,21 @@ class MutationDataset:
         Every call is placed again and the tables rebuilt, as in
         :meth:`set_exclude_repeats`.
 
+        Parameters
+        ----------
+        exclude : bool, default True
+            One gene per position (True), or every overlapping gene
+            counting it (False).
+
         Returns
         -------
         (pandas.Series, int)
             Calls per ``universe_reason`` after the change, and how
             many calls moved to their position's owner.
+
+        Examples
+        --------
+        >>> reasons, moved = dataset.set_exclude_overlaps(True)
         """
         from .channel_universe import (
             classify_calls,
@@ -1902,7 +1975,7 @@ class MutationDataset:
         (purity/VAF-shape evidence, sourced by the caller from
         outside `sigmutsel`, see :mod:`sample_qc`) and is expected to
         be assigned directly by the pipeline that builds this
-        dataset (e.g. `tcga_analysis/code/main.py`).
+        dataset (see the tutorial's sample-QC step).
 
         Returns
         -------
@@ -2234,16 +2307,26 @@ class MutationDataset:
         seqinfo_dir explicitly if the files are in a custom
         location.
 
+        Returns
+        -------
+        None
+            The calls are in :attr:`mutation_db` (and, with ``qc_mode``,
+            what the QC removed in :attr:`qc_ledger`); save with
+            :meth:`save_dataset`.
+
         Examples
         --------
-        >>> # Generate and save SBS database
+        >>> # SBS calls with the call QC and the germline mask
+        >>> from sigmutsel.qc import load_repeat_intervals
+        >>> from sigmutsel.setup import download_repeatmasker_bed
         >>> dataset = MutationDataset(
         ...     location_maf_files="data/maf_files",
         ...     signature_class="SBS")
-        >>> dataset.generate_mutation_db()
-        >>>
-        >>> # Generate without saving (load into memory only)
-        >>> dataset.generate_mutation_db()
+        >>> dataset.generate_mutation_db(
+        ...     qc_mode=True,
+        ...     qc_kwargs={"repeat_intervals": load_repeat_intervals(
+        ...         download_repeatmasker_bed("hg38"))},
+        ...     germline_mask_af=1.5e-4)
         >>>
         >>> # Generate ID database (seqinfo_dir auto-detected)
         >>> dataset_id = MutationDataset(
@@ -3375,6 +3458,19 @@ class MutationDataset:
         pd.DataFrame
             Pass B's signature assignments (also stored in
             ``self.sig_assignments``).
+
+        Examples
+        --------
+        After :meth:`generate_mutation_db` (QC on), with the settings the
+        tutorial uses:
+
+        >>> dataset.run_two_pass_signature_decomposition(
+        ...     exclude_signature_subgroups="HNSC", treatment_naive=True,
+        ...     genome_build="GRCh38", exome=True, cosmic_version=3.6,
+        ...     artifact_threshold=0.5, treatment_load_threshold=0.2,
+        ...     prevalence_override_min_fraction=0.15,
+        ...     min_burden_for_diagnostics=100)
+        >>> dataset.sig_assignments.shape  # tumors x signatures
         """
         if self.signature_class != "SBS":
             raise NotImplementedError(
@@ -4057,6 +4153,19 @@ class MutationDataset:
             the structured QC pipeline in :mod:`qc` instead of the
             default silent validation. Ignored if
             `regenerate_mutation_db` is False.
+
+        Returns
+        -------
+        None
+            The tables are set on the dataset (gene presence, contexts by
+            gene, variants); save it with :meth:`save_dataset`.
+
+        Examples
+        --------
+        After :meth:`run_two_pass_signature_decomposition`:
+
+        >>> dataset.build_full_dataset(gene_universe="wes_target",
+        ...                            regenerate_mutation_db=False)
         """
         title = "Mutation data: building compact mutation database."
         print("=" * len(title))
@@ -4384,6 +4493,38 @@ class Model:
     set of covariates. To test different covariate combinations,
     create multiple Model instances.
 
+    Parameters
+    ----------
+    dataset : MutationDataset, str or Path
+        The dataset, or a directory saved by
+        :meth:`MutationDataset.save_dataset`.
+    cov_matrix : pandas.DataFrame, optional
+        Gene covariates (genes x columns), assigned with
+        :meth:`assign_cov_matrix`'s defaults. To reduce them by PCA
+        or to pass published components, leave it None and call
+        :meth:`assign_cov_matrix` yourself.
+    cov_effects_kwargs : dict, optional
+        Default keyword arguments of :meth:`estimate_cov_effects`
+        (the older single-channel model).
+    L_low, L_high, cut_at_L_low : optional
+        A burden correction for low-burden tumors, superseded by
+        sample QC (flag such tumors and pass them as
+        ``excluded_samples``); leave them None.
+    cov_effects_per_sigma : bool, optional
+        Separate covariate effects per signature (older models).
+        Setting it (False or True) computes the per-tumor type rates
+        at construction.
+    prob_g_tau_tau_independent : bool, optional
+        Whether the share of a tumor's mutations of type ``tau`` that
+        falls in gene ``g`` ignores the tumor's spectrum. **Pass
+        False** for the recommended channel model; setting it
+        computes the baselines at construction.
+    signature_selection : list, optional
+        Signatures to keep separate (:meth:`aggregate_signatures`).
+    include_other : bool, default False
+        With ``signature_selection``, pool the other signatures into
+        one ``"other"`` group instead of dropping them.
+
     Attributes
     ----------
     dataset : MutationDataset
@@ -4449,6 +4590,28 @@ class Model:
 
     Examples
     --------
+    The recommended (consequence-split channel) model, on published
+    covariate components (``tutorials/selection_in_hnsc.md``):
+
+    >>> import pandas as pd
+    >>> import sigmutselcovs
+    >>> pcs = sigmutselcovs.fetch_covariate_matrix("HNSC")
+    >>> files = sigmutselcovs.fetch_covariate_artifacts(
+    ...     "HNSC", artifacts=("pca_indicators",))
+    >>> design = pd.concat(
+    ...     [pcs.iloc[:, :300], pd.read_parquet(files["pca_indicators"])],
+    ...     axis=1)
+    >>> model = Model(dataset, None, cov_effects_per_sigma=False,
+    ...               prob_g_tau_tau_independent=False)
+    >>> model.assign_cov_matrix(design)
+    >>> model.compute_channel_base_mus()
+    >>> model.estimate_channel_rg_cov_effects(
+    ...     excluded_samples=excluded, include_drivers=True,
+    ...     sample="full")
+    >>> model.save_model("hnsc/model")
+
+    The older single-channel models:
+
     >>> # Create a baseline model (no covariates)
     >>> model_no_cov = Model(dataset, None)
     >>> model_no_cov.has_covariates()
@@ -5716,9 +5879,29 @@ class Model:
         ``(mean, cov)`` pair with that Gaussian prior (per-cohort values
         shrunk by the between-cohort spread); None (default) has no term.
 
+        Parameters
+        ----------
+        pseudo_count : float, default 50.0
+            Expected calls added to every margin of the fit, which
+            pulls each weight toward 1 where calls are few.
+        excluded_samples : collection of str, optional
+            Tumors (QC-flagged) left out of the fit.
+        cpg_term : None, "flat" or (mean, cov)
+            The CpG C>T term, as above.
+
         Returns
         -------
         site_weights.SiteWeights
+            The fitted weights, also set on the dataset (saved with
+            it); ``n_calls`` is how many calls they were fitted on.
+
+        Examples
+        --------
+        >>> from sigmutsel import Model
+        >>> probe = Model(dataset, None, cov_effects_per_sigma=False,
+        ...               prob_g_tau_tau_independent=False)
+        >>> weights = probe.estimate_site_weights(excluded_samples=excluded)
+        >>> dataset.save_dataset("hnsc/HNSC_dataset", overwrite=True)
         """
         from .channel_universe import (
             _coding_site_table,
@@ -6365,6 +6548,16 @@ class Model:
             :meth:`estimate_gamma` raised (nothing is stored for it).
             Each call's run-history entry is recorded on this model
             either way.
+
+        Examples
+        --------
+        >>> settings = dict(excluded_samples=excluded, use_mu_posterior=True,
+        ...                 mu_uncertainty="draws", r_g_variant="evaluation",
+        ...                 gene_tumor_dispersion="fitted")
+        >>> requests = [dict(item=g, level="gene", **settings)
+        ...             for g in ("TP53", "PIK3CA", "NOTCH1")]
+        >>> results = model.estimate_gammas(requests, seed=0, n_jobs=3)
+        >>> [key for key, _ in results]
         """
         from . import provenance
         from .parallel import item_rng, map_ordered, numpy_backed
@@ -7430,6 +7623,13 @@ class Model:
         -------
         dict
             The trend, also stored as :attr:`gene_tumor_dispersion_trend`.
+
+        Examples
+        --------
+        Fit it once, before any gamma with ``gene_tumor_dispersion="fitted"``:
+
+        >>> trend = model.estimate_gene_tumor_dispersion(excluded_samples=excluded)
+        >>> trend["method"], trend["slope"]
         """
         from .estimate_presence import filter_passenger_genes_ensembl
         from .gene_tumor_dispersion import (
@@ -8486,6 +8686,15 @@ class Model:
         See Also
         --------
         load_model : Reload a saved model from disk
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> model.save_model("hnsc/model")
+        >>> model.save_model("hnsc/model", overwrite=True)  # after new gammas
         """
         from pathlib import Path
 
@@ -8851,6 +9060,22 @@ class Model:
             ``dataset_snapshot``. The manifest records an absolute
             path, so a model copied to another machine needs this to
             find its dataset's copy there.
+
+        Returns
+        -------
+        Model
+            With every saved result, and its own copy of the dataset.
+
+        Examples
+        --------
+        A loaded model reads its own copy of the dataset: hand it the tables
+        the selection estimates use, which are kept with the dataset.
+
+        >>> from sigmutsel import Model, MutationDataset
+        >>> dataset = MutationDataset.load_dataset("hnsc/HNSC_dataset")
+        >>> model = Model.load_model("hnsc/model")
+        >>> for table in ("multi_base_db", "homdel_db", "indel_db"):
+        ...     setattr(model.dataset, table, getattr(dataset, table))
         """
         from pathlib import Path
 
@@ -9744,7 +9969,29 @@ class Model:
 
         :meth:`_compute_channel_base_mus_single` for each assay's
         tumors against its own territory (:meth:`_by_assay`); without
-        assays, exactly that method.
+        assays, exactly that method. Call it after
+        :meth:`assign_cov_matrix` and before
+        :meth:`estimate_channel_rg_cov_effects`.
+
+        Parameters
+        ----------
+        prob_g_tau_tau_independent : bool, optional
+            Default: the model's own setting (pass False to the
+            constructor).
+
+        Returns
+        -------
+        (pandas.DataFrame, pandas.DataFrame)
+            The synonymous and non-synonymous baselines, genes x
+            tumors, also kept as :attr:`base_mus_syn` and
+            :attr:`base_mus_nonsyn`.
+
+        Examples
+        --------
+        >>> model = Model(dataset, None, cov_effects_per_sigma=False,
+        ...               prob_g_tau_tau_independent=False)
+        >>> model.assign_cov_matrix(design)
+        >>> syn, nonsyn = model.compute_channel_base_mus()
         """
         syn, nonsyn = self._by_assay(
             lambda: self._compute_channel_base_mus_single(
@@ -11341,8 +11588,8 @@ class Model:
             two-channel Poisson -- the same likelihood with the Gamma
             marginalisation removed, not a different one. ``rg_theta``
             and both ``r_g`` variants then raise, which is the point:
-            an arm without ``r_g`` must not be scored with one. Ladder
-            arms 0-3 (see ``mutation_rates``' nested-ladder notes).
+            an arm without ``r_g`` must not be scored with one (the
+            nested model comparisons' arms without ``r_g``).
         fit_intercept : bool, default True
             ``False`` pins the shared intercept at 0 rather than
             fitting it, which is the only way to reach ladder arm 0
@@ -11386,6 +11633,14 @@ class Model:
             the covariate matrix are missing.
         NotImplementedError
             If ``base_mus`` is signature-separated.
+
+        Examples
+        --------
+        >>> model.assign_cov_matrix(design)
+        >>> model.compute_channel_base_mus()
+        >>> model.estimate_channel_rg_cov_effects(
+        ...     excluded_samples=excluded, include_drivers=True, sample="full")
+        >>> model.rg_theta
         """
         from .estimate_rg import estimate_channel_rg_effect
 
@@ -11949,6 +12204,18 @@ class Model:
 
         Covers the covariate-less genes too (see
         :attr:`covariate_fallback_genes`), with the same ``theta``.
+
+        Returns
+        -------
+        pandas.Series
+            ``r_g`` per gene (Ensembl id): the posterior mean of the
+            gene's rate correction given its silent counts. Multiply
+            :attr:`mu_gs` (which does not include it) by it.
+
+        Examples
+        --------
+        >>> r_g = model.compute_r_g_for_evaluation()
+        >>> rate = model.mu_gs.loc["ENSG00000141510"] * r_g["ENSG00000141510"]
         """
         from .estimate_rg import r_g_silent_only_for_evaluation
 
@@ -12577,6 +12844,14 @@ class Model:
             carrier: the flat interval bounds gamma from above only),
             and the fit's accounting (``n_tumors_without``,
             ``n_tumors_held_out``, ``phi``, ``covariate_fallback``).
+
+        Examples
+        --------
+        >>> model.estimate_gene_tumor_dispersion(excluded_samples=excluded)
+        >>> table = model.gene_selection_table(
+        ...     excluded_samples=excluded, fdr=0.1, n_jobs=4)
+        >>> table[table.called].sort_values("q")[
+        ...     ["n_tumors_with", "expected_with", "q", "eb_median"]].head()
         """
         from .parallel import map_ordered
         from .selection import (

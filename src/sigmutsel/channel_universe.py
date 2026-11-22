@@ -720,7 +720,31 @@ def load_or_build_transcript_models(
     :data:`locations.location_channel_universe_dir`) under a
     sub-directory named by a fingerprint of the GTF and FASTA and of
     this module's build version, so a change to any of them rebuilds
-    rather than serving a stale table.
+    rather than serving a stale table. The first build takes a few
+    minutes; later calls load the cache.
+
+    Parameters
+    ----------
+    gtf_path : str or Path, optional
+        Default the GENCODE v38 GTF of the reference data.
+    fasta_paths : str, Path or list, optional
+        Default the Ensembl CDS FASTA of the reference data.
+    cache_dir : str or Path, optional
+        Default :data:`locations.location_channel_universe_dir`.
+    force : bool, default False
+        Rebuild even if a cache exists.
+
+    Returns
+    -------
+    TranscriptModels
+        One transcript per gene (MANE Select, else canonical, else
+        longest), with its coding positions and splice sites.
+
+    Examples
+    --------
+    >>> from sigmutsel.channel_universe import (
+    ...     load_or_build_transcript_models)
+    >>> models = load_or_build_transcript_models()
     """
     from .locations import (
         location_cds_fasta,

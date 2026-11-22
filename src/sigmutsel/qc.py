@@ -323,6 +323,13 @@ def load_repeat_intervals(rmsk_path):
         the format :func:`flag_repetitive_regions` expects. Reuses
         :func:`wes_target._merge_intervals`, the same interval-merge
         already used for the WES-target gene universe.
+
+    Examples
+    --------
+    >>> from sigmutsel.qc import load_repeat_intervals
+    >>> from sigmutsel.setup import download_repeatmasker_bed
+    >>> intervals = load_repeat_intervals(download_repeatmasker_bed("hg38"))
+    >>> starts, ends = intervals["chr1"]
     """
     first = pd.read_csv(rmsk_path, sep="\t", header=None, nrows=1)
     if first.shape[1] == 3:
@@ -479,7 +486,8 @@ def flag_treatment_signature_samples(
     subsequent evolutionary history rather than a confinable subset of
     mutations the way a sequencing artifact does, so dropping the
     sample is the right granularity (same as the purity/VAF-shape
-    sample-level QC in ``tcga_analysis``, not the artifact mechanism).
+    sample-level QC of :mod:`sigmutsel.sample_qc`, not the artifact
+    mechanism).
 
     Like :func:`flag_artifact_signature_mutations`, this needs
     dataset-wide input from a signature-decomposition fit and is meant
@@ -500,8 +508,7 @@ def flag_treatment_signature_samples(
         caller considers too low-burden for this fraction to be
         trustworthy should be ``NaN`` here, not left out or set to 0:
         ``NaN > threshold`` is ``False``, so they're never flagged,
-        which is the desired behavior (see the mutation_rates
-        project's 2026-08-25 groundwork -- a naive threshold with no
+        which is the desired behavior (a naive threshold with no
         burden gate is dominated by low-count NNLS noise, not real
         contamination).
     threshold : float, default 0.2

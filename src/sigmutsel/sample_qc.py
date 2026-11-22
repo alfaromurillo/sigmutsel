@@ -74,6 +74,21 @@ def flag_low_purity_samples(
         Boolean, indexed by `barcode_column`'s values. ``True`` means
         flagged. Samples with missing/NaN purity are *not* flagged
         (no evidence either way, not evidence of a problem).
+
+    Examples
+    --------
+    The purity table's barcodes are shorter than a MAF's, so map each
+    tumor to its prefix first:
+
+    >>> import pandas as pd
+    >>> from sigmutsel.sample_qc import flag_low_purity_samples
+    >>> from sigmutsel.setup import download_tcga_absolute_purity
+    >>> purity = pd.read_csv(download_tcga_absolute_purity(), sep="\t")
+    >>> tumors = dataset.mutation_db["Tumor_Sample_Barcode"].unique()
+    >>> short = pd.Series(tumors, index=tumors).str.slice(
+    ...     0, len(purity["array"].iloc[0]))
+    >>> low_purity = (short.map(flag_low_purity_samples(purity))
+    ...               .fillna(False).astype(bool))
     """
     purity = purity_table.set_index(barcode_column)[purity_column]
     if purity.index.has_duplicates:
@@ -243,6 +258,13 @@ def load_copy_number_segments_from_file(
     -------
     dict
         As returned by :func:`load_copy_number_segments`.
+
+    Examples
+    --------
+    >>> from sigmutsel.sample_qc import load_copy_number_segments_from_file
+    >>> from sigmutsel.setup import download_tcga_absolute_segments
+    >>> segments = load_copy_number_segments_from_file(
+    ...     download_tcga_absolute_segments())  # parsed once, then cached
     """
     import pickle
     from pathlib import Path
@@ -509,9 +531,16 @@ def flag_vaf_shape_samples(
         Same purity table as :func:`flag_low_purity_samples`.
     copy_number_segments : dict
         As returned by :func:`load_copy_number_segments`.
+    barcode_column, purity_column : str
+        As in :func:`flag_low_purity_samples`.
     threshold : float, default 0.7
         Samples with an estimated 75th-percentile CCF below this are
         flagged.
+    depth_col, alt_col, min_depth, min_variants
+        Passed to :func:`compute_vaf_shape_score`: the read-depth and
+        alternate-read columns, the least depth of a variant used,
+        and the least number of such variants a sample needs to be
+        scored.
     lift_to_hg19 : bool, default True
         Lift the calls' GRCh38 positions to hg19 before looking up their
         segments, as TCGA's ABSOLUTE segments are hg19 (the
@@ -519,7 +548,6 @@ def flag_vaf_shape_samples(
         positions). False compares positions as given.
     chain_blocks : pandas.DataFrame, optional
         The hg38-to-hg19 chain already read; defaults to the package's.
-    Other parameters : see :func:`compute_vaf_shape_score`.
 
     Returns
     -------
@@ -528,6 +556,14 @@ def flag_vaf_shape_samples(
         flagged. Samples with no purity estimate or too few
         depth-filtered, copy-number-annotated variants are not
         flagged (no evidence either way).
+
+    Examples
+    --------
+    >>> from sigmutsel.sample_qc import flag_vaf_shape_samples
+    >>> tumors = dataset.mutation_db["Tumor_Sample_Barcode"].unique()
+    >>> vaf_shape = flag_vaf_shape_samples(
+    ...     dataset.mutation_db, purity, segments
+    ... ).reindex(tumors, fill_value=False)
     """
     purity = purity_table.set_index(barcode_column)[purity_column]
     if purity.index.has_duplicates:
@@ -600,6 +636,13 @@ def combine_sample_flags(*flags, how="any", warn_threshold=0.05):
     -------
     pandas.Series
         Boolean, indexed by the union of all input indices.
+
+    Examples
+    --------
+    >>> from sigmutsel.sample_qc import combine_sample_flags
+    >>> dataset.sample_qc_flags = combine_sample_flags(low_purity, vaf_shape)
+    >>> excluded = set(dataset.sample_qc_flags[dataset.sample_qc_flags].index)
+    >>> model.estimate_gamma("TP53", excluded_samples=excluded)
     """
     if how not in ("any", "all"):
         raise ValueError(f"how must be 'any' or 'all', got {how!r}")
@@ -686,6 +729,18 @@ def homozygously_deleted_genes(
     pandas.DataFrame
         One row per (tumor, deleted gene): ``Tumor_Sample_Barcode``,
         ``ensembl_gene_id``.
+
+    Examples
+    --------
+    Give the dataset the deletions once; gamma then holds those tumors
+    out of each gene's absent set:
+
+    >>> from sigmutsel.channel_universe import (
+    ...     load_or_build_transcript_models)
+    >>> from sigmutsel.sample_qc import homozygously_deleted_genes
+    >>> tumors = dataset.mutation_db["Tumor_Sample_Barcode"].unique()
+    >>> dataset.homdel_db = homozygously_deleted_genes(
+    ...     segments, load_or_build_transcript_models(), tumors)
     """
 
     from .liftover import lift_positions

@@ -1483,6 +1483,18 @@ def summarize_gamma(result, prob=0.89):
         ``mean``, ``lower`` and ``upper`` of gamma and
         ``upper_bound_only`` (bool). With ``upper_bound_only``,
         ``mean`` and ``lower`` are NaN and ``upper`` is the bound.
+
+    Examples
+    --------
+    >>> from sigmutsel.estimate_gammas import summarize_gamma
+    >>> settings = dict(excluded_samples=excluded, use_mu_posterior=True,
+    ...                 mu_uncertainty="draws", r_g_variant="evaluation",
+    ...                 gene_tumor_dispersion="fitted")
+    >>> result = model.estimate_gamma("TP53", level="gene", **settings)
+    >>> summarize_gamma(result)
+    >>> plof = model.estimate_gamma("PIK3CA", level="gene", channel="plof",
+    ...                             **settings)
+    >>> summarize_gamma(plof)["upper_bound_only"]  # if no tumor carries one
     """
     draws = np.asarray(result.posterior["gamma"]).ravel()
     tail = 100 * (1 - prob) / 2

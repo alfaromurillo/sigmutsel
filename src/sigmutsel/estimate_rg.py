@@ -152,9 +152,8 @@ def r_g_silent_only_for_evaluation(
     The evaluation-discipline variant: this function has no argument
     through which non-silent data could reach it, so a ``μ^(nonsyn)``
     scaled by its output and scored against non-silent counts is
-    scored on a target it has never seen. Same discipline as
-    ``dnds_comparison``'s closed-form leakage control, Bayesian
-    instead.
+    scored on a target it has never seen: a held-out score, by
+    construction.
 
     ``theta`` and ``expected_silent`` still come from the joint fit
     (same ``c``, same ``θ``); only which channel informs *this gene's

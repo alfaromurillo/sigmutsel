@@ -261,7 +261,7 @@ def test_two_pass_treatment_load_qc_ignores_low_burden_samples(
     """A sample below min_burden_for_diagnostics must never be
     flagged, however high its treatment-load fraction looks -- that
     fraction is NNLS noise at low mutation counts, not a trustworthy
-    signal (see mutation_rates TODO.md's 2026-08-25 groundwork)."""
+    signal."""
     dataset = _make_dataset(tmp_path)
     dataset._mutation_db = pd.DataFrame(
         {

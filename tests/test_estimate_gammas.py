@@ -351,8 +351,8 @@ def test_estimate_gamma_public_forwards_excluded_samples(monkeypatch):
 
 
 # --- _estimate_gamma_gene's channel-rate fix. Found while validating
-# --- the mu-posterior cut (mutation_rates/TODO.md's TOP PRIORITY
-# --- entry) on real COAD data: a channel-split model's non-silent
+# --- the mu-posterior cut on real COAD data: a channel-split
+# --- model's non-silent
 # --- presence was being scored against the merged mu_gs (wrong
 # --- baseline, missing delta_intercept) instead of
 # --- compute_channel_mu_gs("nonsyn") -- the same distinction

@@ -2,8 +2,7 @@
 handling.
 
 Bug this covers (found while building a signature-stratified
-covariate-effect pilot on SKCM, see the `mutation_rates` project's
-TODO.md): getting a genuine Nth "rest" group required calling
+covariate-effect pilot on SKCM): getting a genuine Nth "rest" group required calling
 ``model.aggregate_signatures(selection, include_other=True)``
 manually, since ``Model.__init__`` had no ``include_other`` parameter
 at all. But that manual call left ``self._auto_signature_selection``

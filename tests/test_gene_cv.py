@@ -3,10 +3,8 @@ restriction parameters on ``Model.estimate_cov_effects``/
 ``Model.estimate_passenger_genes_r2``/
 ``Model.estimate_channel_rg_cov_effects``, and the
 ``gene_cv_passenger_r2``/``channel_gene_cv_passenger_r2`` wrappers
-that orchestrate them (see TODO.md's "Cross-validated R² test for PCA
-n_components selection", and the sigmutsel branch audit that flagged
-this as a currently-broken dependency of
-tcga_analysis/code/pca_nc_cv_sweep.py)."""
+that orchestrate them (a branch audit found this a broken
+dependency of a downstream PCA n_components sweep)."""
 
 from unittest.mock import patch
 

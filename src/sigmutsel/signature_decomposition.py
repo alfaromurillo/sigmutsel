@@ -415,8 +415,7 @@ def compute_prevalence_overrides(
     Prevalence is a tumor-*count* criterion (fraction of tumors with
     any nonzero exposure), not a magnitude one -- "recurs often, even
     if small each time" is the intended signal, distinct from "large
-    in a few tumors" (see the mutation_rates project's 2026-08-25
-    groundwork for why: a real signature genuinely absent from most
+    in a few tumors" (why: a real signature genuinely absent from most
     tumors but large in the few it appears in looks different from one
     recurring broadly at low level, and only the latter is the kind of
     evidence this function is meant to catch).

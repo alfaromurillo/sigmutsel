@@ -707,9 +707,8 @@ def test_mu_m_posterior_draws_rejects_unknown_r_g_variant(tmp_path):
 # --- (shape, positivity, r_g scaling) are already covered above --
 # --- these check the new integration point: masking the 2-D draws
 # --- by the present/absent tumor split and forwarding r_g_variant,
-# --- exactly the pattern
-# --- tcga_analysis/code/run_channel_{gene,variant}_gammas_mu_
-# --- posterior_cut.py used by hand before this was wired in.
+# --- exactly the pattern downstream scripts used by hand before
+# --- this was wired in.
 # --- r_g_variant="none" throughout -- deterministic, no draw-order
 # --- randomness to fight; the r_g variants themselves are already
 # --- checked above.
@@ -1249,7 +1248,7 @@ def test_rg_fit_survives_save_and_load(tmp_path):
 def test_cov_effects_posteriors_survive_save_and_load(tmp_path):
     """A sample="full" fit's posterior must round-trip too, not just
     the MAP-derived scalars above -- without it, a model reloaded in
-    a later session (e.g. on gauss, across separate runs) looks
+    a later session (e.g. on a compute server, across runs) looks
     un-fit to anything needing the posterior
     (compute_mu_g_posterior_draws), forcing a full MCMC refit every
     time instead of reusing the one already paid for."""
@@ -1283,8 +1282,8 @@ def test_cov_effects_posteriors_can_be_resaved_after_load(tmp_path):
     result computed from the already-loaded posterior. Resaving
     writes cov_effects_posteriors.nc back to the exact path it was
     just read from; a naive to_netcdf(same_path) can collide with
-    that still-open read handle and fail (hit in production on
-    gauss as a netCDF4 PermissionError, not a locking error)."""
+    that still-open read handle and fail (hit in production as a
+    netCDF4 PermissionError, not a locking error)."""
     from sigmutsel.models import Model
 
     model = _rg_model(tmp_path / "work")

@@ -1351,3 +1351,28 @@ def test_fingerprint_is_a_stable_key_of_names_sizes_and_extra(
     assert longer != key
     renamed = b.rename(tmp_path / "c.fa")
     assert _fingerprint(a, renamed) != longer
+
+
+def test_in_intervals_matches_a_direct_scan():
+    """Grouping by chromosome gives what a scan of every key gives,
+    with keys absent from the positions, positions on chromosomes
+    absent from the keys, and unmapped (None, -1) positions."""
+    rng = np.random.default_rng(1)
+    merged = {}
+    for c in ["chr1", "chr2", "1", "chrUn_x", "chr9"]:
+        # disjoint and sorted, as merged_bed_intervals returns them
+        starts = np.sort(rng.choice(200, 40, replace=False)) * 50
+        merged[c] = (starts, starts + rng.integers(1, 30, 40))
+    chroms = rng.choice(
+        np.array(["chr1", "chr2", "1", "chr7", None], dtype=object),
+        5_000,
+    )
+    pos = rng.integers(-1, 10_050, 5_000)
+
+    expected = np.zeros(len(pos), dtype=bool)
+    for i, (c, p) in enumerate(zip(chroms, pos)):
+        if c in merged and p >= 1:
+            s, e = merged[c]
+            expected[i] = bool(((s <= p - 1) & (p - 1 < e)).any())
+
+    assert (in_intervals(merged, chroms, pos) == expected).all()

@@ -16,59 +16,73 @@ _PKG_DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR = Path(os.environ.get("SIGMUTSEL_DATA_DIR", _PKG_DATA_DIR))
 
 
+def _bundled(name: str) -> Path:
+    """A file shipped inside the package, found even under a custom DATA_DIR.
+
+    ``SIGMUTSEL_DATA_DIR`` moves the downloaded files; the small files
+    bundled with the package are not downloaded by ``sigmutsel-setup``,
+    so a fresh custom directory never holds them. Prefer a copy in
+    ``DATA_DIR`` (a directory that is a full package data directory,
+    as a source checkout's), else the package's own.
+    """
+    custom = DATA_DIR / name
+    return custom if custom.exists() else _PKG_DATA_DIR / name
+
+
 # ============================================================
 # Small files (included in package)
 # ============================================================
 
-location_exclusion_signatures_matrix = (
-    DATA_DIR / "exclusion_signatures_matrix_by_cancer_type.txt"
+location_exclusion_signatures_matrix = _bundled(
+    "exclusion_signatures_matrix_by_cancer_type.txt"
 )
 
-location_inclusion_signatures_matrix = (
-    DATA_DIR / "inclusion_signatures_matrix_by_cancer_type.txt"
+location_inclusion_signatures_matrix = _bundled(
+    "inclusion_signatures_matrix_by_cancer_type.txt"
 )
 
-location_cosmic_signature_etiology = (
-    DATA_DIR / "cosmic_signature_etiology.tsv"
+location_cosmic_signature_etiology = _bundled(
+    "cosmic_signature_etiology.tsv"
 )
 
 
 # ============================================================
-# Large files (downloaded on setup or first use)
+# Gene lists (bundled), then large files (downloaded on setup or
+# first use)
 # ============================================================
 
 location_hgnc_complete_set = DATA_DIR / "hgnc_complete_set.txt"
 
-location_cancer_gene_census = (
-    DATA_DIR / "Census_allFri May 30 16_47_00 2025.tsv"
+location_cancer_gene_census = _bundled(
+    "Census_allFri May 30 16_47_00 2025.tsv"
 )
 
-location_cosmic_cancer_gene_census = (
-    DATA_DIR / "Cosmic_CancerGeneCensus_v101_GRCh38.tsv"
+location_cosmic_cancer_gene_census = _bundled(
+    "Cosmic_CancerGeneCensus_v101_GRCh38.tsv"
 )
 
 # IntOGen's compendium of mutational driver genes (release 2024-09-20,
 # CC0), one row per gene with its Ensembl id resolved through HGNC.
-location_intogen_driver_genes = (
-    DATA_DIR / "intogen_driver_genes_20240920.tsv"
+location_intogen_driver_genes = _bundled(
+    "intogen_driver_genes_20240920.tsv"
 )
 
 # Genes targeted by activation-induced cytidine deaminase (AID): the
 # immunoglobulin loci and published aberrant-hypermutation targets.
-location_aid_target_genes = DATA_DIR / "aid_target_genes.tsv"
+location_aid_target_genes = _bundled("aid_target_genes.tsv")
 
 # Driver genes of published exome-wide screens beyond the Census and
 # IntOGen: TCGA's PanCancer consensus and two lymphoma screens.
-location_published_driver_genes = (
-    DATA_DIR / "published_driver_genes.tsv"
+location_published_driver_genes = _bundled(
+    "published_driver_genes.tsv"
 )
 
 # Every gene of HGNC's five histone gene groups (H1, H2A, H2B, H3, H4).
-location_histone_genes = DATA_DIR / "histone_genes.tsv"
+location_histone_genes = _bundled("histone_genes.tsv")
 
 # Genes prone to mapping and calling artifacts (FLAGS and a compiled
 # false-positive list), for flagging reported genes only.
-location_artifact_prone_genes = DATA_DIR / "artifact_prone_genes.tsv"
+location_artifact_prone_genes = _bundled("artifact_prone_genes.tsv")
 
 location_cds_fasta = DATA_DIR / "Homo_sapiens.GRCh38.cds.all.fa"
 
@@ -192,7 +206,27 @@ def list_data_files() -> dict[str, bool]:
 
 
 def print_data_status():
-    """Print status of all reference data files."""
+    """Print status of all reference data files.
+
+    Returns
+    -------
+    None
+        Prints one line per reference file, then the command that
+        downloads the missing ones, if any.
+
+    Examples
+    --------
+    Also the console command ``sigmutsel-check-data``:
+
+    >>> from sigmutsel.locations import print_data_status
+    >>> print_data_status()
+    Data directory: .../sigmutsel/data
+    <BLANKLINE>
+    File status:
+    ------------------------------------------------------------
+    ✓ exclusion_signatures_matrix    Found
+    ...
+    """
     print(f"Data directory: {DATA_DIR}\n")
     print("File status:")
     print("-" * 60)

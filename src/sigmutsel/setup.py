@@ -366,6 +366,14 @@ def download_repeatmasker_bed(
     -----
     Kept compressed: pandas reads ``.gz`` and ``.xz`` files directly,
     so there's no need to decompress them to disk.
+
+    Examples
+    --------
+    >>> from sigmutsel.qc import load_repeat_intervals
+    >>> from sigmutsel.setup import download_repeatmasker_bed
+    >>> intervals = load_repeat_intervals(download_repeatmasker_bed("hg38"))
+    >>> dataset.generate_mutation_db(
+    ...     qc_mode=True, qc_kwargs={"repeat_intervals": intervals})
     """
     if genome_build not in ("hg38", "hg19"):
         raise ValueError(
@@ -458,6 +466,13 @@ def download_tcga_absolute_purity(force: bool = False) -> Path:
     Hoadley et al. 2018) -- see
     https://gdc.cancer.gov/about-data/publications/PanCan-CellOfOrigin.
     Companion file: :func:`download_tcga_absolute_segments`.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from sigmutsel.setup import download_tcga_absolute_purity
+    >>> purity = pd.read_csv(download_tcga_absolute_purity(), sep="\t")
+    >>> purity[["array", "purity", "ploidy"]].head(2)
     """
     filename = "TCGA_mastercalls.abs_tables_JSedit.fixed.txt"
     dest = DATA_DIR / filename
@@ -518,15 +533,20 @@ def download_tcga_absolute_segments(force: bool = False) -> Path:
         ``Start``, ``End``, ``Modal_Total_CN``, and
         ``Cancer_cell_frac_a1``/``_a2`` columns (the latter describe
         the copy-number event's own clonality, not an individual
-        point mutation's -- see the purity/CN-corrected VAF QC
-        presentation, ``mutation_rates/presentations/
-        2026_08_22_vaf_purity_qc.tex``, for why that distinction
-        matters).
+        point mutation's, which the purity/CN-corrected VAF QC of
+        :mod:`sigmutsel.sample_qc` relies on).
 
     Notes
     -----
     Companion file: :func:`download_tcga_absolute_purity`. Same
     source as that function's docstring.
+
+    Examples
+    --------
+    >>> from sigmutsel.sample_qc import load_copy_number_segments_from_file
+    >>> from sigmutsel.setup import download_tcga_absolute_segments
+    >>> segments = load_copy_number_segments_from_file(
+    ...     download_tcga_absolute_segments())
     """
     filename = "TCGA_mastercalls.abs_segtabs.fixed.txt"
     dest = DATA_DIR / filename
@@ -564,6 +584,7 @@ def download_all(
     force: bool = False,
     decompress_fasta: bool = True,
     keep_gtf_compressed: bool = True,
+    genome: bool = True,
 ):
     """Download all required reference files.
 
@@ -575,11 +596,25 @@ def download_all(
         If True, decompress FASTA file
     keep_gtf_compressed : bool, default True
         If True, keep GTF files compressed
+    genome : bool, default True
+        Also install SigProfilerMatrixGenerator's GRCh38 genome
+        (:func:`install_reference_genome`, about 3 GB), which it keeps
+        inside its own package directory, not in the data directory.
 
     Returns
     -------
     dict[str, Path]
         Mapping of file type to downloaded path
+
+    Examples
+    --------
+    From the command line, ``sigmutsel-setup`` does the same (and
+    ``sigmutsel-setup --data-dir DIR`` into another directory):
+
+    >>> from sigmutsel.setup import download_all
+    >>> paths = download_all()  # about 300 MB plus the 3 GB genome
+    >>> sorted(paths)[:3]
+    ['cds_fasta', 'gencode19', 'gencode38']
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -642,6 +677,25 @@ def download_all(
             "hg38", force=force
         )
 
+        # The WES-target gene universe, derived from items 4 and 5
+        # (MutationDataset's default gene universe; seconds to build)
+        logger.info("\n9. MC3 WES-target gene list (derived)")
+        from sigmutsel import wes_target
+
+        wes_target.get_wes_target_gene_ids(force_recompute=force)
+        downloaded["wes_target_gene_ids"] = (
+            wes_target.location_wes_target_gene_ids
+        )
+
+        if genome:
+            logger.info(
+                "\n10. GRCh38 reference genome (SigProfilerMatrixGenerator)"
+            )
+            # Not reinstalled by force=True: 3 GB, and an installed
+            # genome does not go stale (install_reference_genome(
+            # force=True) reinstalls it).
+            downloaded["genome"] = install_reference_genome("GRCh38")
+
         logger.info("\n" + "=" * 60)
         logger.info("All reference files downloaded successfully!")
         logger.info("=" * 60)
@@ -655,6 +709,65 @@ def download_all(
         )
         logger.error(f"  {DATA_DIR}")
         raise
+
+
+def install_reference_genome(
+    build: str = "GRCh38", force: bool = False
+) -> Path:
+    """Install SigProfilerMatrixGenerator's reference genome (~3 GB).
+
+    The signature decomposition and every step that reads the genome
+    (pentanucleotide contexts, splice-flank compositions, the
+    opportunity across exon junctions) use SigProfilerMatrixGenerator's
+    installed reference. Without it those steps do not fail: they
+    warn once and fall back, and the rates differ from an environment
+    that has it. Install it before building a dataset.
+
+    Parameters
+    ----------
+    build : str, default "GRCh38"
+        Genome build, as SigProfilerMatrixGenerator names it.
+    force : bool, default False
+        Reinstall even if the genome is already installed.
+
+    Returns
+    -------
+    Path
+        The installed genome's directory
+        (``references/chromosomes/tsb/<build>`` inside the
+        SigProfilerMatrixGenerator package).
+
+    Examples
+    --------
+    >>> from sigmutsel.setup import install_reference_genome
+    >>> install_reference_genome("GRCh38")  # doctest: +SKIP
+    """
+    import SigProfilerMatrixGenerator
+    from SigProfilerMatrixGenerator import install as genInstall
+
+    # The directory sigprofiler_genome_dir reads, checked without its
+    # missing-genome warning (its absence is what this installs).
+    path = (
+        Path(SigProfilerMatrixGenerator.__file__).parent
+        / "references"
+        / "chromosomes"
+        / "tsb"
+        / build
+    )
+    if path.is_dir() and any(path.glob("*.txt")) and not force:
+        logger.info(f"{build} reference genome already at {path}")
+        return path
+    logger.info(
+        f"Installing the {build} reference genome with "
+        "SigProfilerMatrixGenerator (about 3 GB; several minutes)..."
+    )
+    genInstall.install(build, rsync=False, bash=True)
+    if not (path.is_dir() and any(path.glob("*.txt"))):
+        raise RuntimeError(
+            f"SigProfilerMatrixGenerator did not install {build} at "
+            f"{path}"
+        )
+    return path
 
 
 def download_germline_mask(force: bool = False) -> Path:
@@ -703,8 +816,12 @@ Examples:
   # Re-download even if files exist
   python -m sigmutsel setup --force
 
-  # Keep FASTA compressed
-  python -m sigmutsel setup --keep-fasta-compressed
+  # Download into another directory (then export
+  # SIGMUTSEL_DATA_DIR=/path/to/data in every session that uses it)
+  python -m sigmutsel setup --data-dir /path/to/data
+
+  # Without the 3 GB GRCh38 genome (a dataset build needs it)
+  python -m sigmutsel setup --skip-genome
 
   # Decompress GTF files
   python -m sigmutsel setup --decompress-gtf
@@ -720,7 +837,11 @@ Examples:
     parser.add_argument(
         "--keep-fasta-compressed",
         action="store_true",
-        help="Keep FASTA file compressed (.fa.gz)",
+        help=(
+            "Keep FASTA file compressed (.fa.gz); building a dataset "
+            "reads the uncompressed file, so only for a download to "
+            "decompress later"
+        ),
     )
     parser.add_argument(
         "--decompress-gtf",
@@ -744,6 +865,14 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--skip-genome",
+        action="store_true",
+        help=(
+            "Do not install SigProfilerMatrixGenerator's GRCh38 genome "
+            "(about 3 GB); every dataset build needs it"
+        ),
+    )
+    parser.add_argument(
         "--data-dir",
         type=Path,
         help="Custom data directory (default: package data dir)",
@@ -754,13 +883,41 @@ Examples:
     # Configure logging
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # Set custom data directory if specified
+    # A custom data directory must be set before sigmutsel is
+    # imported: every module resolves its file paths at import time,
+    # so patching DATA_DIR here would send some files to the custom
+    # directory and others to the package's. Run the same command
+    # again in a fresh process with SIGMUTSEL_DATA_DIR set instead.
     if args.data_dir:
-        global DATA_DIR
-        DATA_DIR = args.data_dir
+        import os
+        import subprocess
+        import sys
+
         from sigmutsel import locations
 
-        locations.DATA_DIR = args.data_dir
+        data_dir = args.data_dir.expanduser().resolve()
+        if data_dir != Path(locations.DATA_DIR).resolve():
+            argv, skip = [], False
+            for arg in sys.argv[1:]:
+                if skip:
+                    skip = False
+                elif arg == "--data-dir":
+                    skip = True
+                elif not arg.startswith("--data-dir="):
+                    argv.append(arg)
+            env = {**os.environ, "SIGMUTSEL_DATA_DIR": str(data_dir)}
+            data_dir.mkdir(parents=True, exist_ok=True)
+            return subprocess.call(
+                [sys.executable, "-m", "sigmutsel.setup", *argv],
+                env=env,
+            )
+
+    if args.keep_fasta_compressed:
+        logger.warning(
+            "--keep-fasta-compressed: building a dataset reads the "
+            "uncompressed CDS FASTA; decompress it (gunzip) before "
+            "building one."
+        )
 
     # Download files
     try:
@@ -768,6 +925,7 @@ Examples:
             force=args.force,
             decompress_fasta=not args.keep_fasta_compressed,
             keep_gtf_compressed=not args.decompress_gtf,
+            genome=not args.skip_genome,
         )
         if args.repeatmasker_full:
             download_repeatmasker_bed(

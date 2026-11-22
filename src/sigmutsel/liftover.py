@@ -192,13 +192,22 @@ def in_intervals(merged, chroms, positions):
     Unmapped positions (chromosome ``None`` or position ``-1``) are
     outside.
     """
-    chroms = np.asarray(chroms, dtype=object)
     pos0 = np.asarray(positions, dtype=np.int64) - 1
     inside = np.zeros(len(pos0), dtype=bool)
-    for chrom, (starts, ends) in merged.items():
-        idx = np.flatnonzero(chroms == chrom)
-        if not len(idx):
+    # One pass over the chromosome labels, then one integer comparison
+    # per chromosome present. Comparing the object array with every
+    # key of ``merged`` instead cost minutes on a whole exome, as
+    # RepeatMasker's intervals carry hundreds of unplaced contigs
+    # (each under two names when both namings are accepted).
+    codes, labels = pd.factorize(
+        pd.Series(np.asarray(chroms, dtype=object)),
+        use_na_sentinel=True,
+    )
+    for k, chrom in enumerate(labels):
+        if chrom not in merged:
             continue
+        starts, ends = merged[chrom]
+        idx = np.flatnonzero(codes == k)
         j = np.searchsorted(starts, pos0[idx], side="right") - 1
         inside[idx] = (j >= 0) & (
             pos0[idx] < ends[np.clip(j, 0, None)]

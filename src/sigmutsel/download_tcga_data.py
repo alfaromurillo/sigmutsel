@@ -44,11 +44,15 @@ def _extract_maf(compressed_maf: Path, destination_dir: Path) -> None:
     output_path = (
         destination_dir / compressed_maf.with_suffix("").name
     )
+    # Written beside the target and renamed, so an interrupted run
+    # never leaves a truncated MAF under the final name.
+    partial = output_path.with_name(output_path.name + ".part")
     with (
         gzip.open(compressed_maf, "rb") as f_in,
-        output_path.open("wb") as f_out,
+        partial.open("wb") as f_out,
     ):
         shutil.copyfileobj(f_in, f_out)
+    partial.replace(output_path)
 
 
 def process_tcga_maf_downloads(
@@ -124,15 +128,115 @@ def process_tcga_maf_downloads(
     return all_single_maf
 
 
+def download_project_maf_files(
+    project: str,
+    destination: Path | str,
+    *,
+    download_dir: Path | str | None = None,
+    workers: int = 6,
+) -> list[Path]:
+    """Download a TCGA project's open MAFs from the GDC, no ``gdc-client``.
+
+    Searches the GDC for the project's per-aliquot somatic-mutation
+    MAFs (gdcfetch's ``somatic-mutations`` preset: open-access
+    "Masked Somatic Mutation" files of the "Aliquot Ensemble Somatic
+    Variant Merging and Masking" workflow), downloads them with
+    gdcfetch over HTTPS, and decompresses each into ``destination``,
+    the flat directory of ``*.maf`` files that
+    :class:`~sigmutsel.MutationDataset` reads.
+
+    The compressed downloads are kept in ``download_dir``, so a rerun
+    after an interrupted download fetches only what is missing (and
+    checks every file's size and MD5). The GDC holds one MAF per
+    sequenced aliquot, including recurrent and metastatic samples and
+    several aliquots of one patient: select the files with
+    :func:`sigmutsel.tcga_sample_selection.select_tcga_maf_files`
+    before building a dataset.
+
+    Parameters
+    ----------
+    project : str
+        TCGA study code, with or without the ``TCGA-`` prefix
+        (``"HNSC"`` or ``"TCGA-HNSC"``).
+    destination : Path or str
+        Directory for the decompressed ``*.maf`` files; created if
+        missing.
+    download_dir : Path or str, optional
+        Where the compressed downloads go, laid out as
+        ``<download_dir>/<file_id>/<file_name>``. Default: a sibling
+        of ``destination`` named ``<destination>_gdc``.
+    workers : int, default 6
+        Parallel downloads.
+
+    Returns
+    -------
+    list of Path
+        The decompressed MAF files in ``destination``, sorted.
+
+    Raises
+    ------
+    ValueError
+        If the GDC lists no MAF for ``project``.
+    OSError
+        If some downloads still fail after gdcfetch's retries; rerun
+        to fetch only those.
+
+    Examples
+    --------
+    >>> from sigmutsel.download_tcga_data import (
+    ...     download_project_maf_files)
+    >>> mafs = download_project_maf_files(  # doctest: +SKIP
+    ...     "HNSC", "hnsc/all_maf_files_raw")
+    >>> len(mafs)  # doctest: +SKIP
+    511
+    """
+    from gdcfetch import download_files, get_preset, search_files
+
+    project_id = (
+        project if project.startswith("TCGA-") else f"TCGA-{project}"
+    )
+    destination_dir = Path(destination).resolve()
+    if download_dir is None:
+        download_dir = destination_dir.with_name(
+            f"{destination_dir.name}_gdc"
+        )
+    download_dir = Path(download_dir).resolve()
+
+    hits = search_files(
+        project_id, **get_preset("somatic-mutations").search_kwargs()
+    )
+    if not hits:
+        raise ValueError(
+            f"The GDC lists no open MAF for {project_id}"
+        )
+    logger.info(
+        "%s: %d MAFs listed by the GDC", project_id, len(hits)
+    )
+    download_files(hits, download_dir, workers=workers)
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    for hit in hits:
+        compressed = download_dir / hit["file_id"] / hit["file_name"]
+        target = destination_dir / compressed.with_suffix("").name
+        if not target.exists():
+            _extract_maf(compressed, destination_dir)
+    return sorted(destination_dir.glob("*.maf"))
+
+
 def download_tcga_maf_files(
     gdc_manifest: Path | str, destination: Path | str
 ) -> bool:
-    """Download TCGA COAD mutation MAFs via ``gdc-client`` and unpack them.
+    """Download the MAFs of a GDC manifest via ``gdc-client``, unpacked.
+
+    Needs NCI's ``gdc-client`` executable on ``PATH``. To download a
+    whole TCGA project without it, use
+    :func:`download_project_maf_files`.
 
     Parameters
     ----------
     gdc_manifest : Path or str
-        Path to the manifest file used by ``gdc-client``.
+        Path to the manifest file used by ``gdc-client`` (from the GDC
+        Data Portal's cart, or ``gdcfetch manifest``).
     destination : Path or str
         Directory where all decompressed ``*.maf`` files will be saved.
 
@@ -141,6 +245,13 @@ def download_tcga_maf_files(
     bool
         ``True`` if every downloaded bundle contained exactly one MAF,
         ``False`` otherwise.
+
+    Examples
+    --------
+    >>> from sigmutsel.download_tcga_data import download_tcga_maf_files
+    >>> download_tcga_maf_files(  # doctest: +SKIP
+    ...     "gdc_manifest.txt", "maf_files")
+    True
     """
     manifest_path = Path(gdc_manifest).resolve()
     if not manifest_path.exists():

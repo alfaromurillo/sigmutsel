@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `build_full_dataset(regenerate_mutation_db=None)` is the default: the
+  mutation database is built from the MAFs only if none is loaded, so
+  the calls `run_two_pass_signature_decomposition` cleaned are kept
+  (the default was `True`, which silently rebuilt them uncleaned
+  unless `False` was passed). `True` still forces a rebuild, `False`
+  still requires a loaded database; arguments meant for the rebuild
+  are named in a warning when it is skipped.
 - `gene_universe` defaults to `"wes_target"` in `build_full_dataset`
   and `generate_contexts_by_gene` (it was `"own_cohort"`, which drops
   the genes no tumor mutated and so inflates every rate);

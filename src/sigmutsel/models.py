@@ -193,8 +193,7 @@ class MutationDataset:
     ...     genome_build="GRCh38", exome=True, cosmic_version=3.6,
     ...     treatment_load_threshold=0.2,
     ...     prevalence_override_min_fraction=0.15)
-    >>> dataset.build_full_dataset(gene_universe="wes_target",
-    ...                            regenerate_mutation_db=False)
+    >>> dataset.build_full_dataset()  # keeps the cleaned calls
     >>> dataset.save_dataset("hnsc/HNSC_dataset")
     >>> dataset.n_samples, len(dataset.model_db)
     (392, 59453)
@@ -3379,10 +3378,10 @@ class MutationDataset:
         ``self.generate_mutation_db(qc_mode=True, ...)``) *before*
         calling this -- pass A's diagnostics need it, and it can't be
         built afterward without regenerating over the cleaned data.
-        When wiring this into :meth:`build_full_dataset`, pass
-        ``regenerate_mutation_db=False`` there, since this method
-        already updated ``mutation_db`` and a default rebuild would
-        silently overwrite the cleaned version with the original.
+        :meth:`build_full_dataset` afterwards keeps the cleaned
+        ``mutation_db`` by default; passing it
+        ``regenerate_mutation_db=True`` would rebuild the original,
+        uncleaned one from the MAFs.
 
         **Caching pitfall, found the hard way (2026-08-26): pass A and
         pass B cache in *two separate directories*, and
@@ -4135,7 +4134,7 @@ class MutationDataset:
         self,
         fastas=None,
         gene_universe="wes_target",
-        regenerate_mutation_db=True,
+        regenerate_mutation_db=None,
         **kwargs,
     ):
         """Run the full data-generation pipeline for this dataset.
@@ -4146,24 +4145,25 @@ class MutationDataset:
             Forwarded to :meth:`generate_contexts_by_gene`.
         gene_universe : {"wes_target", "own_cohort"}, default "wes_target"
             Forwarded to :meth:`generate_contexts_by_gene`.
-        regenerate_mutation_db : bool, default True
-            If False, skip calling :meth:`generate_mutation_db` and
-            use whatever is already in ``self.mutation_db`` (raises if
-            it hasn't been loaded). For callers that already built
-            (and possibly modified) the mutation database themselves
-            -- e.g. :meth:`run_two_pass_signature_decomposition`,
-            which needs ``mutation_db`` built *before* it can compute
-            per-mutation artifact probabilities, and updates it
-            in-place with the artifact-mutation-cleaned version
-            afterward. Calling this with the default `True` right
-            after that would silently regenerate and overwrite the
-            cleaned database with the original, uncleaned one.
+        regenerate_mutation_db : bool or None, default None
+            Whether to build the mutation database from the MAFs
+            first (:meth:`generate_mutation_db`). None (the default)
+            builds it only if none is loaded yet, so a database built
+            and cleaned before -- by
+            :meth:`run_two_pass_signature_decomposition`, which needs
+            it *before* it can find artifact mutations and removes
+            them in place -- is kept. True rebuilds it from the MAFs
+            even if one is loaded (discarding any cleaning); False
+            requires one to be loaded and raises otherwise. (The
+            default was True until November 2026, which silently
+            replaced a cleaned database with an uncleaned one unless
+            False was passed.)
         **kwargs : dict
             Forwarded to :meth:`generate_mutation_db` -- e.g.
             `qc_mode=True` (optionally with `qc_kwargs`) to enable
             the structured QC pipeline in :mod:`qc` instead of the
-            default silent validation. Ignored if
-            `regenerate_mutation_db` is False.
+            default silent validation. Ignored (with a warning) when
+            the loaded database is used instead.
 
         Returns
         -------
@@ -4175,10 +4175,23 @@ class MutationDataset:
         --------
         After :meth:`run_two_pass_signature_decomposition`:
 
-        >>> dataset.build_full_dataset(gene_universe="wes_target",
-        ...                            regenerate_mutation_db=False)
+        >>> dataset.build_full_dataset()  # keeps the cleaned database
         """
-        title = "Mutation data: building compact mutation database."
+        if regenerate_mutation_db is None:
+            regenerate_mutation_db = not self.has_mutation_db()
+        if not regenerate_mutation_db and kwargs:
+            logger.warning(
+                "build_full_dataset: using the mutation database "
+                "already loaded, so %s are ignored; pass "
+                "regenerate_mutation_db=True to rebuild it from the "
+                "MAFs with them.",
+                sorted(kwargs),
+            )
+        title = (
+            "Mutation data: building compact mutation database."
+            if regenerate_mutation_db
+            else "Mutation data: using the mutation database loaded."
+        )
         print("=" * len(title))
         print(title)
         print("=" * len(title))

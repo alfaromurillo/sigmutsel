@@ -30,7 +30,7 @@
 # In this tutorial you will:
 #
 # 1. download a public TCGA cohort (HNSC, head and neck squamous cell
-#    carcinoma, 410 tumors) and select the right files;
+#    carcinoma, 410 tumors) and choose the right files;
 # 2. build a mutation dataset, with its quality control and the
 #    mutational-signature decomposition of each tumor;
 # 3. fit the neutral rate model, with gene covariates from Zenodo;
@@ -80,7 +80,7 @@
 #
 # | step | time | peak memory | disk |
 # |---|---|---|---|
-# | download and select MAFs | 1 min | small | 180 MB |
+# | download and choose MAFs | 1 min | small | 180 MB |
 # | build the dataset (QC, signatures, opportunities) | 6 min | 12 GB | 1 GB |
 # | calibration steps (sample QC, spectra, site weights) | 16 min | 16-20 GB | |
 # | fit the rate model (NUTS, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
@@ -201,7 +201,7 @@ WORK.mkdir(exist_ok=True)
 
 
 # %% [markdown]
-# ## 1. Download and select the mutation calls
+# ## 1. Download the mutation calls and choose the files
 #
 # The GDC (NCI's Genomic Data Commons) publishes TCGA's somatic
 # mutation calls as one MAF file (a tab-separated table of mutations)
@@ -213,14 +213,14 @@ WORK.mkdir(exist_ok=True)
 # %%
 from sigmutsel.download_tcga_data import download_project_maf_files
 
-raw_mafs = WORK / "all_maf_files_raw"
-mafs = download_project_maf_files(PROJECT, raw_mafs)
+raw_maf_dir = WORK / "all_maf_files_raw"
+mafs = download_project_maf_files(PROJECT, raw_maf_dir)
 print(len(mafs), "MAF files")
 
 # %% [markdown]
 # **Rerunning is safe.** Running a cell again (a *rerun*: after a
 # lost connection, a restarted kernel, or the next day) does not
-# repeat the work: the files already in `raw_mafs`, checked against
+# repeat the work: the files already in `raw_maf_dir`, checked against
 # the GDC's sizes, are skipped, and only what is missing is fetched.
 # Calling the download a second time shows it: it lists the GDC's
 # files again, finds them all on disk and returns in seconds. Most
@@ -230,11 +230,11 @@ print(len(mafs), "MAF files")
 import time
 
 start = time.time()
-mafs = download_project_maf_files(PROJECT, raw_mafs)  # a rerun
+mafs = download_project_maf_files(PROJECT, raw_maf_dir)  # a rerun
 print(f"{len(mafs)} MAF files in {time.time() - start:.0f} s")
 
 # %% [markdown]
-# **Select the files before anything reads them.** One aliquot per
+# **Choose the files before anything reads them.** One aliquot per
 # file means the directory also holds recurrent and metastatic
 # samples, several aliquots of the same patient and patients treated
 # before the sample was taken. Counted as separate tumors, a patient
@@ -247,20 +247,20 @@ print(f"{len(mafs)} MAF files in {time.time() - start:.0f} s")
 # %%
 from sigmutsel.tcga_sample_selection import select_tcga_maf_files
 
-selected = WORK / "all_maf_files"
-# The first time, this directory does not exist yet: the selection
-# runs and creates it. On a rerun it exists and is left as it is.
-if not selected.is_dir():
+maf_dir = WORK / "all_maf_files"  # the MAFs the dataset reads
+# The first time, this directory does not exist yet: the files are
+# chosen and it is created. On a rerun it exists and is left as it is.
+if not maf_dir.is_dir():
     chosen = select_tcga_maf_files(
-        raw_mafs,
+        raw_maf_dir,
         duplicate_policy="newest",
         exclude_prior_treatment=True,
         project=PROJECT,
     )
-    selected.mkdir()
+    maf_dir.mkdir()
     for f in chosen:  # links, so the downloads stay where they are
-        (selected / f.name).symlink_to(f.resolve())
-print(len(list(selected.glob("*.maf"))), "files selected")
+        (maf_dir / f.name).symlink_to(f.resolve())
+print(len(list(maf_dir.glob("*.maf"))), "files chosen")
 
 # %% [markdown]
 # ## 2. Build the dataset
@@ -303,7 +303,7 @@ dataset_dir = WORK / f"{PROJECT}_dataset"
 if dataset_dir.is_dir():
     dataset = MutationDataset.load_dataset(dataset_dir)
 else:
-    dataset = MutationDataset(selected, signature_class="SBS")
+    dataset = MutationDataset(maf_dir, signature_class="SBS")
     dataset.generate_mutation_db(
         qc_mode=True,
         qc_kwargs={
@@ -324,9 +324,9 @@ else:
         prevalence_override_min_fraction=0.15,
         min_burden_for_diagnostics=100,
     )
-    dataset.build_full_dataset(
-        gene_universe="wes_target", regenerate_mutation_db=False
-    )
+    # Keeps the calls the signature step cleaned (it rebuilds them
+    # from the MAFs only if none are loaded).
+    dataset.build_full_dataset(gene_universe="wes_target")
     dataset.save_dataset(dataset_dir)
 
 print(

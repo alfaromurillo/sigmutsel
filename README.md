@@ -102,10 +102,10 @@ from sigmutsel.tcga_sample_selection import select_tcga_maf_files
 download_project_maf_files("HNSC", "hnsc/raw")
 chosen = select_tcga_maf_files("hnsc/raw", duplicate_policy="newest",
                                exclude_prior_treatment=True, project="HNSC")
-# ... link the chosen files into "hnsc/selected" (tutorial, step 1)
+# ... link the chosen files into "hnsc/maf_dir" (tutorial, step 1)
 
 # 2. Dataset
-dataset = MutationDataset("hnsc/selected", signature_class="SBS")
+dataset = MutationDataset("hnsc/maf_dir", signature_class="SBS")
 dataset.generate_mutation_db(
     qc_mode=True,
     qc_kwargs={"repeat_intervals": load_repeat_intervals(
@@ -115,8 +115,7 @@ dataset.run_two_pass_signature_decomposition(
     exclude_signature_subgroups="HNSC", treatment_naive=True,
     genome_build="GRCh38", exome=True, cosmic_version=3.6,
     treatment_load_threshold=0.2, prevalence_override_min_fraction=0.15)
-dataset.build_full_dataset(gene_universe="wes_target",
-                           regenerate_mutation_db=False)
+dataset.build_full_dataset()  # keeps the cleaned calls
 # ... sample QC, spectrum shrinkage, site weights (tutorial, step 3)
 
 # 3. Rate model, on the published covariate components

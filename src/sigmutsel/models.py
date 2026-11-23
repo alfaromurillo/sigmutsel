@@ -9729,12 +9729,13 @@ class Model:
             l_high = kwargs.get("L_high")
 
             if "L_low" not in kwargs:
-                logger.warning(
+                # The default, and the recommended setting: low-burden
+                # tumors are flagged by sample QC and excluded instead
+                # (excluded_samples), so this is no warning.
+                logger.debug(
                     "L_low was not provided; no low-burden correction "
                     "will be applied (each sample's own raw alpha/"
-                    "burden is used as-is). Pass L_low=<value> to "
-                    "blend low-burden samples' estimates toward a "
-                    "population average instead."
+                    "burden is used as-is)."
                 )
 
             compute_kwargs = kwargs.copy()

@@ -97,7 +97,7 @@ def estimate_alphas(
 
     # If no correction requested, return early.
     if L_low is None:
-        logger.warning("No low-burden correction requested.")
+        logger.debug("No low-burden correction requested.")
         return pre_alphas
 
     # Normalize threshold defaults.

@@ -133,7 +133,7 @@ def estimate_ell_hats(
         mb = count_mutation_burden(df)
 
     if L_low is None:
-        logger.warning("No low-burden correction requested.")
+        logger.debug("No low-burden correction requested.")
         return mb["total_mutations"].rename("ell_hats")
 
     ells = mb["total_mutations"]

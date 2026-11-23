@@ -208,7 +208,7 @@ WORK.mkdir(exist_ok=True)
 # per sequenced *aliquot*. `download_project_maf_files` finds a
 # project's open-access MAFs, downloads them over HTTPS and unpacks
 # them into one flat directory. It needs no account and no extra
-# program; a rerun only fetches what is missing.
+# program.
 
 # %%
 from sigmutsel.download_tcga_data import download_project_maf_files
@@ -216,6 +216,22 @@ from sigmutsel.download_tcga_data import download_project_maf_files
 raw_mafs = WORK / "all_maf_files_raw"
 mafs = download_project_maf_files(PROJECT, raw_mafs)
 print(len(mafs), "MAF files")
+
+# %% [markdown]
+# **Rerunning is safe.** Running a cell again (a *rerun*: after a
+# lost connection, a restarted kernel, or the next day) does not
+# repeat the work: the files already in `raw_mafs`, checked against
+# the GDC's sizes, are skipped, and only what is missing is fetched.
+# Calling the download a second time shows it: it lists the GDC's
+# files again, finds them all on disk and returns in seconds. Most
+# steps below behave the same way: they look in `WORK` first.
+
+# %%
+import time
+
+start = time.time()
+mafs = download_project_maf_files(PROJECT, raw_mafs)  # a rerun
+print(f"{len(mafs)} MAF files in {time.time() - start:.0f} s")
 
 # %% [markdown]
 # **Select the files before anything reads them.** One aliquot per
@@ -232,6 +248,8 @@ print(len(mafs), "MAF files")
 from sigmutsel.tcga_sample_selection import select_tcga_maf_files
 
 selected = WORK / "all_maf_files"
+# The first time, this directory does not exist yet: the selection
+# runs and creates it. On a rerun it exists and is left as it is.
 if not selected.is_dir():
     chosen = select_tcga_maf_files(
         raw_mafs,

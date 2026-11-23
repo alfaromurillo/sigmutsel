@@ -142,7 +142,17 @@ from sigmutsel import Model, MutationDataset
 logging.getLogger("sigmutsel").setLevel(logging.WARNING)
 
 PROJECT = "HNSC"
-WORK = Path("hnsc")  # everything the tutorial writes goes here
+# Everything the tutorial writes goes here (about 2 GB). A relative
+# path like "hnsc" is relative to the directory you run from. For a
+# fixed place, Path.home() / "sigmutsel_hnsc" works everywhere:
+#   Linux    /home/<you>/sigmutsel_hnsc
+#   macOS    /Users/<you>/sigmutsel_hnsc
+#   Windows  C:\Users\<you>\sigmutsel_hnsc
+# or name any directory, e.g. Path("/data/sigmutsel_hnsc"), or on
+# Windows Path("D:/sigmutsel_hnsc") (forward slashes work there too).
+# sigmutsel is tested on Linux and macOS; on Windows run it in WSL,
+# where paths are Linux paths.
+WORK = Path("hnsc")
 WORK.mkdir(exist_ok=True)
 print("sigmutsel", sigmutsel.__version__)
 

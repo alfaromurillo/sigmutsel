@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in Jupyter afterwards) and SigProfilerMatrixGenerator configured
   the root logger at INFO (every library's INFO messages printed).
   sigmutsel imports and calls them inside
-  `_global_state.keep_global_state`, which restores both. A program
+  `_global_state.keep_global_state`, which blocks the backend switch
+  while they run (restoring it afterwards left Jupyter's inline
+  figure display unregistered) and restores the root logger. A program
   that wants sigmutsel's INFO messages now configures logging itself
   (`logging.basicConfig(level=logging.INFO)`).
 - `sigmutsel-setup --data-dir` sent some files to the package

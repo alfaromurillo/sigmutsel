@@ -10,8 +10,13 @@ modules:
   at import, which gives the *root* logger a handler at INFO, so every
   library's INFO messages (sigmutsel's, PyTensor's) start printing.
 
-:func:`keep_global_state` restores both on exit, and sigmutsel imports
-and calls those packages inside it. A program that wants sigmutsel's
+:func:`keep_global_state` blocks the backend switch while it is active
+(``matplotlib.use`` and ``pyplot.switch_backend`` do nothing; restoring
+the backend afterwards is not enough in Jupyter, where switching to Agg
+unregisters the figure display that switching back does not
+re-register) and restores the root logger on exit; sigmutsel imports
+and calls those packages inside it. sigmutsel never asks them for
+plots. A program that wants sigmutsel's
 INFO messages configures logging itself, as any program does
 (``logging.basicConfig(level=logging.INFO)``).
 """
@@ -53,9 +58,13 @@ def _restore_backend(backend):
         )
 
 
+def _no_switch(*args, **kwargs):
+    """Stands in for a backend switch inside :func:`keep_global_state`."""
+
+
 @contextlib.contextmanager
 def keep_global_state():
-    """Restore the matplotlib backend and the root logger on exit.
+    """Keep the matplotlib backend; restore the root logger on exit.
 
     Examples
     --------
@@ -63,12 +72,19 @@ def keep_global_state():
     >>> with keep_global_state():
     ...     from SigProfilerAssignment import Analyzer  # doctest: +SKIP
     """
+    import matplotlib
+    import matplotlib.pyplot as plt
+
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
     backend = _current_backend()
+    use, switch = matplotlib.use, plt.switch_backend
+    matplotlib.use = plt.switch_backend = _no_switch
     try:
         yield
     finally:
+        matplotlib.use, plt.switch_backend = use, switch
         root.handlers[:] = handlers
         root.setLevel(level)
+        # In case the backend was changed another way (rcParams).
         _restore_backend(backend)

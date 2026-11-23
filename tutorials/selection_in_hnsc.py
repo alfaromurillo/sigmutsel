@@ -96,11 +96,47 @@
 # use a larger machine for results you report). The first sample QC
 # parses TCGA's copy-number file (3 minutes); later runs reuse it.
 
+# %% [markdown]
+# ## Chains, cores and `XLA_FLAGS`
+#
+# The slow step, the fit of the rate model (section 5), samples the
+# model's posterior with Hamiltonian Monte Carlo (NUTS) in **four
+# chains**: four independent runs from different starting points,
+# 1,000 draws each, pooled into the 4,000 draws the selection
+# estimates use. Four rather than one is how convergence is checked:
+# if the chains agree, they found the same posterior (the R-hat
+# statistic of section 5 measures it); if they disagree, none of them
+# can be trusted.
+#
+# The chains can run **at the same time**, one per CPU core, which
+# makes the fit several times faster. The sampler (NumPyro, on
+# JAX) does that only if JAX sees four *devices*. A device here is not
+# hardware: on a CPU, JAX shows one device unless it is told to split
+# the CPU into several, which the environment variable `XLA_FLAGS`
+# below does. It must be set **before anything imports JAX** (sigmutsel
+# imports it), so it is the first thing the tutorial runs.
+#
+# - **A machine with 4 or more cores** (most laptops and desktops
+#   today): keep the setting; the chains run in parallel.
+# - **Fewer than 4 cores**: the four devices share the cores you have,
+#   so running them together gains little over one after another;
+#   the results are the same.
+# - **Without the setting** (or with fewer devices than chains), JAX
+#   shows one device, NumPyro warns "There are not enough devices to
+#   run parallel chains: expected 4 but got 1. Chains will be drawn
+#   sequentially." and runs the four chains one after another. **The
+#   posterior is the same**; the fit takes several times longer (in
+#   one measured case, a small cohort's fit, 639 s instead of 66 s).
+#   Do not ask for 2 devices: anything below 4 falls back to one at a
+#   time.
+#
+# The cell below prints how many cores this Python may use and how
+# many devices JAX sees: the second number should be 4.
+
 # %%
 import os
 
-# The rate model's sampler runs four chains in parallel only if JAX
-# sees four devices. This must be set before anything imports JAX.
+# Four JAX devices, one per chain (see above): before JAX is imported.
 os.environ.setdefault(
     "XLA_FLAGS", "--xla_force_host_platform_device_count=4"
 )
@@ -122,6 +158,17 @@ PROJECT = "HNSC"
 WORK = Path("hnsc")  # everything the tutorial writes goes here
 WORK.mkdir(exist_ok=True)
 print("sigmutsel", sigmutsel.__version__)
+
+import jax
+
+cores = (
+    len(
+        os.sched_getaffinity(0)
+    )  # Linux: the cores this process may use
+    if hasattr(os, "sched_getaffinity")
+    else os.cpu_count()  # macOS
+)
+print(f"CPU cores: {cores}; JAX devices: {jax.local_device_count()}")
 
 
 def show(fig, name):
@@ -476,9 +523,13 @@ print(
 # is an older, simpler model). `assign_cov_matrix` takes the design as given (no
 # second PCA). `estimate_channel_rg_cov_effects` fits the covariate
 # effects `c`, the channel intercept and the dispersion `theta` of
-# `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains); `sample="full"`
-# keeps the posterior draws, which the selection estimates below need.
-# This is the slow step; the fitted model is saved.
+# `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
+# the first cell printed 4 JAX devices); `sample="full"` keeps the
+# posterior draws, which the selection estimates below need. This is
+# the slow step; the fitted model is saved. If it prints "There are
+# not enough devices to run parallel chains", the chains are running
+# one after another: the result is the same, only slower (see "Chains,
+# cores and `XLA_FLAGS`").
 
 # %%
 model_dir = WORK / f"model_nc{N_COMPONENTS}"
@@ -1245,8 +1296,12 @@ group_table
 #   opportunities.
 # - `FileNotFoundError: ... not found ... python -m sigmutsel setup`:
 #   reference data missing; `sigmutsel-check-data` lists what is.
-# - The fit runs on one core: `XLA_FLAGS` was set after JAX was
-#   imported; restart the kernel and run the first cell first.
+# - The fit warns "There are not enough devices to run parallel
+#   chains" (and the first cell printed `JAX devices: 1`): `XLA_FLAGS`
+#   was set after JAX was imported, which happens when cells run out
+#   of order. Restart the kernel and run the first cell first; or
+#   leave it, since the chains then run one after another with the
+#   same result, only slower.
 # - Killed / out of memory during the dataset build: the build peaks
 #   at about 12 GB for this cohort; use a smaller cohort, or a
 #   machine with more memory.

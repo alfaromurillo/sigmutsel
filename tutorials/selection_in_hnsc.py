@@ -508,9 +508,12 @@ plt.show()
 # - the tumor's **spectrum and burden** (from the signatures);
 # - the gene's **opportunity** (its sites, by context and consequence,
 #   with the site weights);
-# - a **covariate** term `exp(c . x_g)`: genes that replicate late or
-#   sit in closed chromatin mutate faster, and `x_g` are those
-#   properties of the gene;
+# - a **covariate** term `exp(c . x_g)`: genes that replicate late,
+#   sit in closed chromatin or are expressed less mutate faster. The
+#   vector `x_g` holds these properties of gene `g`, its
+#   **covariates** (below, summarized as principal components), and
+#   the vector `c`, the **coefficients**, says how much each one
+#   raises or lowers the rate; `c` is estimated in this step;
 # - a **channel factor**: non-synonymous sites get their own
 #   intercept;
 # - a per-gene **rate correction** `r_g`, learned from the gene's own

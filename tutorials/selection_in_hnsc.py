@@ -97,7 +97,12 @@
 # parses TCGA's copy-number file (3 minutes); later runs reuse it.
 
 # %% [markdown]
-# ## Chains, cores and `XLA_FLAGS`
+# ## 0. Set up the session
+#
+# Three things before any analysis: the sampler's chains, the
+# libraries, and where the tutorial writes its files.
+#
+# ### Chains, cores and `XLA_FLAGS`
 #
 # The slow step, the fit of the rate model (section 5), samples the
 # model's posterior with Hamiltonian Monte Carlo (NUTS) in **four
@@ -130,34 +135,60 @@
 #   Do not ask for 2 devices: anything below 4 falls back to one at a
 #   time.
 #
-# The cell below prints how many cores this Python may use and how
-# many devices JAX sees: the second number should be 4.
+# The cell below sets it and prints how many cores this Python may
+# use; section 5 checks, just before the fit, that JAX sees the four
+# devices. (JAX is not imported here: imported this early, it warns
+# when the signature step starts worker processes.)
 
 # %%
 import os
 
-# Four JAX devices, one per chain (see above): before JAX is imported.
+# Four JAX devices, one per chain: before anything imports JAX.
 os.environ.setdefault(
     "XLA_FLAGS", "--xla_force_host_platform_device_count=4"
 )
 
-import logging
-from pathlib import Path
+# The cores this Python may use (Linux; elsewhere, all the machine's).
+cores = (
+    len(os.sched_getaffinity(0))
+    if hasattr(os, "sched_getaffinity")
+    else os.cpu_count()
+)
+print(f"CPU cores: {cores}")
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+# %% [markdown]
+# ### Import the libraries
+#
+# sigmutsel prints only warnings, the messages worth reading. To
+# follow the long steps as they run, add
+# `logging.basicConfig(level=logging.INFO)` (after `import logging`)
+# to this cell: every step then reports what it is doing.
+
+# %%
+from pathlib import Path  # file paths that work on every system
+
+import matplotlib.pyplot as plt  # figures
+import numpy as np  # arrays and numerical functions
+import pandas as pd  # tables (DataFrames): every result is one
 
 import sigmutsel
-from sigmutsel import Model, MutationDataset
+from sigmutsel import Model, MutationDataset  # the two main objects
 
-# The package logs every step at INFO; warnings are what to read.
-logging.getLogger("sigmutsel").setLevel(logging.WARNING)
+print("sigmutsel", sigmutsel.__version__)
 
-PROJECT = "HNSC"
-# Everything the tutorial writes goes here (about 2 GB). A relative
-# path like "hnsc" is relative to the directory you run from. For a
-# fixed place, Path.home() / "sigmutsel_hnsc" works everywhere:
+# %% [markdown]
+# ### Where the tutorial writes its files
+#
+# Everything the tutorial downloads and computes goes in one
+# directory, about 2 GB: the MAF files, the dataset, the fitted model.
+# A rerun finds them there and skips what is done.
+
+# %%
+PROJECT = "HNSC"  # the TCGA cohort
+
+# A relative path like "hnsc" is relative to the directory you run
+# from. For a fixed place, Path.home() / "sigmutsel_hnsc" works
+# everywhere:
 #   Linux    /home/<you>/sigmutsel_hnsc
 #   macOS    /Users/<you>/sigmutsel_hnsc
 #   Windows  C:\Users\<you>\sigmutsel_hnsc
@@ -167,37 +198,6 @@ PROJECT = "HNSC"
 # where paths are Linux paths.
 WORK = Path("hnsc")
 WORK.mkdir(exist_ok=True)
-print("sigmutsel", sigmutsel.__version__)
-
-import jax
-
-cores = (
-    len(
-        os.sched_getaffinity(0)
-    )  # Linux: the cores this process may use
-    if hasattr(os, "sched_getaffinity")
-    else os.cpu_count()  # macOS
-)
-print(f"CPU cores: {cores}; JAX devices: {jax.local_device_count()}")
-
-
-def show(fig, name):
-    """Save a figure as WORK/<name>.png and display it in a notebook.
-
-    The signature step imports SigProfilerAssignment, which switches
-    matplotlib to a non-interactive backend: after it, figures no longer
-    appear by themselves in Jupyter, so show the saved image instead.
-    """
-    path = WORK / f"{name}.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    try:
-        from IPython import get_ipython
-        from IPython.display import Image, display
-    except ImportError:  # a plain script: the PNG is the figure
-        return
-    if get_ipython() is not None:
-        display(Image(filename=path))
 
 
 # %% [markdown]
@@ -467,7 +467,7 @@ for ax, s, label in (
     ax.set_xlabel(f"share of the tumor's calls: {label}")
 axes[0].set_ylabel("calls per tumor")
 fig.tight_layout()
-show(fig, "burden_signatures")
+plt.show()
 
 # %% [markdown]
 # **Reading this.** Each point is a tumor. Burdens span two orders of
@@ -534,7 +534,7 @@ print(
 # second PCA). `estimate_channel_rg_cov_effects` fits the covariate
 # effects `c`, the channel intercept and the dispersion `theta` of
 # `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
-# the first cell printed 4 JAX devices); `sample="full"` keeps the
+# JAX sees 4 devices, checked first); `sample="full"` keeps the
 # posterior draws, which the selection estimates below need. This is
 # the slow step; the fitted model is saved. If it prints "There are
 # not enough devices to run parallel chains", the chains are running
@@ -542,6 +542,12 @@ print(
 # cores and `XLA_FLAGS`").
 
 # %%
+import jax  # the numerical library the sampler runs on
+
+print(
+    f"JAX devices: {jax.local_device_count()}"
+)  # 4: chains in parallel
+
 model_dir = WORK / f"model_nc{N_COMPONENTS}"
 if model_dir.is_dir():
     model = Model.load_model(model_dir)
@@ -876,7 +882,7 @@ ax.set_xscale("log")
 ax.set_yticks(y, table.index)
 ax.set_xlabel("gamma (posterior mean, 89% interval)")
 fig.tight_layout()
-show(fig, "gammas")
+plt.show()
 
 # %% [markdown]
 # **Reading this.** The horizontal axis is logarithmic: the dashed
@@ -986,7 +992,7 @@ ax.set_xlabel("expected carrier tumors (neutral)")
 ax.set_ylabel("observed carrier tumors")
 ax.legend(frameon=False, loc="upper left")
 fig.tight_layout()
-show(fig, "selection_called")
+plt.show()
 
 # %% [markdown]
 # **Reading this.** One point per gene. The dashed line is "observed =
@@ -1042,7 +1048,7 @@ axes[2].errorbar(
 axes[2].set_xlabel("gamma (89% interval)")
 axes[0].set_yticks(y, labels)
 fig.tight_layout()
-show(fig, "pik3ca_hotspots")
+plt.show()
 
 # %% [markdown]
 # **Reading this.** The two helical-domain hotspots are the frequent
@@ -1307,7 +1313,7 @@ group_table
 # - `FileNotFoundError: ... not found ... python -m sigmutsel setup`:
 #   reference data missing; `sigmutsel-check-data` lists what is.
 # - The fit warns "There are not enough devices to run parallel
-#   chains" (and the first cell printed `JAX devices: 1`): `XLA_FLAGS`
+#   chains" (and section 5 printed `JAX devices: 1`): `XLA_FLAGS`
 #   was set after JAX was imported, which happens when cells run out
 #   of order. Restart the kernel and run the first cell first; or
 #   leave it, since the chains then run one after another with the

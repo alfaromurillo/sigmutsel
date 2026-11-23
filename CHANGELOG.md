@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A first-week tutorial, `tutorials/selection_in_hnsc.py` (rendered as
+  `tutorials/selection_in_hnsc.md`): a public TCGA cohort (HNSC) from
+  the GDC to rates per tumor and variant, gene, channel and variant
+  gammas with their intervals, the selection call and its strength,
+  and two projects (frequency is not selection; selection in smokers
+  and never-smokers), with every step's runtime and memory.
+- `download_tcga_data.download_project_maf_files(project, destination)`:
+  a TCGA project's open MAFs from the GDC through gdcfetch, unpacked
+  into one directory, without `gdc-client`.
+- `setup.install_reference_genome` and step 10 of `sigmutsel-setup`:
+  SigProfilerMatrixGenerator's GRCh38 genome (about 3 GB), which
+  every dataset build needs (without it rates silently differ);
+  `--skip-genome` leaves it out. Setup also builds the WES-target
+  gene list (step 9), so `sigmutsel-check-data` is all found after it.
+- `docs/api.md`, the API reference, generated from the code
+  (`scripts/build_api_reference.py`; `tests/test_api_reference.py`
+  checks it is current and that the tutorial's functions document
+  their parameters, return value and an example).
+
+### Fixed
+- `sigmutsel-setup --data-dir` sent some files to the package
+  directory (paths are resolved at import): it now reruns itself
+  with `SIGMUTSEL_DATA_DIR` set.
+- Under a custom `SIGMUTSEL_DATA_DIR` the files bundled with the
+  package (signature tables, gene lists) were missing, and
+  `sigmutsel-setup` could not restore them: they are now found in the
+  package when the data directory lacks them.
+- `liftover.in_intervals` compared every position's chromosome with
+  every key of the intervals (hundreds of RepeatMasker contigs): an
+  HNSC dataset's first repeat exclusion ran over ten minutes in it;
+  now one pass over the chromosomes (53x faster on 5M positions, the
+  same result).
+- `--keep-fasta-compressed` warns that a dataset build reads the
+  uncompressed FASTA.
+- Docstrings, tests and the bundled signature tables no longer name
+  private downstream repositories or machines;
+  `scripts/check_no_private_refs.py` checks every tracked file, not
+  only Markdown.
+- README, SETUP_GUIDE and TUTORIAL brought to the current API (the
+  recommended settings, which several defaults are not).
 - Indel hold-out for gamma: `MutationDataset.indel_db` (built from
   the dataset's MAFs by `build_indel_db`, via
   `load_maf_files.read_coding_indels`; manifest version 9) holds the

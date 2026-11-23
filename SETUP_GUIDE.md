@@ -1,304 +1,126 @@
-# Setup Guide for Sigmutsel
+# Setup guide
 
-This guide explains how to set up sigmutsel with its reference data files.
+sigmutsel needs reference data that is too large to ship inside the
+package. This page says what is downloaded, where it goes, and how to
+check it.
 
-## Quick Start
-
-```bash
-# 1. Install the package
-cd sigmutsel
-pip install -e ".[dev]"
-
-# 2. Download reference data
-python -m sigmutsel setup
-
-# Or use the installed command:
-sigmutsel-setup
-
-# 3. Check data status
-python -m sigmutsel check-data
-# Or:
-sigmutsel-check-data
-```
-
-## Package Data Structure
-
-sigmutsel uses a data directory to store reference files:
-
-```
-sigmutsel/src/sigmutsel/data/
-├── README.md                              # Documentation
-├── exclusion_signatures_matrix_*.txt      # Included in package
-├── inclusion_signatures_matrix_*.txt      # Included in package
-├── hgnc_complete_set.txt                  # Downloaded (20 MB)
-├── Homo_sapiens.GRCh38.cds.all.fa         # Downloaded (130 MB)
-├── gencode.v38.annotation.gtf.gz          # Downloaded (50 MB)
-└── gencode.v19.annotation.gtf.gz          # Downloaded (40 MB)
-```
-
-### Small Files (Bundled)
-
-These are included in the package distribution:
-- Exclusion/inclusion signature matrices (~small)
-
-### Large Files (Downloaded)
-
-These are downloaded on first use:
-- HGNC complete set
-- Ensembl CDS FASTA
-- GENCODE GTF annotations
-
-## Installation Options
-
-### Option 1: Standard Installation with Download
+## In short
 
 ```bash
-# Install package
-pip install -e .
-
-# Download all reference data
-python -m sigmutsel setup
+pip install git+https://github.com/alfaromurillo/sigmutsel.git
+sigmutsel-setup        # or: python -m sigmutsel setup
+sigmutsel-check-data   # or: python -m sigmutsel check-data
 ```
 
-### Option 2: Custom Data Directory
+`sigmutsel-check-data` should report every file as `Found`. Setup is
+idempotent: a rerun downloads only what is missing (`--force`
+downloads the data files again).
 
-Use a custom location for data files:
+## What is downloaded
+
+| step | file | size on disk | used for |
+|---|---|---|---|
+| 1 | `hgnc_complete_set.txt` (HGNC) | 20 MB | gene symbols and ids |
+| 2 | `Homo_sapiens.GRCh38.cds.all.fa` (Ensembl 114) | 130 MB | coding sequences, opportunities |
+| 3 | `gencode.v38.annotation.gtf.gz` | 47 MB | transcripts (GRCh38) |
+| 4 | `gencode.v19.annotation.gtf.gz` | 38 MB | the exome target's genes (hg19) |
+| 5 | `gaf_20111020Plusbroad_wex_1.1_hg19.bed` (MC3 exome target, from the GDC) | 5 MB | the gene universe |
+| 6 | `hg38ToHg19.over.chain.gz` (UCSC) | 1 MB | lifting positions to hg19 |
+| 7 | `germline_mask/` (gnomAD v2.1.1 exomes, AF > 5e-5) | 15 MB | the germline mask |
+| 8 | `rmsk_hg38_merged.bed.xz` (RepeatMasker) | 17 MB | call QC and the territory |
+| 9 | `wes_target_gene_ids_gencode19.txt` | < 1 MB | derived from 4 and 5 |
+| 10 | SigProfilerMatrixGenerator's GRCh38 genome | 2.9 GB | signatures, genome contexts |
+
+Steps 1-9 go to the **data directory**; step 10 goes inside the
+SigProfilerMatrixGenerator package of the same environment (that is
+where it reads it). The genome took 18 minutes on a 100 Mb/s
+connection; the rest under a minute.
+
+**Do not skip the genome** (`--skip-genome`) on a machine that builds
+datasets. Without it nothing fails: every base read from the genome
+is "unknown", genome-dependent contexts fall back, and the rates
+differ from those of an environment that has it. A warning,
+`RuntimeWarning: No installed GRCh38 genome`, is the only sign. To
+install it later:
 
 ```bash
-# Set environment variable
-export SIGMUTSEL_DATA_DIR=/path/to/your/data
-
-# Download to custom location
-python -m sigmutsel setup --data-dir $SIGMUTSEL_DATA_DIR
-
-# Package will use this location automatically
+python -c "from sigmutsel.setup import install_reference_genome; install_reference_genome()"
 ```
 
-### Option 3: Manual Download
+Two more files are downloaded on first use, not by setup: TCGA's
+pan-cancer ABSOLUTE purity table and copy-number segments (for the
+TCGA sample QC, `sigmutsel.setup.download_tcga_absolute_purity` and
+`download_tcga_absolute_segments`, about 250 MB together). The
+GENCODE files, the exome target, the RepeatMasker regions and the
+ABSOLUTE files are also looked for in a shared location,
+`$XDG_DATA_HOME` (default `~/.local/share`), and reused from there if
+found, so packages that use the same files download them once.
 
-Download files manually and place them in the data directory:
+The small reference tables shipped with the package (signature
+inclusion/exclusion by cancer type, COSMIC signature aetiologies, the
+Cancer Gene Census, IntOGen and published driver lists, AID targets,
+histone genes, artifact-prone genes) are described in
+`src/sigmutsel/data/README.md`.
+
+## Where the data directory is
+
+By default, the `data/` directory inside the installed package. To
+use another one (a shared disk, a directory you can write to):
 
 ```bash
-cd /path/to/sigmutsel/src/sigmutsel/data
-
-# Download HGNC
-wget https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt
-
-# Download CDS FASTA
-wget https://ftp.ensembl.org/pub/release-114/fasta/homo_sapiens/cds/Homo_sapiens.GRCh38.cds.all.fa.gz
-gunzip Homo_sapiens.GRCh38.cds.all.fa.gz
-
-# Download GENCODE GTF
-wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_38/gencode.v38.annotation.gtf.gz
-wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_19/gencode.v19.annotation.gtf.gz
+sigmutsel-setup --data-dir ~/sigmutsel_data
+export SIGMUTSEL_DATA_DIR=~/sigmutsel_data
 ```
 
-## Download Options
+The environment variable must be set in **every** session that uses
+the package (put the `export` in your shell's startup file):
+sigmutsel reads it when it is imported. The files shipped with the
+package are found in the package itself whatever the data directory
+is.
 
-### Command-Line Options
+## Options
 
 ```bash
-# Basic download
-sigmutsel-setup
-
-# Re-download even if files exist
-sigmutsel-setup --force
-
-# Keep FASTA compressed (saves 90 MB)
-sigmutsel-setup --keep-fasta-compressed
-
-# Decompress GTF files (uses 3 GB more space)
-sigmutsel-setup --decompress-gtf
-
-# Use custom directory
-sigmutsel-setup --data-dir /custom/path
+sigmutsel-setup --force            # download the data files again
+sigmutsel-setup --skip-genome      # leave out the 3 GB genome
+sigmutsel-setup --decompress-gtf   # GTFs uncompressed (3 GB more)
+sigmutsel-setup --repeatmasker-full    # UCSC's full rmsk table (149 MB; same QC)
+sigmutsel-setup --germline-mask-full   # every gnomAD allele (streams ~92 GB;
+                                       # only for a mask below AF 5e-5)
 ```
 
-### Programmatic Download
+`--keep-fasta-compressed` keeps the CDS FASTA as `.fa.gz`; building a
+dataset reads the uncompressed file, so use it only to decompress
+later.
+
+## From Python
 
 ```python
-from sigmutsel.setup import download_all, download_hgnc
+from sigmutsel.setup import download_all, install_reference_genome
 
-# Download all files
-download_all()
+paths = download_all()            # steps 1-10
+paths = download_all(genome=False)
+install_reference_genome("GRCh38")
 
-# Download specific files
-download_hgnc(force=False)
-download_cds_fasta(decompress=True)
-download_gencode_gtf(version="38", keep_compressed=True)
-```
-
-## Using the Package
-
-### Accessing Reference Data Locations
-
-```python
 from sigmutsel import locations
 
-# Access file paths
-hgnc_file = locations.location_hgnc_complete_set
-fasta_file = locations.location_cds_fasta
-
-# Check if file exists (raises helpful error if not)
-locations.check_data_file(hgnc_file, "HGNC complete set")
-
-# List all files and their status
-status = locations.list_data_files()
-print(status)
-
-# Print formatted status
-locations.print_data_status()
-```
-
-### Example Usage
-
-```python
-from sigmutsel import MutationDataset, locations
-
-# Locations are automatically available
-dataset = MutationDataset(
-    maf_directory="/path/to/maf/files",
-    signature_class="SBS"
-)
-
-# The package knows where to find reference files
-dataset.build_full_dataset()  # Uses locations internally
-```
-
-## Disk Space Requirements
-
-| Files                       | Compressed | Uncompressed |
-|-----------------------------|------------|--------------|
-| Package (code + small data) | 5 MB       | 10 MB        |
-| HGNC                        | 8 MB       | 20 MB        |
-| CDS FASTA                   | 40 MB      | 130 MB       |
-| GTF v38 + v19               | 90 MB      | 3.1 GB       |
-| **Total Minimal**           | **145 MB** | **3.3 GB**   |
-
-**Recommendations:**
-- Keep GTF files compressed (saves ~3 GB)
-- Most tools can read `.gtf.gz` directly
-- Only decompress if you need faster random access
-
-## Checking Installation
-
-### Verify Package Installation
-
-```python
-import sigmutsel
-print(sigmutsel.__version__)
-
-from sigmutsel import MutationDataset, Model
-print("✓ Core classes imported successfully")
-```
-
-### Verify Data Files
-
-```bash
-# Check data status
-sigmutsel-check-data
-
-# Or in Python:
-python -c "from sigmutsel.locations import print_data_status; print_data_status()"
-```
-
-Expected output:
-```
-Data directory: /path/to/sigmutsel/src/sigmutsel/data
-
-File status:
-------------------------------------------------------------
-✓ exclusion_signatures_matrix  Found
-✓ inclusion_signatures_matrix  Found
-✓ hgnc_complete_set            Found
-✓ cds_fasta                    Found
-✓ gencode38_annotation         Found
-✓ gencode19_annotation         Found
+locations.print_data_status()     # what sigmutsel-check-data prints
+locations.list_data_files()       # {name: found}
+locations.location_cds_fasta      # every file's path
 ```
 
 ## Troubleshooting
 
-### Files Not Found Error
-
-If you get `FileNotFoundError` when using the package:
-
-```python
-FileNotFoundError: hgnc_complete_set.txt not found at ...
-Download it using:
-    python -m sigmutsel setup
-```
-
-**Solution**: Run the download command:
-```bash
-python -m sigmutsel setup
-```
-
-### Download Fails
-
-If downloads fail due to network issues:
-
-1. **Manual download**: Download files from URLs in `data/README.md`
-2. **Partial retry**: The download script can be re-run, it skips existing files
-3. **Custom mirror**: Modify URLs in `sigmutsel/setup.py` if needed
-
-### Permission Errors
-
-If you can't write to the package data directory:
-
-```bash
-# Use custom directory
-export SIGMUTSEL_DATA_DIR=~/sigmutsel_data
-mkdir -p $SIGMUTSEL_DATA_DIR
-python -m sigmutsel setup
-```
-
-### Large Files
-
-If disk space is limited:
-
-```bash
-# Keep FASTA compressed (saves 90 MB)
-sigmutsel-setup --keep-fasta-compressed
-
-# GTF files stay compressed by default (saves 3 GB)
-```
-
-## For Developers
-
-### Adding New Reference Files
-
-1. Add download URL to `sigmutsel/setup.py`:
-   ```python
-   DOWNLOAD_URLS["new_file.txt"] = "https://..."
-   ```
-
-2. Add location to `sigmutsel/locations.py`:
-   ```python
-   location_new_file = DATA_DIR / "new_file.txt"
-   ```
-
-3. Update `download_all()` function
-
-4. Update `list_data_files()` function
-
-5. Document in `data/README.md`
-
-### Package Distribution
-
-Small files are included in the package wheel:
-- Signature matrices
-- Small reference tables
-
-Large files are excluded and downloaded separately:
-- FASTA files
-- GTF annotations
-- HGNC complete set
-
-This keeps the package distribution small (~10 MB) while providing
-easy access to required reference data.
-
-## See Also
-
-- `data/README.md` - Detailed data file documentation
-- `sigmutsel/locations.py` - File path definitions
-- `sigmutsel/setup.py` - Download implementation
+- **`FileNotFoundError: ... not found at ... python -m sigmutsel
+  setup`**: a file is missing from the data directory. Run
+  `sigmutsel-check-data`; if you set `SIGMUTSEL_DATA_DIR`, check it is
+  set in this session too.
+- **A download fails**: rerun; finished files are skipped. Behind a
+  proxy, the URLs are in `sigmutsel.setup.DOWNLOAD_URLS`, and a file
+  downloaded by hand can be placed in the data directory under the
+  name in the table above.
+- **No permission to write the package directory**: use
+  `--data-dir` (above).
+- **The genome download stalls**: it comes from the Sanger Institute's
+  FTP server through SigProfilerMatrixGenerator; rerun
+  `install_reference_genome()`.

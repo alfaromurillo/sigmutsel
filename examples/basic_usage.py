@@ -15,7 +15,7 @@ def download_example_data():
 
     This function demonstrates how to download TCGA mutation data
     using the included example manifest file. The example manifest
-    contains 5 COAD (colon adenocarcinoma) samples.
+    contains 50 SKCM (skin cutaneous melanoma) samples.
 
     Requirements
     ------------

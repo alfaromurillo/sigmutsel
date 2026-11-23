@@ -285,10 +285,12 @@ print(len(list(selected.glob("*.maf"))), "files selected")
 #   splice, and each gene's **opportunity** (how many sites could
 #   mutate to each consequence, in each trinucleotide context) is
 #   counted.
-# - **The gene universe** (`gene_universe="wes_target"`): every gene
-#   of the exome capture, mutated in this cohort or not. The default,
-#   `"own_cohort"`, keeps only mutated genes and inflates the rates of
-#   a small cohort; always pass `"wes_target"`.
+# - **The gene universe** (`gene_universe="wes_target"`, the default,
+#   written out below so you see it): every gene of the exome
+#   capture, mutated in this cohort or not. The alternative,
+#   `"own_cohort"`, keeps only the genes some tumor mutated: the
+#   unmutated genes then drop out of each tumor's denominator, and
+#   every rate comes out too high, most in a small cohort.
 #
 # The built dataset is saved, so a rerun of this cell loads it in
 # seconds.

@@ -328,3 +328,28 @@ def test_save_load_without_split_tables_still_works(
     loaded = MutationDataset.load_dataset(save_dir)
     assert not loaded.has_consequence_contexts_by_gene()
     assert not (save_dir / "contexts_by_gene_syn.csv").exists()
+
+
+def test_consequence_contexts_default_to_the_datasets_universe(
+    monkeypatch,
+):
+    """Called without gene_universe, the consequence tables take the
+    universe the dataset's contexts were built with, so the two tables
+    cannot disagree because the default changed."""
+    from sigmutsel.models import MutationDataset
+
+    seen = []
+    dataset = MutationDataset.__new__(MutationDataset)
+    dataset.signature_class = "SBS"
+    dataset._contexts_by_gene_gene_universe = "own_cohort"
+    monkeypatch.setattr(
+        MutationDataset,
+        "_resolve_gene_universe",
+        lambda self, u: seen.append(u)
+        or (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+    try:
+        dataset.generate_consequence_contexts_by_gene()
+    except RuntimeError:
+        pass
+    assert seen == ["own_cohort"]

@@ -128,11 +128,11 @@ class MutationDataset:
         value represents the count of a specific trinucleotide context
         in a gene's coding sequence. Lazy-loaded via
         generate_contexts_by_gene(), whose `gene_universe` argument
-        controls which genes are included ("own_cohort", the
-        default: genes present in the mutation database only;
-        "wes_target": the union of that set with MC3's TCGA WES-target
-        gene set, a better-calibrated denominator for low-mutation-
-        burden cohorts). These values are needed to compute later the
+        controls which genes are included ("wes_target", the
+        default: the genes in the mutation database and MC3's TCGA
+        WES-target gene set, the right denominator for a gene's share
+        of a tumor's mutations; "own_cohort": the genes in the
+        mutation database only, which inflates every rate). These values are needed to compute later the
         probability that a mutation of a certain type lands on a
         gene. Thus, gene mutation rates can only be obtained for
         genes with this information, and so the index of
@@ -3828,7 +3828,7 @@ class MutationDataset:
 
     @record_call
     def generate_contexts_by_gene(
-        self, fastas=None, gene_universe="own_cohort"
+        self, fastas=None, gene_universe="wes_target"
     ):
         """Generate trinucleotide context counts by gene.
 
@@ -3842,18 +3842,15 @@ class MutationDataset:
             - Single FASTA file path (str or Path)
             - List of FASTA file paths
             - None: automatically uses locations.location_cds_fasta
-        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+        gene_universe : {"wes_target", "own_cohort"}, default "wes_target"
             Which genes to compute contexts (and, downstream, mutation
             rates) for:
 
-            - ``"own_cohort"``: restricted to genes present in this
-              dataset's own mutation database -- the original
-              behavior. For low-mutation-burden cohorts this can be
-              a small fraction of the exome, which biases downstream
-              per-gene rate estimates (see ``"wes_target"``).
-            - ``"wes_target"``: the union of genes present in this
-              dataset's own mutation database *and* MC3's TCGA
-              WES-target gene set (:func:`sigmutsel.wes_target.get_wes_target_gene_ids`)
+            - ``"wes_target"`` (the default; it was ``"own_cohort"``
+              until November 2026): the union of genes
+              present in this dataset's own mutation database *and*
+              MC3's TCGA WES-target gene set
+              (:func:`sigmutsel.wes_target.get_wes_target_gene_ids`)
               -- a principled, cohort-independent approximation of
               which genes were actually capturable by TCGA's
               sequencing. Always a superset of ``"own_cohort"``'s
@@ -3861,7 +3858,15 @@ class MutationDataset:
               dropped just because they're absent from the WES-target
               set (which can happen for genes annotated only in
               newer GENCODE releases than the target BED's hg19
-              build).
+              build). Right for whole-exome data; a targeted panel
+              needs its own gene list, which this method does not
+              take yet.
+            - ``"own_cohort"``: restricted to genes present in this
+              dataset's own mutation database. Dropping the genes no
+              tumor happened to mutate shrinks the denominator of
+              each tumor's gene shares, so every rate comes out too
+              high, most in low-burden cohorts. Kept to reproduce
+              datasets built before the default changed.
 
         Returns
         -------
@@ -4030,7 +4035,7 @@ class MutationDataset:
 
     @record_call
     def generate_consequence_contexts_by_gene(
-        self, fastas=None, gene_universe="own_cohort"
+        self, fastas=None, gene_universe=None
     ):
         """Generate synonymous/non-synonymous opportunity counts.
 
@@ -4056,10 +4061,12 @@ class MutationDataset:
             Must be a **CDS** FASTA (the default,
             ``locations.location_cds_fasta``, is one) -- a sequence
             with no reading frame has no synonymous channel.
-        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
-            Same meaning as in :meth:`generate_contexts_by_gene`. Use
-            the same value there and here: the sum identity below only
-            holds gene-by-gene for genes present in both tables.
+        gene_universe : {"wes_target", "own_cohort"} or None, default None
+            Same meaning as in :meth:`generate_contexts_by_gene`. None
+            takes the universe :meth:`generate_contexts_by_gene` used
+            for this dataset (``"wes_target"`` if it has not run). The
+            two must agree: the sum identity below only holds
+            gene-by-gene for genes present in both tables.
 
         Returns
         -------
@@ -4098,6 +4105,10 @@ class MutationDataset:
                 "for DBS/ID/CN/SV."
             )
 
+        if gene_universe is None:
+            gene_universe = (
+                self._contexts_by_gene_gene_universe or "wes_target"
+            )
         restrict_to_db = self._resolve_gene_universe(gene_universe)
 
         if self.has_channel_universe():
@@ -4123,7 +4134,7 @@ class MutationDataset:
     def build_full_dataset(
         self,
         fastas=None,
-        gene_universe="own_cohort",
+        gene_universe="wes_target",
         regenerate_mutation_db=True,
         **kwargs,
     ):
@@ -4133,7 +4144,7 @@ class MutationDataset:
         ----------
         fastas : str, Path, list, or None, default None
             Forwarded to :meth:`generate_contexts_by_gene`.
-        gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+        gene_universe : {"wes_target", "own_cohort"}, default "wes_target"
             Forwarded to :meth:`generate_contexts_by_gene`.
         regenerate_mutation_db : bool, default True
             If False, skip calling :meth:`generate_mutation_db` and

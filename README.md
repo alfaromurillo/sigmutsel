@@ -150,7 +150,6 @@ these:
 |---|---|---|---|---|
 | `select_tcga_maf_files` | `duplicate_policy` | `"keep_all"` | `"newest"` | one aliquot per patient |
 | `select_tcga_maf_files` | `exclude_prior_treatment` | `False` | `True` | treated tumors carry therapy mutations |
-| `MutationDataset.build_full_dataset` | `gene_universe` | `"own_cohort"` | `"wes_target"` | every captured gene, mutated or not; the default inflates a small cohort's rates |
 | `MutationDataset.generate_mutation_db` | `qc_mode`, `germline_mask_af` | off | `True`, `1.5e-4` | call QC and the germline mask |
 | `MutationDataset.run_two_pass_signature_decomposition` | `treatment_load_threshold`, `prevalence_override_min_fraction` | off | `0.2`, `0.15` | drop treatment-exposed tumors; keep signatures that recur |
 | `Model` | `prob_g_tau_tau_independent` | `None` (unset) | `False` | a tumor's spectrum shapes where its mutations fall; `True` is an older model |

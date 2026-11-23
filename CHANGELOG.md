@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `gene_universe` defaults to `"wes_target"` in `build_full_dataset`
+  and `generate_contexts_by_gene` (it was `"own_cohort"`, which drops
+  the genes no tumor mutated and so inflates every rate);
+  `generate_consequence_contexts_by_gene` defaults to the universe the
+  dataset's contexts were built with, so the two tables cannot
+  disagree. To reproduce a dataset built with the old
+  default, pass `gene_universe="own_cohort"`. Datasets saved without a
+  recorded universe still load as `"own_cohort"`, as they were built.
+
 ### Added
 - A first-week tutorial, `tutorials/selection_in_hnsc.py` (rendered as
   `tutorials/selection_in_hnsc.md`): a public TCGA cohort (HNSC) from

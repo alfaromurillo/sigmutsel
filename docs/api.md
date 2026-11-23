@@ -415,11 +415,11 @@ contexts_by_gene : pd.DataFrame or None
     value represents the count of a specific trinucleotide context
     in a gene's coding sequence. Lazy-loaded via
     generate_contexts_by_gene(), whose `gene_universe` argument
-    controls which genes are included ("own_cohort", the
-    default: genes present in the mutation database only;
-    "wes_target": the union of that set with MC3's TCGA WES-target
-    gene set, a better-calibrated denominator for low-mutation-
-    burden cohorts). These values are needed to compute later the
+    controls which genes are included ("wes_target", the
+    default: the genes in the mutation database and MC3's TCGA
+    WES-target gene set, the right denominator for a gene's share
+    of a tumor's mutations; "own_cohort": the genes in the
+    mutation database only, which inflates every rate). These values are needed to compute later the
     probability that a mutation of a certain type lands on a
     gene. Thus, gene mutation rates can only be obtained for
     genes with this information, and so the index of
@@ -768,7 +768,7 @@ tutorial uses:
 ```python
 build_full_dataset(
     fastas=None,
-    gene_universe='own_cohort',
+    gene_universe='wes_target',
     regenerate_mutation_db=True,
     **kwargs,
 )
@@ -781,7 +781,7 @@ Parameters
 ----------
 fastas : str, Path, list, or None, default None
     Forwarded to :meth:`generate_contexts_by_gene`.
-gene_universe : {"own_cohort", "wes_target"}, default "own_cohort"
+gene_universe : {"wes_target", "own_cohort"}, default "wes_target"
     Forwarded to :meth:`generate_contexts_by_gene`.
 regenerate_mutation_db : bool, default True
     If False, skip calling :meth:`generate_mutation_db` and

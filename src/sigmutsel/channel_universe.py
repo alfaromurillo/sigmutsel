@@ -2128,8 +2128,11 @@ def sigprofiler_genome_dir(build="GRCh38"):
     absence is warned about, once per process.
     """
     global _GENOME_WARNED
+    from ._global_state import keep_global_state
+
     try:
-        import SigProfilerMatrixGenerator
+        with keep_global_state():
+            import SigProfilerMatrixGenerator
     except ImportError:
         path = None
     else:

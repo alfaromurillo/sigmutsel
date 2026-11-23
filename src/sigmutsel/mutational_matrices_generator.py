@@ -4,14 +4,21 @@ import logging
 import shutil
 from pathlib import Path
 
-from SigProfilerMatrixGenerator import install as genInstall
-from SigProfilerMatrixGenerator.scripts import (
-    SigProfilerMatrixGeneratorFunc,
-)
+from ._global_state import keep_global_state
+
+# SigProfilerMatrixGenerator configures the root logger at import (and
+# its matrix generation imports plotting): both inside
+# keep_global_state.
+with keep_global_state():
+    from SigProfilerMatrixGenerator import install as genInstall
+    from SigProfilerMatrixGenerator.scripts import (
+        SigProfilerMatrixGeneratorFunc,
+    )
 
 logger = logging.getLogger(__name__)
 
 
+@keep_global_state()
 def run_mutational_matrices_generator(
     path_to_input_files,
     reference_genome,

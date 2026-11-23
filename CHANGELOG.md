@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their parameters, return value and an example).
 
 ### Fixed
+- Importing or running SigProfilerAssignment and
+  SigProfilerMatrixGenerator no longer changes the session:
+  SigProfilerAssignment switched matplotlib to Agg (no figure showed
+  in Jupyter afterwards) and SigProfilerMatrixGenerator configured
+  the root logger at INFO (every library's INFO messages printed).
+  sigmutsel imports and calls them inside
+  `_global_state.keep_global_state`, which restores both. A program
+  that wants sigmutsel's INFO messages now configures logging itself
+  (`logging.basicConfig(level=logging.INFO)`).
 - `sigmutsel-setup --data-dir` sent some files to the package
   directory (paths are resolved at import): it now reruns itself
   with `SIGMUTSEL_DATA_DIR` set.

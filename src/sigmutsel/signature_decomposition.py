@@ -5,8 +5,8 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from SigProfilerAssignment import Analyzer
 
+from ._global_state import keep_global_state
 from .constants import (
     ARTIFACT_SIGNATURES,
     TREATMENT_ASSOCIATED_SIGNATURES,
@@ -16,6 +16,12 @@ from .locations import (
     location_exclusion_signatures_matrix,
     location_inclusion_signatures_matrix,
 )
+
+# SigProfilerAssignment switches matplotlib to Agg at import: imported
+# (and called, below) inside keep_global_state, so a notebook's
+# figures keep showing.
+with keep_global_state():
+    from SigProfilerAssignment import Analyzer
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +239,8 @@ def _load_default_cosmic_signature_database(
     context" note on :func:`run_signature_decomposition`'s
     restriction-mechanism fix).
     """
-    import SigProfilerAssignment as spa
+    with keep_global_state():
+        import SigProfilerAssignment as spa
 
     suffix = "_exome" if exome else ""
     path = (
@@ -468,6 +475,7 @@ def compute_prevalence_overrides(
     return overrides
 
 
+@keep_global_state()
 def run_signature_decomposition(
     samples,
     output,

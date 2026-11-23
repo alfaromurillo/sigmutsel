@@ -742,8 +742,11 @@ def install_reference_genome(
     >>> from sigmutsel.setup import install_reference_genome
     >>> install_reference_genome("GRCh38")  # doctest: +SKIP
     """
-    import SigProfilerMatrixGenerator
-    from SigProfilerMatrixGenerator import install as genInstall
+    from ._global_state import keep_global_state
+
+    with keep_global_state():
+        import SigProfilerMatrixGenerator
+        from SigProfilerMatrixGenerator import install as genInstall
 
     # The directory sigprofiler_genome_dir reads, checked without its
     # missing-genome warning (its absence is what this installs).
@@ -761,7 +764,8 @@ def install_reference_genome(
         f"Installing the {build} reference genome with "
         "SigProfilerMatrixGenerator (about 3 GB; several minutes)..."
     )
-    genInstall.install(build, rsync=False, bash=True)
+    with keep_global_state():
+        genInstall.install(build, rsync=False, bash=True)
     if not (path.is_dir() and any(path.glob("*.txt"))):
         raise RuntimeError(
             f"SigProfilerMatrixGenerator did not install {build} at "

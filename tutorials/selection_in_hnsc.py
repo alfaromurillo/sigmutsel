@@ -1049,6 +1049,86 @@ plt.show()
 # "observed = expected": a neutral gene scatters around it, more widely
 # at small counts. Called genes sit far above it. Long genes (to the
 # right) can have many carriers and still sit on the line.
+#
+# **The EB prior, and what it does.** The table fitted the prior and
+# kept it on the model (`model.selection_prior`). The figure below
+# draws it (left) and, for every gene, sets the estimate under the
+# flat prior against the one under the EB prior (right).
+
+# %%
+from sigmutsel.selection import SpikeSlabPrior
+
+prior = SpikeSlabPrior.from_dict(model.selection_prior)
+# The prior is a mass on a grid of log gamma; divided by the grid
+# step it is a density per unit of log gamma. The spike is a normal
+# curve with the fitted centre, sd and weight; the slab is the rest.
+step = prior.grid[1] - prior.grid[0]
+gamma = np.exp(prior.grid)
+density = np.exp(prior.log_density) / step
+spike = np.exp(
+    -0.5 * ((prior.grid - prior.spike_centre) / prior.spike_sd) ** 2
+)
+spike *= prior.spike_weight / (spike.sum() * step)
+slab = np.clip(density - spike, 1e-12, None)
+
+fig, axes = plt.subplots(1, 2, figsize=(9, 3.8))
+ax = axes[0]
+ax.plot(gamma, slab, color="C0", label="slab: genes away from 1")
+ax.plot(gamma, spike, color="0.3", label="spike: neutral genes")
+ax.axvline(1, color="0.6", lw=0.8, ls=":")
+ax.set_xscale("log")
+# Log density: the spike is thousands of times taller than the slab.
+ax.set_yscale("log")
+ax.set_ylim(1e-5, density.max() * 2)
+ax.set_xlim(0.1, 1e4)
+ax.set_xlabel("gamma")
+ax.set_ylabel("prior density (per unit of log gamma)")
+ax.legend(frameon=False, loc="upper right")
+ax.text(
+    0.03,
+    0.04,
+    f"spike: {prior.spike_weight:.1%} of the prior's mass",
+    transform=ax.transAxes,
+    fontsize=8,
+)
+
+ax = axes[1]
+ax.scatter(
+    selection.flat_median,
+    selection.eb_median,
+    s=4,
+    color="0.7",
+    label="not called",
+)
+ax.scatter(
+    called.flat_median,
+    called.eb_median,
+    s=12,
+    color="C3",
+    label="called, q < 0.1",
+)
+lims = [0.1, max(selection.flat_median.max(), 10) * 1.5]
+ax.plot(lims, lims, color="0.4", lw=1, ls="--")
+ax.set_xscale("log")
+ax.set_yscale("log")
+ax.set_xlabel("gamma under the flat prior (median)")
+ax.set_ylabel("gamma under the EB prior (median)")
+ax.legend(frameon=False, loc="upper left")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** Left: the prior puts almost all its mass in
+# a narrow spike at gamma close to 1, the neutral genes, and spreads
+# the rest thinly as a slab over values far from 1, mostly above. Its
+# shape is learned from all the cohort's genes at once. Right: one
+# point per gene; the dashed line is "the two estimates agree". Genes
+# with many carriers (the called ones, red) stay on it: their data
+# outweigh the prior. Genes with few carriers, whose flat estimate can
+# be anything from 0.1 to tens of thousands, form the horizontal band
+# at 1: the prior pulls them back, because the data cannot tell them
+# from the spike. That is what makes the EB estimates comparable
+# across genes, and why a large flat estimate on its own means little.
 
 # %% [markdown]
 # ## 9. Project (a): frequency is not selection

@@ -680,8 +680,10 @@ pd.DataFrame(rows).set_index("gene").round(3)
 #
 # **Per variant.** `SiteRates` gives the rate of any single-nucleotide
 # variant, protein change or splice change in every tumor, whether it
-# was observed or not, without building a variants x tumors table. A
-# protein change's rate is the sum over every single-base route to it
+# was observed or not, without building a variants x tumors table
+# (here every possible single-nucleotide variant of the exome, about
+# 105 million, by 392 tumors: some 330 GB of memory). A protein
+# change's rate is the sum over every single-base route to it
 # (PIK3CA E545K has one; a change with two possible codons has two).
 # The *observable* rate is the one to compare with calls (a germline-
 # masked allele can mutate but cannot be called).

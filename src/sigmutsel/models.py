@@ -7890,11 +7890,12 @@ class Model:
         **kwargs
             Additional keyword arguments passed to
             plot_posteriors_vs_counts (e.g., save, show,
-            max_shift_x).
+            max_shift_x, prob).
 
         Returns
         -------
-        None
+        matplotlib.figure.Figure
+            The figure (:func:`figures.plot_posteriors_vs_counts`).
 
         Examples
         --------
@@ -8044,7 +8045,7 @@ class Model:
                 if gene_name in passenger_gene_names:
                     passenger_genes.add(label)
 
-        plot_posteriors_vs_counts(
+        return plot_posteriors_vs_counts(
             results_for_plot,
             counts,
             passenger_genes,
@@ -8059,11 +8060,15 @@ class Model:
         mutations_log_scale=False,
         save_path=None,
         show=True,
+        covariates=None,
     ):
         """Plot signature correlations with covariates.
 
-        Visualizes correlations between mutational signatures and
-        provided covariates using bars and mutation counts.
+        Each gene's calls are attributed to the signatures (each
+        tumor's exposures times the signatures' probability of the
+        call's type), and the per-gene totals of each signature are
+        correlated with each covariate: bars, with the calls
+        attributed to the signature as a line on a second axis.
 
         Parameters
         ----------
@@ -8079,15 +8084,22 @@ class Model:
             Path to save the figure. If None, doesn't save.
         show : bool, optional
             Whether to display the figure. Default True.
+        covariates : pandas.DataFrame, optional
+            Genes x covariates to correlate with, e.g. a few raw
+            columns of a covariate matrix. Default: the model's own
+            covariates (:attr:`cov_matrix`), which for principal
+            components are not interpretable one by one.
 
         Returns
         -------
-        None
+        (matplotlib.figure.Figure, Axes, Axes)
+            The figure, its correlation axis and its calls axis.
 
         Raises
         ------
         ValueError
-            If covariates are not set or required data is missing.
+            If no covariates are given or set, or the dataset has no
+            signature decomposition.
 
         Examples
         --------
@@ -8104,15 +8116,22 @@ class Model:
         ...     mutations_log_scale=True,
         ...     figsize=(12, 8))
         """
+        import tempfile
         from pathlib import Path
 
         from .figures import plot_signature_correlations
 
-        # Check that covariates are set
-        if self.cov_matrix is None:
+        if covariates is None:
+            covariates = self.cov_matrix
+        if covariates is None:
             raise ValueError(
-                "No covariates set. "
-                "Create model with cov_matrix parameter."
+                "No covariates: pass covariates= or set the model's "
+                "(assign_cov_matrix)."
+            )
+        if self.dataset._signature_matrix is None:
+            raise ValueError(
+                "The dataset has no signature matrix: run the "
+                "signature decomposition first."
             )
 
         # Get L_low and L_high from auto kwargs (whatever compute_mu_taus
@@ -8120,36 +8139,35 @@ class Model:
         L_low = self._auto_mu_taus_kwargs.get("L_low")
         L_high = self._auto_mu_taus_kwargs.get("L_high")
 
-        # Build signature matrix path
-        location_sig_matrix_norm = (
-            Path(self.dataset.location_maf_files)
-            / "signature_decomposition"
-            / self.dataset.signature_class
-            / "Assignment_Solution"
-            / "Signatures"
-            / "Assignment_Solution_Signatures.txt"
-        )
-
-        # Convert cov_matrix DataFrame to dict of Series
         cov_matrix_for_corr = {
-            col: self.cov_matrix[col]
-            for col in self.cov_matrix.columns
+            col: covariates[col] for col in covariates.columns
         }
 
-        # Call the plotting function
-        plot_signature_correlations(
-            db=self.dataset.mutation_db,
-            assignments=self.dataset.sig_assignments,
-            location_sig_matrix_norm=location_sig_matrix_norm,
-            L_low=L_low,
-            L_high=L_high,
-            cov_matrix_for_corr=cov_matrix_for_corr,
-            top_n=top_n,
-            figsize=figsize,
-            mutations_log_scale=mutations_log_scale,
-            save_path=save_path,
-            show=show,
-        )
+        # The dataset's signature matrix, through a temporary file
+        # (what the plotting function reads), as compute_mu_taus does.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as tmp_file:
+            self.dataset.signature_matrix.to_csv(
+                tmp_file.name, sep="\t"
+            )
+            location_sig_matrix_norm = tmp_file.name
+        try:
+            return plot_signature_correlations(
+                db=self.dataset.mutation_db,
+                assignments=self.dataset.sig_assignments,
+                location_sig_matrix_norm=location_sig_matrix_norm,
+                L_low=L_low,
+                L_high=L_high,
+                cov_matrix_for_corr=cov_matrix_for_corr,
+                top_n=top_n,
+                figsize=figsize,
+                mutations_log_scale=mutations_log_scale,
+                save_path=save_path,
+                show=show,
+            )
+        finally:
+            Path(location_sig_matrix_norm).unlink(missing_ok=True)
 
     def _compute_mu_g_taus(
         self, use_cov_effects=True, channel="nonsyn", taus=None

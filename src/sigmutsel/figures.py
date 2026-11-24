@@ -27,8 +27,9 @@ def plot_posteriors_vs_counts(
     min_shift_x: int | None = None,
     save: str | None = None,
     show: bool = False,
-) -> None:
-    """Plot posterior mean ± 94 % HDI against observed sample counts.
+    prob: float = 0.94,
+):
+    """Plot posterior mean and interval against observed sample counts.
 
     The function produces a scatter/interval plot that compares the
     mean selection coefficient (`gamma`) from Bayesian posterior
@@ -63,6 +64,8 @@ def plot_posteriors_vs_counts(
         (default) the figure is only displayed and not written to disk.
     show : bool, default False
         Whether to display the figure after creation.
+    prob : float, default 0.94
+        Probability mass of each interval (highest density interval).
 
     Returns
     -------
@@ -95,7 +98,7 @@ def plot_posteriors_vs_counts(
     for lbl, idata in results.items():
         g = idata.posterior["gamma"].values.flatten()
         mean = g.mean()
-        hdi_low, hdi_high = az.hdi(g, prob=0.94)
+        hdi_low, hdi_high = az.hdi(g, prob=prob)
         rows.append(
             {
                 "label": lbl,
@@ -239,7 +242,7 @@ def plot_posteriors_vs_counts(
 
 
 def comparison_with_observed(
-    expected, observed, fig_name_additional=None, show=True
+    expected, observed, save=None, show=True
 ):
     """Make an expected vs observed scatter plot for mutation counts.
 
@@ -259,17 +262,16 @@ def comparison_with_observed(
         If DataFrame, rows are genes and columns are samples; numeric
         columns are summed across axis=1 to get per-gene counts.
         If array-like, it is aligned to `expected` by position.
-    fig_name_additional : str or None, optional
-        If provided, appended to the base filename when saving.
+    save : str or Path or None, optional
+        File path to save the figure to (300 dpi). Not saved if None.
+    show : bool, default True
+        Whether to call ``plt.show()``; if False the figure is closed
+        (it is still returned).
 
     Notes
     -----
     - R^2 is computed on finite, paired values only.
     - MPE is mean((obs - exp) / exp) * 100 on pairs with expected > 0.
-
-    Saves
-    -----
-    ../presentations/images/observed_vs_expected_passenger{_suffix}
 
     Returns
     -------
@@ -355,16 +357,14 @@ def comparison_with_observed(
 
     plt.tight_layout()
 
-    if fig_name_additional is not None:
-        suffix = f"_{fig_name_additional}"
-        fig_name = f"observed_vs_expected_passenger{suffix}"
-        fig.savefig(f"../presentations/images/{fig_name}", dpi=300)
+    if save is not None:
+        fig.savefig(str(save), dpi=300)
     if show:
         plt.show()
     else:
         plt.close("all")
 
-    return r2
+    return fig
 
 
 def plot_signature_correlations(
@@ -407,7 +407,7 @@ def plot_signature_correlations(
         If provided, only plot the top N signatures by
         mutation count. Default None (plot all).
     figsize : tuple, optional
-        Figure size. Default .
+        Figure size. Default None: the size of a beamer slide.
     mutations_log_scale : bool, optional
         If True, use log scale for mutations y-axis.
         Default False.
@@ -482,9 +482,9 @@ def plot_signature_correlations(
     width = 0.8 / len(corr_cols)  # Bar width
 
     # Use Set1 colormap
-    from matplotlib import cm
+    import matplotlib
 
-    cmap = cm.get_cmap("tab10")
+    cmap = matplotlib.colormaps["tab10"]
     colors = [cmap(i) for i in range(len(corr_cols))]
 
     # Plot bars for each correlation column
@@ -953,7 +953,7 @@ def plot_signature_profile(
 
     if percent:
         ax.yaxis.set_major_formatter(
-            PercentFormatter(xmax=1, decimals=0)
+            PercentFormatter(xmax=1, decimals=None)
         )
     ax.set_ylabel(ylabel)
     ax.tick_params(direction="out")

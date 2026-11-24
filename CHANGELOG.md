@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `figures.comparison_with_observed(expected, observed, save=None,
+  show=True)` saves to the path given in `save` and returns the figure.
+  It saved to a fixed `../presentations/images/` when given a name
+  (`fig_name_additional`, removed) and returned the R² (shown on the
+  figure).
+- `figures.plot_signature_correlations` runs on matplotlib 3.9 and
+  later (it called the removed `cm.get_cmap`).
+  `Model.plot_signature_correlations` takes `covariates=` (default the
+  model's own), reads the signature matrix from the dataset rather
+  than a fixed path under the MAF directory, and returns the figure
+  and its two axes.
+- `figures.plot_signature_profile` writes percent ticks with as many
+  decimals as they need (whole percents made 0%, 0%, 1%, 1%, ... of a
+  profile under 3%).
+- `figures.plot_posteriors_vs_counts` takes `prob` (the interval's
+  mass, default 0.94); `Model.plot_gamma_results` passes it on and
+  returns the figure.
 - `compute_channel_base_mus()` computes what it needs when it is not
   there, logged at INFO: the type rates (`compute_mu_taus`) and the
   merged baseline (`compute_base_mus`), tau-dependent unless an earlier

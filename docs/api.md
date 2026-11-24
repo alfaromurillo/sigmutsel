@@ -3316,7 +3316,7 @@ One line each; `help(name)` or the source has the rest.
 | `estimate_rg.r_g_production` | Posterior mean of ``r_g`` using **both** channels (production). |
 | `estimate_rg.r_g_silent_only_for_evaluation` | Posterior mean of ``r_g`` from the silent channel **only**. |
 | `figures.comparison_with_observed` | Make an expected vs observed scatter plot for mutation counts. |
-| `figures.plot_posteriors_vs_counts` | Plot posterior mean ± 94 % HDI against observed sample counts. |
+| `figures.plot_posteriors_vs_counts` | Plot posterior mean and interval against observed sample counts. |
 | `figures.plot_sig_decomposition_with_burden` | Heatmap of signature attribution probabilities ordered by burden. |
 | `figures.plot_signature_correlations` | Plot correlations with bars and mutation counts. |
 | `figures.plot_signature_profile` | Draw one SBS96 profile as bars, grouped by substitution. |

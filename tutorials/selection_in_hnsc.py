@@ -988,10 +988,12 @@ plt.show()
 # "the same rate". The two hotspots are in the same gene, so the gene's
 # covariates and `r_g` are the same for both: the difference is the
 # tumor's spectrum alone. Rates span two orders of magnitude between
-# tumors, with the burden. Tumors with little APOBEC (dark) sit near the
-# line; APOBEC-rich ones (yellow) sit well above it, because E545K is a
-# C>T change in APOBEC's TCW context and H1047R an A>G change it does
-# not make. A cohort-wide rate would hide both differences.
+# tumors, with the burden. Even tumors with little APOBEC (dark) sit
+# above the line, two to three times: C>T changes are common in every
+# tumor. APOBEC-rich ones (yellow) sit ten times above it or more,
+# because E545K is a C>T change in APOBEC's TCW context and H1047R an
+# A>G change it does not make. A cohort-wide rate would hide both
+# differences.
 
 # %% [markdown]
 # ## 7. Selection coefficients for genes and variants
@@ -1818,16 +1820,13 @@ with plt.rc_context({"figure.dpi": 200}):
 # %%
 RAW_COLUMNS = {
     "mrt": "replication time (late = 1)",
-    "tpm_unstranded": "expression in the tumors",
+    "tpm_unstranded": "expression in the tumors",  # already in log
     "e079_h3k36me3_fc_signal_cds_span_logmean": "H3K36me3 (transcribed)",
     "e079_h3k9me3_fc_signal_cds_span_logmean": "H3K9me3 (heterochromatin)",
 }
 raw = sigmutselcovs.fetch_covariate_matrix(
     PROJECT, "full", columns=list(RAW_COLUMNS)
 ).rename(columns=RAW_COLUMNS)
-raw["expression in the tumors"] = np.log1p(
-    raw["expression in the tumors"]
-)
 # The package draws at the size of a slide; a higher resolution
 # makes it readable here.
 with plt.rc_context({"figure.dpi": 200}):
@@ -1836,16 +1835,19 @@ with plt.rc_context({"figure.dpi": 200}):
     )
 
 # %% [markdown]
-# **Reading the figure.** For each of the eight signatures with the
-# most calls, one bar per covariate: the correlation, across genes,
-# between the signature's calls in the gene and the covariate; the grey
-# line is the number of calls attributed to the signature (right axis).
-# Mutations from replication errors and damage are expected to follow
-# late replication and closed chromatin, and expressed, transcribed
-# genes to carry fewer (they are repaired more). But these raw
-# correlations also carry gene length (longer genes collect more calls
-# of every signature) and each other, so read them as a first look; the
-# model uses all covariates together, through their components.
+# **Reading the figure.** For each of the eight signatures with the most
+# calls, one bar per covariate: the correlation, across genes, between
+# the signature's calls in the gene and the covariate; the grey line is
+# the number of calls attributed to the signature (right axis).
+# Replication time correlates positively with all eight, most for
+# tobacco's SBS4, SBS100 and the clock-like SBS5, and least for APOBEC's
+# SBS2 and SBS13, which follow replication timing little. Expression and
+# H3K36me3, the marks of transcribed genes, correlate negatively with
+# most (transcribed genes are repaired more); H3K9me3 is mixed. These
+# raw correlations also carry gene length (longer genes collect more
+# calls of every signature) and each other, so read them as a first
+# look; the model uses all covariates together, through their
+# components.
 
 # %% [markdown]
 # ## 12. Reading the output correctly: a checklist

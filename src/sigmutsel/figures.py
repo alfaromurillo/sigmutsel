@@ -118,7 +118,10 @@ def plot_posteriors_vs_counts(
     # -------------------------------------------------- plot -------------
     max_w = 307.28987 / 72.27
     max_h = 0.8 * 224.14662 / 72.27
-    fig, ax = plt.subplots(figsize=(max_w, max_h / 0.8))
+    # A gene legend goes outside, right of the axes: widen the figure
+    # so the axes keep their size.
+    width = max_w * (1.45 if level == "gene" else 1.0)
+    fig, ax = plt.subplots(figsize=(width, max_h / 0.8))
 
     palette = sns.color_palette("husl", len(df))
     handles = []
@@ -195,12 +198,12 @@ def plot_posteriors_vs_counts(
     xmax = (
         max_shift_x
         if max_shift_x is not None
-        else df["count"].max() * 1.02
+        else df["count"].max() * 1.05
     )
     xmin = (
         min_shift_x
         if min_shift_x is not None
-        else df["count"].min() * 0.98
+        else df["count"].min() * 0.9
     )
     ax.set_xlim(xmin, xmax)
     # Adaptive tick spacing instead of a fixed 50/10 (genes) or 10/5
@@ -218,7 +221,7 @@ def plot_posteriors_vs_counts(
     # legend -------------------------------------------------------------
     title = "Gene" if level == "gene" else "Variant"
     ncols = 2 if level == "gene" else 1
-    bbox = (0.0, 1) if level == "gene" else (1.03, 1.02)
+    bbox = (1.02, 1) if level == "gene" else (1.03, 1.02)
     ax.legend(
         handles=handles,
         title=title,
@@ -443,11 +446,14 @@ def plot_signature_correlations(
         ).intersection(db_gene_ids)
 
         # Compute correlations
-        corr_values = (
-            sigs_per_gene_id.reindex(shared_genes)
-            .corrwith(cov_series.reindex(shared_genes))
-            .dropna()
-        )
+        # A signature with no calls on the shared genes has no
+        # variance: its correlation is NaN and dropped, silently.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr_values = (
+                sigs_per_gene_id.reindex(shared_genes)
+                .corrwith(cov_series.reindex(shared_genes))
+                .dropna()
+            )
         correlations[cov_name] = corr_values
 
     # Add mutation counts
@@ -520,7 +526,6 @@ def plot_signature_correlations(
     ax1.axhline(
         y=0, color="DimGray", linestyle="-", linewidth=0.5, alpha=0.5
     )
-    ax1.legend(loc="upper right", fontsize=8, ncol=1)
     ax1.grid(axis="y", alpha=0.3)
 
     # Create secondary y-axis for mutations (horizontal lines)
@@ -544,22 +549,24 @@ def plot_signature_correlations(
     )
     ax2.tick_params(axis="y", labelcolor="DimGray", labelsize=7)
 
-    # Add a simple legend entry for mutations
-    ax2.plot(
-        [],
-        [],
-        color="DimGray",
-        linewidth=1.5,
-        alpha=0.7,
-        label="Mutations",
-    )[0]
+    # One legend, above the axes where it hides no bar: the covariates'
+    # bars and the line of calls (right axis).
+    from matplotlib.lines import Line2D
 
-    # Set legend text color to DimGray
-    ax2_legend = ax2.legend(
-        loc="upper left", fontsize=7, frameon=True
+    handles, labels = ax1.get_legend_handles_labels()
+    handles.append(
+        Line2D([], [], color="DimGray", linewidth=1.5, alpha=0.7)
     )
-    for text in ax2_legend.get_texts():
-        text.set_color("DimGray")
+    labels.append("Mutations (right axis)")
+    ax1.legend(
+        handles,
+        labels,
+        loc="lower left",
+        bbox_to_anchor=(0, 1.02),
+        fontsize=7,
+        ncol=2,
+        frameon=False,
+    )
 
     if mutations_log_scale:
         ax2.set_yscale("log")

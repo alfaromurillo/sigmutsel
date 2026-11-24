@@ -214,8 +214,15 @@ def assign_signatures_per_gene_id(
         )
         # P(τ | j) = Σ_σ numerator
         denominator = numerator.sum(axis=1, keepdims=True)
-        # P(σ | τ, j)
-        probs_chunk = numerator / denominator
+        # P(σ | τ, j); a call whose type its tumor's signatures cannot
+        # produce (zero denominator) is attributed to none, as in
+        # the per-mutation path, rather than making its gene NaN.
+        probs_chunk = np.divide(
+            numerator,
+            denominator,
+            out=np.zeros_like(numerator),
+            where=denominator > 0,
+        )
 
         # Accumulate into result
         np.add.at(result, gene_chunk, probs_chunk)

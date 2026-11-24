@@ -128,7 +128,7 @@ def test_model_plot_signature_correlations_with_given_covariates(
         covariates=covariates, show=False
     )
     labels = [t.get_text() for t in ax1.get_legend().get_texts()]
-    assert labels == ["late", "expressed"]
+    assert labels == ["late", "expressed", "Mutations (right axis)"]
     assert {t.get_text() for t in ax1.get_xticklabels()} <= {
         "SBS1",
         "SBS5",

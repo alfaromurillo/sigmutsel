@@ -130,3 +130,34 @@ def test_target_signature_absent_from_matrix_is_ignored(
         target_signatures=["SIG_NONEXISTENT"],
     )
     assert mass[0] == pytest.approx(0.0)
+
+
+def test_per_gene_call_no_signature_can_make_is_zero_not_nan(
+    sig_matrix_path,
+):
+    """A call of a type its tumor's signatures cannot produce adds
+    nothing to its gene (it used to make the gene's whole row NaN)."""
+    import numpy as np
+
+    from sigmutsel.signature_attribution import (
+        assign_signatures_per_gene_id,
+    )
+
+    db = pd.DataFrame(
+        {
+            "Tumor_Sample_Barcode": ["S1", "S1", "S1"],
+            "type": ["T1", "T1", "T2"],
+            "ensembl_gene_id": ["G1", "G2", "G2"],
+            "Variant_Classification": ["Missense_Mutation"] * 3,
+        }
+    )
+    # S1 is all SIG_A, which never makes T2.
+    assignments = pd.DataFrame(
+        {"SIG_A": [10], "SIG_ARTIFACT": [0]}, index=["S1"]
+    )
+    per_gene = assign_signatures_per_gene_id(
+        db, assignments, sig_matrix_path, None, None
+    )
+    assert np.isfinite(per_gene.to_numpy()).all()
+    assert per_gene.loc["G2", "SIG_A"] == pytest.approx(1.0)
+    assert per_gene.loc["G2", "SIG_ARTIFACT"] == pytest.approx(0.0)

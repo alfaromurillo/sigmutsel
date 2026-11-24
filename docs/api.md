@@ -1546,9 +1546,11 @@ both channels, against the expectation of the per-tumor type
 rates alone (``sum_j mu_{j,tau} / D_tau`` per substitution,
 observability included), so the covariates -- which act per
 gene -- play no part. Then :meth:`MutationDataset.set_site_weights`
-rebuilds the opportunity. Call it after :meth:`compute_mu_taus`
-and **before** :meth:`compute_base_mus`: baselines built earlier
-are on the old opportunity. ``cpg_term`` adds the CpG C>T term of
+rebuilds the opportunity. It computes the type rates
+(:meth:`compute_mu_taus`) if they are missing; call it
+**before** :meth:`compute_base_mus` (and so before
+:meth:`compute_channel_base_mus`): baselines built earlier are
+on the old opportunity. ``cpg_term`` adds the CpG C>T term of
 :class:`site_weights.SiteWeights`: ``"flat"`` fits it freely, a
 ``(mean, cov)`` pair with that Gaussian prior (per-cohort values
 shrunk by the between-cohort spread); None (default) has no term.
@@ -1572,8 +1574,7 @@ site_weights.SiteWeights
 Examples
 --------
 >>> from sigmutsel import Model
->>> probe = Model(dataset, None, cov_effects_per_sigma=False,
-...               prob_g_tau_tau_independent=False)
+>>> probe = Model(dataset)  # its type rates computed on the way
 >>> weights = probe.estimate_site_weights(excluded_samples=excluded)
 >>> dataset.save_dataset("hnsc/HNSC_dataset", overwrite=True)
 ```
@@ -1775,9 +1776,12 @@ cov_effects_per_sigma : bool, optional
     at construction.
 prob_g_tau_tau_independent : bool, optional
     Whether the share of a tumor's mutations of type ``tau`` that
-    falls in gene ``g`` ignores the tumor's spectrum. **Pass
-    False** for the recommended channel model; setting it
-    computes the baselines at construction.
+    falls in gene ``g`` ignores the tumor's spectrum. Leave it
+    unset for the recommended channel model:
+    :meth:`compute_channel_base_mus` then uses False (the share
+    follows the tumor's spectrum) and computes what it needs.
+    Setting it (False or True) computes the baselines at
+    construction; True is an older, simpler model.
 signature_selection : list, optional
     Signatures to keep separate (:meth:`aggregate_signatures`).
 include_other : bool, default False
@@ -1860,10 +1864,9 @@ covariate components (``tutorials/selection_in_hnsc.md``):
 >>> design = pd.concat(
 ...     [pcs.iloc[:, :300], pd.read_parquet(files["pca_indicators"])],
 ...     axis=1)
->>> model = Model(dataset, None, cov_effects_per_sigma=False,
-...               prob_g_tau_tau_independent=False)
+>>> model = Model(dataset)
 >>> model.assign_cov_matrix(design)
->>> model.compute_channel_base_mus()
+>>> model.compute_channel_base_mus()  # type rates and baselines
 >>> model.estimate_channel_rg_cov_effects(
 ...     excluded_samples=excluded, include_drivers=True,
 ...     sample="full")
@@ -2100,11 +2103,18 @@ assays, exactly that method. Call it after
 :meth:`assign_cov_matrix` and before
 :meth:`estimate_channel_rg_cov_effects`.
 
+What it needs and is not there yet is computed first, and
+logged at INFO: the per-tumor type rates
+(:meth:`compute_mu_taus`) and the merged baseline
+(:meth:`compute_base_mus`), with ``p_gτ`` tau-dependent
+(``prob_g_tau_tau_independent=False``, the recommended model)
+unless an earlier call or the constructor chose otherwise.
+
 Parameters
 ----------
 prob_g_tau_tau_independent : bool, optional
-    Default: the model's own setting (pass False to the
-    constructor).
+    Default: the choice already made on this model (by the
+    constructor or :meth:`compute_base_mus`), else False.
 
 Returns
 -------
@@ -2115,8 +2125,7 @@ Returns
 
 Examples
 --------
->>> model = Model(dataset, None, cov_effects_per_sigma=False,
-...               prob_g_tau_tau_independent=False)
+>>> model = Model(dataset)
 >>> model.assign_cov_matrix(design)
 >>> syn, nonsyn = model.compute_channel_base_mus()
 ```

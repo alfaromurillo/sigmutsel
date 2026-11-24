@@ -4540,9 +4540,12 @@ class Model:
         at construction.
     prob_g_tau_tau_independent : bool, optional
         Whether the share of a tumor's mutations of type ``tau`` that
-        falls in gene ``g`` ignores the tumor's spectrum. **Pass
-        False** for the recommended channel model; setting it
-        computes the baselines at construction.
+        falls in gene ``g`` ignores the tumor's spectrum. Leave it
+        unset for the recommended channel model:
+        :meth:`compute_channel_base_mus` then uses False (the share
+        follows the tumor's spectrum) and computes what it needs.
+        Setting it (False or True) computes the baselines at
+        construction; True is an older, simpler model.
     signature_selection : list, optional
         Signatures to keep separate (:meth:`aggregate_signatures`).
     include_other : bool, default False
@@ -4625,10 +4628,9 @@ class Model:
     >>> design = pd.concat(
     ...     [pcs.iloc[:, :300], pd.read_parquet(files["pca_indicators"])],
     ...     axis=1)
-    >>> model = Model(dataset, None, cov_effects_per_sigma=False,
-    ...               prob_g_tau_tau_independent=False)
+    >>> model = Model(dataset)
     >>> model.assign_cov_matrix(design)
-    >>> model.compute_channel_base_mus()
+    >>> model.compute_channel_base_mus()  # type rates and baselines
     >>> model.estimate_channel_rg_cov_effects(
     ...     excluded_samples=excluded, include_drivers=True,
     ...     sample="full")
@@ -5896,9 +5898,11 @@ class Model:
         rates alone (``sum_j mu_{j,tau} / D_tau`` per substitution,
         observability included), so the covariates -- which act per
         gene -- play no part. Then :meth:`MutationDataset.set_site_weights`
-        rebuilds the opportunity. Call it after :meth:`compute_mu_taus`
-        and **before** :meth:`compute_base_mus`: baselines built earlier
-        are on the old opportunity. ``cpg_term`` adds the CpG C>T term of
+        rebuilds the opportunity. It computes the type rates
+        (:meth:`compute_mu_taus`) if they are missing; call it
+        **before** :meth:`compute_base_mus` (and so before
+        :meth:`compute_channel_base_mus`): baselines built earlier are
+        on the old opportunity. ``cpg_term`` adds the CpG C>T term of
         :class:`site_weights.SiteWeights`: ``"flat"`` fits it freely, a
         ``(mean, cov)`` pair with that Gaussian prior (per-cohort values
         shrunk by the between-cohort spread); None (default) has no term.
@@ -5922,8 +5926,7 @@ class Model:
         Examples
         --------
         >>> from sigmutsel import Model
-        >>> probe = Model(dataset, None, cov_effects_per_sigma=False,
-        ...               prob_g_tau_tau_independent=False)
+        >>> probe = Model(dataset)  # its type rates computed on the way
         >>> weights = probe.estimate_site_weights(excluded_samples=excluded)
         >>> dataset.save_dataset("hnsc/HNSC_dataset", overwrite=True)
         """
@@ -5937,10 +5940,16 @@ class Model:
         from .germline_mask import allele_keys, load_germline_mask
         from .site_weights import fit_site_weights, position_bins
 
-        if self._mu_taus is None or isinstance(self._mu_taus, dict):
-            raise ValueError(
+        if self._mu_taus is None:
+            logger.info(
+                "estimate_site_weights: computing the per-tumor type "
+                "rates first (compute_mu_taus())."
+            )
+            self.compute_mu_taus()
+        if isinstance(self._mu_taus, dict):
+            raise TypeError(
                 "estimate_site_weights needs aggregate mu_taus (tumors x "
-                "96); call compute_mu_taus() first."
+                "96), not per-signature ones."
             )
         ds = self.dataset
         params = ds.channel_universe or {}
@@ -9998,11 +10007,18 @@ class Model:
         :meth:`assign_cov_matrix` and before
         :meth:`estimate_channel_rg_cov_effects`.
 
+        What it needs and is not there yet is computed first, and
+        logged at INFO: the per-tumor type rates
+        (:meth:`compute_mu_taus`) and the merged baseline
+        (:meth:`compute_base_mus`), with ``p_gτ`` tau-dependent
+        (``prob_g_tau_tau_independent=False``, the recommended model)
+        unless an earlier call or the constructor chose otherwise.
+
         Parameters
         ----------
         prob_g_tau_tau_independent : bool, optional
-            Default: the model's own setting (pass False to the
-            constructor).
+            Default: the choice already made on this model (by the
+            constructor or :meth:`compute_base_mus`), else False.
 
         Returns
         -------
@@ -10013,11 +10029,39 @@ class Model:
 
         Examples
         --------
-        >>> model = Model(dataset, None, cov_effects_per_sigma=False,
-        ...               prob_g_tau_tau_independent=False)
+        >>> model = Model(dataset)
         >>> model.assign_cov_matrix(design)
         >>> syn, nonsyn = model.compute_channel_base_mus()
         """
+        if self._mu_taus is None:
+            logger.info(
+                "compute_channel_base_mus: computing the per-tumor type "
+                "rates first (compute_mu_taus())."
+            )
+            self.compute_mu_taus()
+        if (
+            prob_g_tau_tau_independent is None
+            and self._prob_g_tau_tau_independent is None
+        ):
+            logger.info(
+                "compute_channel_base_mus: no p_g_tau variant chosen; "
+                "using the tau-dependent one and computing the merged "
+                "baseline (compute_base_mus(prob_g_tau_tau_independent="
+                "False))."
+            )
+            self.compute_base_mus(prob_g_tau_tau_independent=False)
+        elif self._base_mus is None:
+            chosen = (
+                self._prob_g_tau_tau_independent
+                if prob_g_tau_tau_independent is None
+                else prob_g_tau_tau_independent
+            )
+            logger.info(
+                "compute_channel_base_mus: computing the merged baseline "
+                "first (compute_base_mus(prob_g_tau_tau_independent=%s)).",
+                chosen,
+            )
+            self.compute_base_mus(prob_g_tau_tau_independent=chosen)
         syn, nonsyn = self._by_assay(
             lambda: self._compute_channel_base_mus_single(
                 prob_g_tau_tau_independent

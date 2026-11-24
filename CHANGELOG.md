@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `compute_channel_base_mus()` computes what it needs when it is not
+  there, logged at INFO: the type rates (`compute_mu_taus`) and the
+  merged baseline (`compute_base_mus`), tau-dependent unless an earlier
+  call or the constructor chose otherwise (it raised before), so the
+  recommended model is `Model(dataset)`, `assign_cov_matrix`,
+  `compute_channel_base_mus()`. `estimate_site_weights()` computes the
+  type rates too; on per-signature ones it raises `TypeError` (it
+  raised `ValueError`).
 - `build_full_dataset(regenerate_mutation_db=None)` is the default: the
   mutation database is built from the MAFs only if none is loaded, so
   the calls `run_two_pass_signature_decomposition` cleaned are kept

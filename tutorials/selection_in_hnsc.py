@@ -316,10 +316,7 @@ print(len(list(maf_dir.glob("*.maf"))), "files chosen")
 #   counted.
 # - **The gene universe** (`gene_universe="wes_target"`, the default,
 #   written out below so you see it): every gene of the exome
-#   capture, mutated in this cohort or not. The alternative,
-#   `"own_cohort"`, keeps only the genes some tumor mutated: the
-#   unmutated genes then drop out of each tumor's denominator, and
-#   every rate comes out too high, most in a small cohort.
+#   capture, mutated in this cohort or not.
 #
 # The built dataset is saved, so a rerun of this cell loads it in
 # seconds.

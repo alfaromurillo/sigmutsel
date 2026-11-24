@@ -382,6 +382,59 @@ calls[
     ]
 ].head()
 
+# %%
+# What each quality-control step removed, summed over the tumors (the
+# dataset keeps a ledger of it: one row per tumor and step).
+STEP_LABELS = {
+    "not_snv": "not a single-base substitution (indels)",
+    "invalid_chromosome": "invalid chromosome",
+    "invalid_allele": "invalid allele",
+    "invalid_context": "invalid context",
+    "duplicate_record": "duplicate record",
+    "germline_variant_site": "at a common germline site",
+    "merged_into_dbs_variant": "part of a doublet (set aside)",
+    "merged_with_nearby_variant": "merged with a nearby call",
+    "repetitive_region": "in a repeat region",
+    "compact_failed": "no gene",
+    "treatment_signature_sample": "tumor exposed to treatment",
+    "artifact_signature_mutation": "sequencing-artifact signature",
+}
+ledger = dataset.qc_ledger
+removed = (
+    ledger[
+        (ledger["level"] == "calls") & (ledger["step"] != "maf_rows")
+    ]
+    .groupby(["order", "step"])["n"]
+    .sum()
+    .droplevel("order")  # sorted in the order the steps run
+)
+removed = removed[removed > 0]
+total = ledger.loc[ledger["step"] == "maf_rows", "n"].sum()
+
+fig, ax = plt.subplots(figsize=(8, 0.35 * len(removed) + 1))
+labels = [
+    STEP_LABELS.get(step, step.replace("_", " "))
+    for step in removed.index
+]
+ax.barh(labels, removed.to_numpy(), color="C0")
+ax.invert_yaxis()  # the first step on top
+ax.set_xscale("log")
+ax.set_xlabel("calls removed or set aside, all tumors")
+fig.tight_layout()
+plt.show()
+print(f"{total:,} calls in the MAF files, {len(calls):,} modelled")
+
+# %% [markdown]
+# **Reading the figure.** One bar per quality-control step, in the order
+# the steps run, on a logarithmic axis: what each removed from the MAF
+# files' calls, over all tumors. Calls that are not single-base
+# substitutions (insertions and deletions) are not modelled. Calls that
+# are part of a doublet are set aside, not discarded: the selection
+# estimates use them later. The last two bars come from the signature
+# step: every call of a tumor it found treatment-exposed, and the calls
+# it attributed to a sequencing-artifact signature. A step that removes
+# a large share in your own data is the first thing to look into.
+
 # %% [markdown]
 # ## 3. Calibration steps (once per cohort)
 #
@@ -430,6 +483,47 @@ vaf_shape = flag_vaf_shape_samples(
 dataset.sample_qc_flags = combine_sample_flags(low_purity, vaf_shape)
 EXCLUDED = set(dataset.sample_qc_flags[dataset.sample_qc_flags].index)
 print(f"{len(EXCLUDED)} of {len(tumors)} tumors flagged and left out")
+
+# %%
+# Purity against burden, one point per tumor, the flagged ones in red.
+calls_per_tumor = dataset.mutation_db.groupby(
+    "Tumor_Sample_Barcode"
+).size()
+tumor_purity = short.map(
+    purity.drop_duplicates("array").set_index("array")["purity"]
+)
+flagged = dataset.sample_qc_flags.reindex(tumors, fill_value=False)
+fig, ax = plt.subplots(figsize=(5.5, 4))
+for keep, color, label in (
+    (True, "C0", "kept"),
+    (False, "C3", "flagged"),
+):
+    group = tumors[(~flagged.to_numpy()) == keep]
+    ax.scatter(
+        tumor_purity.reindex(group),
+        calls_per_tumor.reindex(group),
+        s=10 if keep else 16,
+        alpha=0.6 if keep else 0.9,
+        color=color,
+        label=label,
+    )
+ax.axvline(0.30, color="0.6", lw=1, ls="--")  # the purity threshold
+ax.set_yscale("log")
+ax.set_xlabel("tumor purity (ABSOLUTE)")
+ax.set_ylabel("calls per tumor")
+ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1, 1))
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** Each point is a tumor (those without a purity
+# estimate are not shown). Left of the dashed line, purity below 0.30:
+# so little of the sample is tumor that many of its mutations fall
+# below the caller's detection, and the tumor would pass for a slowly
+# mutating one. Red points right of the line are flagged by the shape
+# of their allele fractions instead (their calls do not look like a
+# tumor's, given its purity and copy number). Both kinds stay out of
+# every fit through `EXCLUDED`.
 
 # %% [markdown]
 # **The rest**, in one cell:
@@ -523,6 +617,30 @@ plt.show()
 # context (a T, the C, then W = A or T), and two of the most common
 # mutations of this cancer, PIK3CA E545K and E542K, are C>T changes in
 # exactly that context. Keep that in mind for project (a).
+
+# %% [markdown]
+# The package draws every signature at once, tumor by tumor
+# (`figures.plot_sig_decomposition_with_burden`):
+
+# %%
+from sigmutsel.figures import plot_sig_decomposition_with_burden
+
+# The package draws at the size of a slide; a higher resolution
+# makes it readable here.
+with plt.rc_context({"figure.dpi": 200}):
+    fig = plot_sig_decomposition_with_burden(
+        burden, dataset.sig_assignments, show=True
+    )
+
+# %% [markdown]
+# **Reading the figure.** One row per tumor, sorted by burden (left, on
+# a logarithmic axis; the lowest at the top). Each column of the
+# heatmap is a signature, labelled for the ten most active; the colour
+# is the share of the tumor's calls the decomposition gives it. Most
+# tumors are a mix of a few signatures: the clock-like SBS1 and SBS5
+# in most tumors, plus APOBEC or tobacco in some. Tumors with
+# few calls have noisy shares, the reason their rates lean on the
+# whole cohort's spectrum (the spectrum shrinkage of section 3).
 
 # %% [markdown]
 # ## 5. Fit the neutral rate model
@@ -677,6 +795,43 @@ plt.show()
 # of genes. The few genes at the top right weigh most in the R², which
 # is why it should not be read alone.
 
+# %%
+from scipy import stats
+
+r_g = model.compute_r_g_for_evaluation()
+theta = model.rg_theta
+fig, ax = plt.subplots(figsize=(5.5, 3.5))
+ax.hist(
+    r_g,
+    bins=np.linspace(0, 4, 81),
+    density=True,
+    color="C0",
+    alpha=0.6,
+    label="genes' r_g",
+)
+grid = np.linspace(0.01, 4, 400)
+ax.plot(
+    grid,
+    stats.gamma(a=theta, scale=1 / theta).pdf(grid),
+    color="0.2",
+    label=f"Gamma(theta, 1/theta), theta = {theta:.1f}",
+)
+ax.set_xlabel("r_g (gene's rate correction, from silent mutations)")
+ax.set_ylabel("density")
+ax.legend(frameon=False)
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** The curve is the spread of `r_g` the model
+# allows before seeing a gene's silent mutations: centred at 1 (no
+# correction), and the narrower the larger `theta`. The bars are each
+# gene's estimate after seeing them. They gather more tightly at 1 than
+# the curve, because a gene with few silent mutations has little to
+# say and keeps a correction near 1; the genes far from 1 are those
+# whose many silent mutations show their rate really is higher or
+# lower than the covariates predict.
+
 # %% [markdown]
 # **Common mistakes at this step.**
 #
@@ -800,6 +955,43 @@ rates.style.format("{:.3g}")
 # the same gene differ: E545K and E542K are C>T changes in a TCA
 # context, APOBEC's favourite, and mutate about four times faster than
 # H1047R (an A>G change). Project (a) is about exactly that difference.
+
+# %%
+# Each tumor's rate for two PIK3CA hotspots, coloured by APOBEC's share
+# of its calls (section 4).
+kept_tumors = [t for t in kept if t in observable.columns]
+x = observable.loc["PIK3CA p.H1047R", kept_tumors]
+y = observable.loc["PIK3CA p.E545K", kept_tumors]
+fig, ax = plt.subplots(figsize=(5.5, 4.5))
+points = ax.scatter(
+    x,
+    y,
+    c=apobec.reindex(kept_tumors),
+    cmap="viridis",
+    vmin=0,
+    vmax=1,
+    s=10,
+)
+fig.colorbar(points, ax=ax, label="APOBEC share of the tumor's calls")
+low = min(x[x > 0].min(), y[y > 0].min()) * 0.8
+high = max(x.max(), y.max()) * 1.2
+ax.plot([low, high], [low, high], color="0.4", lw=1, ls="--")
+ax.set_xscale("log")
+ax.set_yscale("log")
+ax.set_xlabel("rate of PIK3CA H1047R in the tumor")
+ax.set_ylabel("rate of PIK3CA E545K in the tumor")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** One point per tumor; the dashed line is
+# "the same rate". The two hotspots are in the same gene, so the gene's
+# covariates and `r_g` are the same for both: the difference is the
+# tumor's spectrum alone. Rates span two orders of magnitude between
+# tumors, with the burden. Tumors with little APOBEC (dark) sit near the
+# line; APOBEC-rich ones (yellow) sit well above it, because E545K is a
+# C>T change in APOBEC's TCW context and H1047R an A>G change it does
+# not make. A cohort-wide rate would hide both differences.
 
 # %% [markdown]
 # ## 7. Selection coefficients for genes and variants
@@ -1527,7 +1719,136 @@ plt.show()
 #   before looking.
 
 # %% [markdown]
-# ## 11. Reading the output correctly: a checklist
+# ## 11. The figures sigmutsel draws
+#
+# The package has its own plotting functions (in `sigmutsel.figures`,
+# two of them also as methods of `Model`). Each returns its figure and
+# saves it when given a path (`save=`, or `save_path=` for the
+# correlations).
+#
+# | function | what it draws | here |
+# |---|---|---|
+# | `figures.plot_sig_decomposition_with_burden` | each tumor's signature shares, tumors sorted by burden | section 4 |
+# | `figures.plot_signature_profile` | a 96-type profile: a signature, or a tumor's own spectrum | below |
+# | `Model.plot_gamma_results` | gammas and their intervals against the carriers | below |
+# | `figures.comparison_with_observed` | observed against expected counts per gene, with R² | below |
+# | `Model.plot_signature_correlations` | how each signature's mutations follow gene covariates | below |
+#
+# **Signature profiles.** A signature is a probability over the 96
+# mutation types (six substitutions, each in 16 contexts of the bases
+# on either side). Two of HNSC's, and one tumor's own calls:
+
+# %%
+from sigmutsel.figures import plot_signature_profile
+
+signatures = dataset.signature_matrix
+tumor = burden.idxmax()  # the tumor with the most calls
+spectrum = (
+    calls.loc[calls["Tumor_Sample_Barcode"] == tumor, "type"]
+    .value_counts(normalize=True)
+    .reindex(signatures.index, fill_value=0.0)
+)
+fig, axes = plt.subplots(3, 1, figsize=(9, 6.5))
+for ax, profile, label in (
+    (axes[0], signatures["SBS4"], "SBS4\n(tobacco)"),
+    (axes[1], signatures["SBS2"], "SBS2\n(APOBEC)"),
+    (axes[2], spectrum, f"one tumor\n({burden.max()} calls)"),
+):
+    plot_signature_profile(
+        profile, ax=ax, ylabel=label, context_labels=False
+    )
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** Tobacco's SBS4 is mostly C>A (blue); APOBEC's
+# SBS2 is C>T (red), highest where a T precedes the C (its TCW context).
+# The tumor's own profile is the mixture its decomposition found, with
+# the noise of a finite number of calls.
+#
+# **Gammas against carriers.** The gene gammas of section 7, with 89%
+# intervals, against the number of tumors carrying a non-silent
+# mutation in the gene. Passenger genes are open circles and Census
+# oncogenes diamonds:
+
+# %%
+gene_keys = [
+    k for k in model.gammas if k.startswith("ENSG") and "__" not in k
+]
+# The package draws at the size of a slide; a higher resolution
+# makes it readable here.
+with plt.rc_context({"figure.dpi": 200}):
+    fig = model.plot_gamma_results(
+        keys=gene_keys, level="gene", prob=0.89, show=True
+    )
+
+# %% [markdown]
+# **Reading the figure.** Frequency and selection are different axes:
+# a gene can be mutated in many tumors and sit at 1 (TTN, MUC16: long
+# genes) or in fewer and sit far above it.
+#
+# **Observed against expected, on linear axes.** The pairs of section
+# 5's fit check, drawn by the package, with R² and the mean percentage
+# error written on the figure:
+
+# %%
+from sigmutsel.figures import comparison_with_observed
+
+# The package draws at the size of a slide; a higher resolution
+# makes it readable here.
+with plt.rc_context({"figure.dpi": 200}):
+    fig = comparison_with_observed(
+        per_gene["expected"], per_gene["observed"], show=True
+    )
+
+# %% [markdown]
+# **Reading the figure.** On linear axes the few genes with the most
+# mutations stretch the scale and decide most of R², while the
+# thousands of genes with a handful of mutations pile up near the
+# origin; section 5's logarithmic version shows them. Read both.
+#
+# **Signatures against covariates.** Each gene's calls are attributed to
+# the signatures (by each tumor's exposures and each signature's
+# probability of the call's type), and each signature's per-gene totals
+# are correlated with a few raw covariates, read by name from the
+# Zenodo record (only those columns are downloaded): mean replication
+# time, expression in the tumors, and two histone marks from the
+# Roadmap epigenome of esophagus (E079).
+
+# %%
+RAW_COLUMNS = {
+    "mrt": "replication time (late = 1)",
+    "tpm_unstranded": "expression in the tumors",
+    "e079_h3k36me3_fc_signal_cds_span_logmean": "H3K36me3 (transcribed)",
+    "e079_h3k9me3_fc_signal_cds_span_logmean": "H3K9me3 (heterochromatin)",
+}
+raw = sigmutselcovs.fetch_covariate_matrix(
+    PROJECT, "full", columns=list(RAW_COLUMNS)
+).rename(columns=RAW_COLUMNS)
+raw["expression in the tumors"] = np.log1p(
+    raw["expression in the tumors"]
+)
+# The package draws at the size of a slide; a higher resolution
+# makes it readable here.
+with plt.rc_context({"figure.dpi": 200}):
+    fig, _, _ = model.plot_signature_correlations(
+        covariates=raw, top_n=8, show=True
+    )
+
+# %% [markdown]
+# **Reading the figure.** For each of the eight signatures with the
+# most calls, one bar per covariate: the correlation, across genes,
+# between the signature's calls in the gene and the covariate; the grey
+# line is the number of calls attributed to the signature (right axis).
+# Mutations from replication errors and damage are expected to follow
+# late replication and closed chromatin, and expressed, transcribed
+# genes to carry fewer (they are repaired more). But these raw
+# correlations also carry gene length (longer genes collect more calls
+# of every signature) and each other, so read them as a first look; the
+# model uses all covariates together, through their components.
+
+# %% [markdown]
+# ## 12. Reading the output correctly: a checklist
 #
 # - **Gamma is the strength of selection**: how many times more
 #   often a mutation is found in tumors than its neutral rate
@@ -1554,7 +1875,7 @@ plt.show()
 #   `compute_r_g_for_evaluation()` yourself.
 # - **QC consistency**: pass the same `excluded_samples` everywhere.
 #
-# ## 12. What next: project ideas
+# ## 13. What next: project ideas
 #
 # Each project below is a summer's work with this tutorial's tools.
 #

@@ -119,6 +119,26 @@ imports it), so it is the first thing the tutorial runs.
 The cell below prints how many cores this Python may use and how
 many devices JAX sees: the second number should be 4.
 
+> **If you have an NVIDIA GPU (optional).** Only the fit of section 5
+> gains from it; everything else stays on the CPU, and no call
+> changes. Three things, before sigmutsel is imported:
+>
+> 1. install JAX's CUDA build at the version sigmutsel is tested
+>    with: `pip install "jax[cuda12]==0.11.0"`;
+> 2. run the four chains together on the one GPU: add
+>    `os.environ["SIGMUTSEL_CHAIN_METHOD"] = "vectorized"` to the cell
+>    below (left at its default, `"parallel"`, NumPyro warns that
+>    there are not enough devices and runs the chains one after
+>    another);
+> 3. do not set `JAX_PLATFORMS=cpu`. `XLA_FLAGS` then does not matter:
+>    it splits only the CPU.
+>
+> `jax.devices()` should then list a CUDA device (section 5's count
+> shows 1, which is right here). The posterior is the same as on the
+> CPU. On one A100 GPU against four CPU cores, the fit ran 5x faster
+> for a cohort with half HNSC's mutation calls and 12x for one with
+> twice as many; HNSC itself has not been timed.
+
 
 ```python
 import os

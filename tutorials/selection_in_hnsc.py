@@ -634,12 +634,48 @@ import arviz as az
 posterior = model.cov_effects_posteriors
 rhat = az.rhat(posterior)
 print("max R-hat:", float(max(rhat[v].max() for v in rhat.data_vars)))
-r2 = model.estimate_passenger_genes_r2(
+r2, per_gene = model.estimate_passenger_genes_r2(
     excluded_samples=EXCLUDED,
     target="non_silent_counts",
     gene_scaling=model.compute_r_g_for_evaluation(),
+    return_per_gene=True,  # also the observed/expected pair per gene
 )
 print(f"R² of passenger genes' non-silent counts: {r2:.3f}")
+
+# %%
+fig, ax = plt.subplots(figsize=(5, 4.5))
+ax.scatter(
+    per_gene["expected"],
+    per_gene["observed"],
+    s=3,
+    alpha=0.3,
+    color="C0",
+    linewidths=0,
+)
+top = (
+    max(per_gene["observed"].max(), per_gene["expected"].max()) * 1.5
+)
+ax.plot([0.01, top], [0.01, top], color="0.4", lw=1, ls="--")
+ax.set_xscale("log")
+# symlog: logarithmic above 1, linear below, so 0 counts can show.
+ax.set_yscale("symlog", linthresh=1)
+ax.set_ylim(-0.3, top)
+ax.set_xlabel("expected non-silent mutations (model)")
+ax.set_ylabel("observed non-silent mutations")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** One point per passenger gene, the pairs the
+# R² above is computed from: its non-silent mutations in the kept
+# tumors against the number the model expects, with `r_g` from the
+# gene's silent mutations only. The dashed line is "observed =
+# expected". A good rate model puts the cloud along it at every scale;
+# the spread around it shrinks, relative to the count, as the counts
+# grow, because small counts are noisy. A cloud tilted away from the
+# line, or bent at one end, means the rates are off for a whole class
+# of genes. The few genes at the top right weigh most in the R², which
+# is why it should not be read alone.
 
 # %% [markdown]
 # **Common mistakes at this step.**
@@ -882,6 +918,41 @@ channel_gammas = pd.DataFrame(
     ]
 ).set_index("item")
 channel_gammas.round(2)
+
+# %%
+CHANNEL_COLORS = {"mis": "C0", "plof": "C3", "syn": "0.5"}
+fig, ax = plt.subplots(figsize=(6, 3.6))
+y = np.arange(len(channel_gammas))[::-1]
+x_min = 0.1  # the left edge of the axis
+for yi, (item, r) in zip(y, channel_gammas.iterrows()):
+    color = CHANNEL_COLORS[item.split("(")[1].rstrip(")")]
+    if r["upper_bound_only"]:
+        # No carrier: only an upper bound, drawn as a dotted line from
+        # the axis edge to the bound.
+        ax.plot([x_min, r["upper"]], [yi, yi], ls=":", color=color)
+        ax.plot(r["upper"], yi, marker="|", ms=8, color=color)
+    else:
+        ax.plot([r["lower"], r["upper"]], [yi, yi], color=color)
+        ax.plot(r["mean"], yi, "o", ms=4, color=color)
+# A thin line between genes (three channels each).
+for yi in y[2::3][:-1]:
+    ax.axhline(yi - 0.5, color="0.9", lw=0.8)
+ax.axvline(1, color="0.6", lw=1, ls="--")
+ax.set_xscale("log")
+ax.set_xlim(x_min, channel_gammas["upper"].max() * 2)
+ax.set_yticks(y, channel_gammas.index)
+ax.set_xlabel("gamma (posterior mean, 89% interval)")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** The same table, on a logarithmic axis, with
+# the channels in colour (missense blue, pLoF red, synonymous grey).
+# The red pLoF points sit far right for the tumor suppressors (TP53,
+# NOTCH1); for the oncogene PIK3CA the blue missense point is the
+# selected one and the pLoF channel is only a dotted upper bound. The
+# grey synonymous controls should cross the dashed line at 1 (TP53's
+# does not: see the table's reading above).
 
 # %% [markdown]
 # **Reading the table.** TP53 is selected on both channels (its hotspot
@@ -1311,6 +1382,10 @@ def group_gamma(item, level, group, **kwargs):
 
 
 rows = []
+summaries, ratios = (
+    {},
+    {},
+)  # the numbers behind the table, for the figure
 for item, level in [
     ("TP53", "gene"),
     ("CDKN2A", "gene"),
@@ -1322,6 +1397,7 @@ for item, level in [
     for group in groups:
         draws[group], result = group_gamma(item, level, group)
         s = summarize_gamma(result)
+        summaries[item, group] = s
         row[f"{group} gamma"] = s["mean"]
         row[f"{group} 89%"] = f"[{s['lower']:.1f}, {s['upper']:.1f}]"
         row[f"{group} carriers"] = result.posterior.attrs[
@@ -1332,12 +1408,82 @@ for item, level in [
         np.random.default_rng(0).permutation(draws["never"])
     )
     lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
+    ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
     row["smoker / never"] = float(np.exp(np.median(log_ratio)))
     row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
     row["P(smoker > never)"] = float((log_ratio > 0).mean())
     rows.append(row)
 group_table = pd.DataFrame(rows).set_index("item")
 group_table
+
+# %%
+from matplotlib import ticker  # axis tick placement and labels
+
+items = list(group_table.index)
+y = np.arange(len(items))[::-1]
+fig, axes = plt.subplots(
+    1, 2, figsize=(9, 3.2), sharey=True, width_ratios=[3, 2]
+)
+ax = axes[0]
+for group, offset, color in [
+    ("smoker", 0.15, "C1"),
+    ("never", -0.15, "C0"),
+]:
+    s = [summaries[item, group] for item in items]
+    ax.errorbar(
+        [x["mean"] for x in s],
+        y + offset,
+        xerr=[
+            [x["mean"] - x["lower"] for x in s],
+            [x["upper"] - x["mean"] for x in s],
+        ],
+        fmt="o",
+        ms=4,
+        capsize=2,
+        color=color,
+        label=group,
+    )
+ax.axvline(1, color="0.6", lw=1, ls="--")
+ax.set_xscale("log")
+ax.set_yticks(y, items)
+ax.set_xlabel("gamma (posterior mean, 89% interval)")
+ax.legend(frameon=False, loc="upper left")
+
+ax = axes[1]
+median, lower, upper = (
+    np.array(v) for v in zip(*(ratios[i] for i in items))
+)
+ax.errorbar(
+    median,
+    y,
+    xerr=[median - lower, upper - median],
+    fmt="o",
+    ms=4,
+    capsize=2,
+    color="0.2",
+)
+ax.axvline(1, color="0.6", lw=1, ls="--")
+ax.set_xscale("log")
+# Ticks at powers of 2 (1/4, 1/2, 1, 2, 4), fractions below 1.
+ax.xaxis.set_major_locator(ticker.LogLocator(base=2))
+ax.xaxis.set_major_formatter(
+    ticker.FuncFormatter(
+        lambda v, _: f"{v:g}" if v >= 1 else f"1/{1 / v:g}"
+    )
+)
+ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+ax.set_xlabel("smoker / never-smoker gamma (89%)")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Reading the figure.** Left: each gene's (and E545K's) gamma in the
+# two groups, smokers orange, never-smokers blue; right: the ratio of
+# the two, with the dashed line at "no difference". The groups'
+# intervals overlap for every item, and every ratio's interval crosses
+# 1; the never-smokers' intervals are mostly the wider ones, from a
+# group about a third the size. The width of the ratio's interval is the
+# answer to "how large a difference could this cohort have missed".
 
 # %% [markdown]
 # **Reading the table.** No ratio's interval excludes 1. TP53's gamma is

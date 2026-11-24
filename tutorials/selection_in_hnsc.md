@@ -71,7 +71,7 @@ from that run.
 | download and choose the mutation files (MAFs) | 1 min | small | 180 MB |
 | build the dataset (quality control, signatures, opportunities) | 6 min | 12 GB | 1 GB |
 | calibration steps (sample quality control, spectra, site weights) | 16 min | 16-20 GB | |
-| fit the rate model (Hamiltonian Monte Carlo, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
+| fit the rate model (Hamiltonian Monte Carlo, 4 chains) | 47 min (300 components; 4 min on a GPU) | under 10 GB | 0.6 GB |
 | gammas (each) | 4-8 s | | |
 | selection table, every gene | 5 min (4 processes) | | |
 
@@ -138,10 +138,10 @@ many devices JAX sees: the second number should be 4.
 >    it splits only the CPU.
 >
 > `jax.devices()` should then list a CUDA device (section 5's count
-> shows 1, which is right here). The posterior is the same as on the
-> CPU. On one A100 GPU against four CPU cores, the fit ran 5x faster
-> for a cohort with half HNSC's mutation calls and 12x for one with
-> twice as many; HNSC itself has not been timed.
+> shows 1, which is right here). For this cohort, on one NVIDIA A100,
+> the sampling took 4 minutes instead of 47 on four CPU cores (11x),
+> with the same posterior; the per-variant rates computed at the end
+> of the step stay on the CPU.
 
 
 ```python

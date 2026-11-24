@@ -448,12 +448,9 @@ if dataset.spectrum_shrinkage is None:
     dataset.set_spectrum_shrinkage(select_kappas(kept))
 SITE_WEIGHTS = True  # False on a 16 GB machine (see "Memory" above)
 if SITE_WEIGHTS and dataset.site_weights is None:
-    Model(
-        dataset,
-        None,
-        cov_effects_per_sigma=False,
-        prob_g_tau_tau_independent=False,
-    ).estimate_site_weights(excluded_samples=EXCLUDED)
+    # A model only for its tumors' type rates, which the weights are
+    # fitted against; it is not kept.
+    Model(dataset).estimate_site_weights(excluded_samples=EXCLUDED)
 if dataset.homdel_db is None:
     dataset.homdel_db = homozygously_deleted_genes(
         segments, load_or_build_transcript_models(), tumors
@@ -550,11 +547,11 @@ print(
 )
 
 # %% [markdown]
-# Now the model. `prob_g_tau_tau_independent=False` lets the share of
-# a tumor's mutations that falls in a gene depend on the tumor's
-# spectrum (the recommended setting; it has no default, and `True`
-# is an older, simpler model). `assign_cov_matrix` takes the design as given (no
-# second PCA). `estimate_channel_rg_cov_effects` fits the covariate
+# Now the model. `assign_cov_matrix` takes the design as given (no
+# second PCA). `compute_channel_base_mus` computes each tumor's type
+# rates and each gene's baseline rate on both channels, the share of
+# a tumor's mutations that falls in a gene following the tumor's own
+# spectrum. `estimate_channel_rg_cov_effects` fits the covariate
 # effects `c`, the channel intercept and the dispersion `theta` of
 # `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
 # JAX sees 4 devices, checked first); `sample="full"` keeps the
@@ -580,12 +577,7 @@ if model_dir.is_dir():
         setattr(model.dataset, table, getattr(dataset, table))
     model.dataset.sample_qc_flags = dataset.sample_qc_flags
 else:
-    model = Model(
-        dataset,
-        None,
-        cov_effects_per_sigma=False,
-        prob_g_tau_tau_independent=False,
-    )
+    model = Model(dataset)
     model.assign_cov_matrix(design)
     model.compute_channel_base_mus()
     model.estimate_channel_rg_cov_effects(

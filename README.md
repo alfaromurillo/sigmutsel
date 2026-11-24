@@ -123,8 +123,7 @@ pcs = sigmutselcovs.fetch_covariate_matrix("HNSC")
 files = sigmutselcovs.fetch_covariate_artifacts("HNSC", artifacts=("pca_indicators",))
 design = pd.concat([pcs.iloc[:, :300],
                     pd.read_parquet(files["pca_indicators"])], axis=1)
-model = Model(dataset, None, cov_effects_per_sigma=False,
-              prob_g_tau_tau_independent=False)
+model = Model(dataset)
 model.assign_cov_matrix(design)
 model.compute_channel_base_mus()
 model.estimate_channel_rg_cov_effects(excluded_samples=excluded,
@@ -151,7 +150,6 @@ these:
 | `select_tcga_maf_files` | `exclude_prior_treatment` | `False` | `True` | treated tumors carry therapy mutations |
 | `MutationDataset.generate_mutation_db` | `qc_mode`, `germline_mask_af` | off | `True`, `1.5e-4` | call QC and the germline mask |
 | `MutationDataset.run_two_pass_signature_decomposition` | `treatment_load_threshold`, `prevalence_override_min_fraction` | off | `0.2`, `0.15` | drop treatment-exposed tumors; keep signatures that recur |
-| `Model` | `prob_g_tau_tau_independent` | `None` (unset) | `False` | a tumor's spectrum shapes where its mutations fall; `True` is an older model |
 | `Model.estimate_gamma` | `use_mu_posterior` | `False` | `True` | the rates' uncertainty in gamma's interval |
 | `Model.estimate_gamma` | `mu_uncertainty` | `None` (per-tumor approximation) | `"draws"` | the exact cut; the approximation's intervals are too narrow |
 | `Model.estimate_gamma` | `r_g_variant` | `"none"` | `"evaluation"` | the gene's rate correction from silent mutations only |

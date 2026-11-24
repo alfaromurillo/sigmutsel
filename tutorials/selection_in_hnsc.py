@@ -507,7 +507,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading this.** Each point is a tumor. Burdens span two orders of
+# **Reading the figure.** Each point is a tumor. Burdens span two orders of
 # magnitude (from a handful of calls to over a thousand), so a single
 # "cohort rate" would describe almost no tumor: the model gives each
 # tumor its own rate, from its own burden and spectrum. A group of
@@ -575,8 +575,8 @@ print(
 # effects `c`, the channel intercept and the dispersion `theta` of
 # `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
 # JAX sees 4 devices, checked first); `sample="full"` keeps the
-# posterior draws, which the selection estimates below need. This is
-# the slow step; the fitted model is saved. If it prints "There are
+# posterior draws, which the selection estimates below need. This fit
+# is the slow step; the fitted model is saved. If it prints "There are
 # not enough devices to run parallel chains", the chains are running
 # one after another: the result is the same, only slower (see "Chains,
 # cores and `XLA_FLAGS`").
@@ -687,7 +687,7 @@ for gene in ("TP53", "PIK3CA", "NOTCH1", "TTN", "MUC16"):
 pd.DataFrame(rows).set_index("gene").round(3)
 
 # %% [markdown]
-# **Reading this.** "Expected carriers" is how many of the kept tumors
+# **Reading the table.** "Expected carriers" is how many of the kept tumors
 # would carry at least one non-synonymous mutation in the gene if it
 # were neutral (a tumor with rate `mu` carries one with probability
 # `1 - exp(-mu)`). TTN and MUC16 are among the most mutated genes of
@@ -750,14 +750,14 @@ rates["observed / expected"] = (
 rates.style.format("{:.3g}")
 
 # %% [markdown]
-# **Reading this.** A variant's rate is tiny (a few in a million per
+# **Reading the table.** A variant's rate is tiny (a few in a million per
 # tumor), so even the most frequent variants are expected in a small
 # fraction of one tumor across the whole cohort (0.003 tumors for
-# E545K). The ratio is thousands: these are among the most strongly
+# E545K). The ratio is thousands: these variants are among the most strongly
 # selected mutations in this cancer. The rates of variants of the
 # same gene differ: E545K and E542K are C>T changes in a TCA context,
 # APOBEC's favourite, and mutate about four times faster than H1047R
-# (an A>G change). Project (a) is about exactly that.
+# (an A>G change). Project (a) is about exactly that difference.
 
 # %% [markdown]
 # ## 7. Selection coefficients for genes and variants
@@ -769,7 +769,7 @@ rates.style.format("{:.3g}")
 # whether it does.
 #
 # **The package's defaults are not the recommended settings** (they
-# are kept for reproducibility of older analyses). Pass these:
+# are kept for reproducibility of older analyses). Pass these settings:
 
 # %%
 model.estimate_gene_tumor_dispersion(excluded_samples=EXCLUDED)
@@ -841,15 +841,15 @@ gene_gammas = pd.DataFrame(
 gene_gammas.round(2)
 
 # %% [markdown]
-# **Reading this.** `mean`, `lower` and `upper` are the posterior mean
+# **Reading the table.** `mean`, `lower` and `upper` are the posterior mean
 # of gamma and its 89% interval; `tumors informative` are the tumors
 # without the mutation that entered the fit (the held-out ones are
 # not). TP53's gamma, about 600, says a TP53 non-silent mutation is
 # found in tumors about 600 times more often than its rate predicts:
 # it is the **strength of selection** on the gene (relative to neutral
 # evolution), comparable to other genes' gammas. MUC16 sits at 1; TTN
-# at about 1.5, with an interval just above 1. That is a modest
-# excess, and TTN is not called in section 8: among 19,000 genes
+# at about 1.5, with an interval just above 1: a modest excess,
+# and TTN is not called in section 8: among 19,000 genes
 # some intervals exclude 1 by chance, and TTN, the longest gene,
 # is always among the genes one looks at first.
 #
@@ -877,7 +877,7 @@ channel_gammas = pd.DataFrame(
 channel_gammas.round(2)
 
 # %% [markdown]
-# **Reading this.** TP53 is selected on both channels (its hotspot
+# **Reading the table.** TP53 is selected on both channels (its hotspot
 # missense mutations and its truncations). NOTCH1, a tumor suppressor
 # in this cancer, is selected mostly on `plof` (about 22, against 6 on
 # missense). PIK3CA, an oncogene, is selected on missense, and its
@@ -922,7 +922,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading this.** The horizontal axis is logarithmic: the dashed
+# **Reading the figure.** The horizontal axis is logarithmic: the dashed
 # line is neutral (gamma = 1). Genes sit between about 1 and several
 # hundred (TP53, CDKN2A); hotspot variants at thousands, because a
 # variant gamma measures selection on one site, not averaged over a
@@ -941,7 +941,7 @@ plt.show()
 #   (`q`). `called` is `q < 0.1`.
 # - **The strength.** Gamma's posterior under an **empirical-Bayes
 #   prior**: a spike near 1 (most genes are neutral) plus a slab for
-#   the selected ones, both fitted on this cohort's genes. This
+#   the selected ones, both fitted on this cohort's genes. This prior
 #   shrinks the gammas of genes with little information toward 1, so
 #   they can be compared across genes (`eb_median`, `eb_lower`,
 #   `eb_upper`); `eb_p_above` is the posterior probability that gamma
@@ -974,14 +974,14 @@ called[
 ].head(20).round(3)
 
 # %% [markdown]
-# **Reading this table.** `n_tumors_with` are the carriers and
+# **Reading the table.** `n_tumors_with` are the carriers and
 # `expected_with` the carriers expected under neutrality. The genes at
 # the top are the known drivers of head and neck cancer (TP53, CDKN2A,
 # PIK3CA, CASP8, HRAS, NFE2L2, NOTCH1, FBXW7, NSD1, FAT1, HLA-A/B,
 # ...). Compare
 # `eb_median` with `flat_median`: for a strongly selected gene with
 # many carriers they agree; for a gene with few carriers the EB
-# estimate is pulled toward 1. That is intended: across thousands of
+# estimate is pulled toward 1. The pull is intended: across thousands of
 # genes, the flat estimates of genes with little data scatter widely
 # by chance, and the prior, learned from all genes, says how much.
 #
@@ -1032,7 +1032,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading this.** One point per gene. The dashed line is "observed =
+# **Reading the figure.** One point per gene. The dashed line is "observed =
 # expected": a neutral gene scatters around it, more widely at small
 # counts. Called genes sit far above it. Long genes (to the right) can
 # have many carriers and still sit on the line.
@@ -1088,7 +1088,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading this.** The two helical-domain hotspots are the frequent
+# **Reading the figure.** The two helical-domain hotspots are the frequent
 # ones (12 and 13 carriers), and the kinase-domain H1047R has half as
 # many (6). But E545K and E542K mutate about four times faster: they
 # are C>T changes in APOBEC's TCA context, and APOBEC is active in
@@ -1247,7 +1247,7 @@ group_table = pd.DataFrame(rows).set_index("item")
 group_table
 
 # %% [markdown]
-# **Reading this.** No ratio's interval excludes 1. TP53's gamma is
+# **Reading the table.** No ratio's interval excludes 1. TP53's gamma is
 # somewhat higher in smokers and CDKN2A's in never-smokers, but the
 # intervals run from about half to two or three times: with 74
 # never-smokers (and, for E545K, two carriers among them), this cohort
@@ -1308,8 +1308,8 @@ group_table
 #   by its rate (about 1/rate): ranking singletons by gamma ranks
 #   them by how slowly they mutate.
 # - **Near-neutral variant gammas are biased upward** by the
-#   same-gene hold-out (tumors with another hit in the gene leave the
-#   variant's absent set, and those are high-burden tumors): read a
+#   same-gene hold-out (tumors with another hit in the gene, mostly
+#   high-burden ones, leave the variant's absent set): read a
 #   variant gamma of a few as possibly neutral.
 # - **mu_gs does not include r_g**; multiply by
 #   `compute_r_g_for_evaluation()` yourself.
@@ -1317,7 +1317,7 @@ group_table
 #
 # ## 12. What next: project ideas
 #
-# Each of these is a summer project with this tutorial's tools.
+# Each project below is a summer's work with this tutorial's tools.
 #
 # 1. **A letter on a frequency-based claim.** Find a published paper
 #    that ranks or compares mutations by frequency (or calls the most

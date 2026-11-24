@@ -4,7 +4,8 @@ A mutation that is common in tumors is not necessarily one that
 helps tumors grow. It may simply be a mutation that *happens* often:
 some DNA sites mutate tens of times faster than others, because of
 their sequence context, the mutational processes active in the
-tumor (tobacco smoke, the APOBEC enzymes, ultraviolet light, ...)
+tumor (tobacco smoke, the APOBEC family of DNA-editing enzymes,
+ultraviolet light, ...)
 and where the gene sits in the genome. **sigmutsel** separates the
 two. For every tumor it estimates how often each site would mutate
 with no selection (the **neutral mutation rate**, `mu`), and then
@@ -15,8 +16,9 @@ tumors ten times as often as its rate alone would put it there.
 
 In this tutorial you will:
 
-1. download a public TCGA cohort (HNSC, head and neck squamous cell
-   carcinoma, 410 tumors) and select the right files;
+1. download a public cohort of The Cancer Genome Atlas (TCGA): HNSC,
+   head and neck squamous cell carcinoma, 410 tumors; and choose the
+   right files;
 2. build a mutation dataset, with its quality control and the
    mutational-signature decomposition of each tumor;
 3. fit the neutral rate model, with gene covariates from Zenodo;
@@ -66,10 +68,10 @@ from that run.
 
 | step | time | peak memory | disk |
 |---|---|---|---|
-| download and select MAFs | 1 min | small | 180 MB |
-| build the dataset (QC, signatures, opportunities) | 6 min | 12 GB | 1 GB |
-| calibration steps (sample QC, spectra, site weights) | 16 min | 16-20 GB | |
-| fit the rate model (NUTS, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
+| download and choose the mutation files (MAFs) | 1 min | small | 180 MB |
+| build the dataset (quality control, signatures, opportunities) | 6 min | 12 GB | 1 GB |
+| calibration steps (sample quality control, spectra, site weights) | 16 min | 16-20 GB | |
+| fit the rate model (Hamiltonian Monte Carlo, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
 | gammas (each) | 4-8 s | | |
 | selection table, every gene | 5 min (4 processes) | | |
 
@@ -79,27 +81,29 @@ the run shown here, 20 GB in a run as a script); the rest fits in
 12 GB. On a 16 GB laptop set `SITE_WEIGHTS = False` in
 step 3: everything runs, and the rates lose the correction for how
 detection varies along each exon (fine for learning the package;
-use a larger machine for results you report). The first sample QC
-parses TCGA's copy-number file (3 minutes); later runs reuse it.
+use a larger machine for results you report). The first sample
+quality control (QC) parses TCGA's copy-number file (3 minutes); later runs reuse it.
 
 
 ## Chains, cores and `XLA_FLAGS`
 
 The slow step, the fit of the rate model (section 5), samples the
-model's posterior with Hamiltonian Monte Carlo (NUTS) in **four
+model's posterior with Hamiltonian Monte Carlo (NUTS, the No-U-Turn
+Sampler) in **four
 chains**: four independent runs from different starting points,
 1,000 draws each, pooled into the 4,000 draws the selection
 estimates use. Four rather than one is how convergence is checked:
 if the chains agree, they found the same posterior (the R-hat
-statistic of section 5 measures it); if they disagree, none of them
+statistic of section 5, which compares the spread between chains
+with the spread within them, measures it); if they disagree, none of them
 can be trusted.
 
-The chains can run **at the same time**, one per CPU core, which
-makes the fit several times faster. The sampler (NumPyro, on
-JAX) does that only if JAX sees four *devices*. A device here is not
+The chains can run **at the same time**, one per processor (CPU)
+core, which makes the fit several times faster. The sampler
+(NumPyro, built on JAX, a library for numerical computing) does that only if JAX sees four *devices*. A device here is not
 hardware: on a CPU, JAX shows one device unless it is told to split
 the CPU into several, which the environment variable `XLA_FLAGS`
-below does. It must be set **before anything imports JAX** (sigmutsel
+below does (XLA is the compiler JAX runs on). It must be set **before anything imports JAX** (sigmutsel
 imports it), so it is the first thing the tutorial runs.
 
 - **A machine with 4 or more cores** (most laptops and desktops
@@ -119,12 +123,12 @@ imports it), so it is the first thing the tutorial runs.
 The cell below prints how many cores this Python may use and how
 many devices JAX sees: the second number should be 4.
 
-> **If you have an NVIDIA GPU (optional).** Only the fit of section 5
+> **If you have an NVIDIA GPU (graphics processor; optional).** Only the fit of section 5
 > gains from it; everything else stays on the CPU, and no call
 > changes. Three things, before sigmutsel is imported:
 >
-> 1. install JAX's CUDA build at the version sigmutsel is tested
->    with: `pip install "jax[cuda12]==0.11.0"`;
+> 1. install JAX's build for CUDA (NVIDIA's GPU software) at the
+>    version sigmutsel is tested with: `pip install "jax[cuda12]==0.11.0"`;
 > 2. run the four chains together on the one GPU: add
 >    `os.environ["SIGMUTSEL_CHAIN_METHOD"] = "vectorized"` to the cell
 >    below (left at its default, `"parallel"`, NumPyro warns that
@@ -211,8 +215,9 @@ def show(fig, name):
 
 ## 1. Download and select the mutation calls
 
-The GDC (NCI's Genomic Data Commons) publishes TCGA's somatic
-mutation calls as one MAF file (a tab-separated table of mutations)
+The GDC (Genomic Data Commons of the US National Cancer Institute)
+publishes TCGA's somatic mutation calls as one MAF file (Mutation
+Annotation Format: a tab-separated table of mutations)
 per sequenced *aliquot*. `download_project_maf_files` finds a
 project's open-access MAFs, downloads them over HTTPS and unpacks
 them into one flat directory. It needs no account and no extra
@@ -273,11 +278,13 @@ Four things happen here, and they take about six minutes:
   (where reads map badly), duplicated calls, and multi-base events
   (doublets, kept aside because the model is about single-base
   substitutions) are removed, and calls on common germline alleles
-  (gnomAD frequency above `1.5e-4`) are masked, because the GDC's
+  (frequency above `1.5e-4` in gnomAD, the Genome Aggregation
+  Database) are masked, because the GDC's
   own filter already removes most calls there.
 - **Mutational signatures**: each tumor's mutations are decomposed
-  into COSMIC signatures (SBS4 tobacco, SBS2/SBS13 APOBEC, SBS1/SBS5
-  clock-like, ...). The decomposition runs twice: first unrestricted,
+  into the single-base substitution (SBS) signatures of COSMIC, the
+  Catalogue Of Somatic Mutations In Cancer (SBS4 tobacco, SBS2 and
+  SBS13 APOBEC, SBS1 and SBS5 clock-like, ...). The decomposition runs twice: first unrestricted,
   to find sequencing-artifact mutations and treatment-exposed
   tumors; then restricted to the signatures known in this cancer
   type (`exclude_signature_subgroups=PROJECT`).
@@ -551,7 +558,8 @@ needs data or choices of its own; all are saved with the dataset.
 **Sample QC.** A tumor sample with little tumor in it (low purity),
 or whose variant allele fractions do not look like a tumor's, gives
 too few calls and would look like a low-rate tumor. Such tumors are
-flagged, from TCGA's ABSOLUTE purity and copy-number calls (public,
+flagged, from TCGA's purity and copy-number calls (made with the
+ABSOLUTE method; public,
 downloaded once), and left out of every fit below through
 `excluded_samples`. This step is TCGA-specific: for other data, use
 your own purity estimates or skip it.
@@ -873,7 +881,7 @@ magnitude (from a handful of calls to over a thousand), so a single
 tumor its own rate, from its own burden and spectrum. A group of
 tumors gets most of its mutations from APOBEC (left, the points to
 the right), another from tobacco (right). APOBEC prefers a C in a
-TCW context (W = A or T), and two of the most common mutations of
+TCW context (a T, the C, then W = A or T), and two of the most common mutations of
 this cancer, PIK3CA E545K and E542K, are C>T changes in exactly that
 context. Keep that in mind for project (a).
 
@@ -940,7 +948,7 @@ Now the model. `prob_g_tau_tau_independent=False` lets the share of
 a tumor's mutations that falls in a gene depend on the tumor's
 spectrum (the recommended setting; it has no default, and `True`
 is an older, simpler model). `assign_cov_matrix` takes the design as given (no
-second PCA). `estimate_channel_rg_cov_effects` fits the covariate
+second principal component analysis). `estimate_channel_rg_cov_effects` fits the covariate
 effects `c`, the channel intercept and the dispersion `theta` of
 `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
 the first cell printed 4 JAX devices); `sample="full"` keeps the
@@ -1640,7 +1648,8 @@ section 8.
 
 **Per channel.** For a tumor suppressor, the predicted
 loss-of-function channel (`"plof"`: nonsense and essential splice)
-carries the selection; the synonymous channel (`"syn"`) is a
+carries the selection, for an oncogene the missense channel
+(`"mis"`); the synonymous channel (`"syn"`) is a
 control, expected near 1.
 
 
@@ -1997,15 +2006,21 @@ Two questions, two answers, in one table over every gene:
 - **The call.** A test of the null hypothesis that the gene is
   neutral (`gamma = 1`): how surprising its number of carrier tumors
   is under its rates, integrating over the uncertainty of `r_g`
-  (`p_mid`, the mid-p-value), then Benjamini-Hochberg over all genes
-  (`q`). `called` is `q < 0.1`.
+  (`p_mid`, the mid-p-value: the probability of more carriers than
+  observed plus half that of exactly as many). Then the
+  Benjamini-Hochberg correction over all genes gives `q`, the
+  adjusted p-value: calling the genes with `q < 0.1` (`called`)
+  keeps the expected share of false calls among them, the false
+  discovery rate, at most 10%.
 - **The strength.** Gamma's posterior under an **empirical-Bayes
-  prior**: a spike near 1 (most genes are neutral) plus a slab for
-  the selected ones, both fitted on this cohort's genes. This prior
+  (EB) prior**, one estimated from the data: a spike near 1 (most
+  genes are neutral) plus a slab for the selected ones, both fitted on this cohort's genes. This prior
   shrinks the gammas of genes with little information toward 1, so
-  they can be compared across genes (`eb_median`, `eb_lower`,
-  `eb_upper`); `eb_p_above` is the posterior probability that gamma
-  exceeds 2. The flat-prior interval (`flat_*`) is kept beside it,
+  they can be compared across genes: the columns `eb_median` and
+  `eb_lower` to `eb_upper`, its 89% interval; `eb_p_above` is the
+  posterior probability that gamma exceeds 2. The estimate under a
+  flat prior, one that favours no value of gamma (columns
+  `flat_*`), is kept beside it,
   as an estimate only, never as a call.
 
 It takes a few minutes (it runs every gene; `n_jobs` processes).
@@ -2294,8 +2309,9 @@ called[
 
 
 
-**Reading the table.** `n_tumors_with` are the carriers and
-`expected_with` the carriers expected under neutrality. The genes at
+**Reading the table.** Rows are genes by their Ensembl id
+(`ENSG...`), with the symbol in `gene`. `n_tumors_with` are the
+carriers and `expected_with` the carriers expected under neutrality. The genes at
 the top are the known drivers of head and neck cancer (TP53, CDKN2A,
 PIK3CA, CASP8, HRAS, NFE2L2, NOTCH1, FBXW7, NSD1, FAT1, HLA-A/B,
 ...). Compare
@@ -2816,8 +2832,8 @@ writing "the same".
   models: their difference then mixes selection with the two fits'
   differences.
 - Forgetting confounders. In head and neck cancer, never-smokers
-  are enriched for HPV-positive tumors, whose biology differs
-  (HPV's E6 protein degrades p53, so TP53 mutations are rarely
+  are enriched for tumors positive for human papillomavirus (HPV),
+  whose biology differs (HPV's E6 protein degrades p53, so TP53 mutations are rarely
   needed). A smoker/never-smoker difference in TP53 selection may be
   an HPV difference. Compare within HPV-negative tumors before
   attributing it to tobacco.

@@ -18,7 +18,8 @@
 # helps tumors grow. It may simply be a mutation that *happens* often:
 # some DNA sites mutate tens of times faster than others, because of
 # their sequence context, the mutational processes active in the
-# tumor (tobacco smoke, the APOBEC enzymes, ultraviolet light, ...)
+# tumor (tobacco smoke, the APOBEC family of DNA-editing enzymes,
+# ultraviolet light, ...)
 # and where the gene sits in the genome. **sigmutsel** separates the
 # two. For every tumor it estimates how often each site would mutate
 # with no selection (the **neutral mutation rate**, `mu`), and then
@@ -29,8 +30,9 @@
 #
 # In this tutorial you will:
 #
-# 1. download a public TCGA cohort (HNSC, head and neck squamous cell
-#    carcinoma, 410 tumors) and choose the right files;
+# 1. download a public cohort of The Cancer Genome Atlas (TCGA): HNSC,
+#    head and neck squamous cell carcinoma, 410 tumors; and choose the
+#    right files;
 # 2. build a mutation dataset, with its quality control and the
 #    mutational-signature decomposition of each tumor;
 # 3. fit the neutral rate model, with gene covariates from Zenodo;
@@ -80,21 +82,21 @@
 #
 # | step | time | peak memory | disk |
 # |---|---|---|---|
-# | download and choose MAFs | 1 min | small | 180 MB |
-# | build the dataset (QC, signatures, opportunities) | 6 min | 12 GB | 1 GB |
-# | calibration steps (sample QC, spectra, site weights) | 16 min | 16-20 GB | |
-# | fit the rate model (NUTS, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
+# | download and choose the mutation files (MAFs) | 1 min | small | 180 MB |
+# | build the dataset (quality control, signatures, opportunities) | 6 min | 12 GB | 1 GB |
+# | calibration steps (sample quality control, spectra, site weights) | 16 min | 16-20 GB | |
+# | fit the rate model (Hamiltonian Monte Carlo, 4 chains) | 47 min (300 components) | under 10 GB | 0.6 GB |
 # | gammas (each) | 4-8 s | | |
 # | selection table, every gene | 5 min (4 processes) | | |
 #
 # **Memory.** One step, the site weights, needs 16-20 GB whatever the
-# cohort (it holds every coding site of the exome at once; 16 GB in
-# the run shown here, 20 GB in a run as a script); the rest fits in
-# 12 GB. On a 16 GB laptop set `SITE_WEIGHTS = False` in
-# step 3: everything runs, and the rates lose the correction for how
-# detection varies along each exon (fine for learning the package;
-# use a larger machine for results you report). The first sample QC
-# parses TCGA's copy-number file (3 minutes); later runs reuse it.
+# cohort (it holds every coding site of the exome at once; 16 GB in the
+# run shown here, 20 GB in a run as a script); the rest fits in 12 GB.
+# On a 16 GB laptop set `SITE_WEIGHTS = False` in step 3: everything
+# runs, and the rates lose the correction for how detection varies along
+# each exon (fine for learning the package; use a larger machine for
+# results you report). The first sample quality control (QC) parses
+# TCGA's copy-number file (3 minutes); later runs reuse it.
 
 # %% [markdown]
 # ## 0. Set up the session
@@ -105,20 +107,22 @@
 # ### Chains, cores and `XLA_FLAGS`
 #
 # The slow step, the fit of the rate model (section 5), samples the
-# model's posterior with Hamiltonian Monte Carlo (NUTS) in **four
-# chains**: four independent runs from different starting points,
-# 1,000 draws each, pooled into the 4,000 draws the selection
-# estimates use. Four rather than one is how convergence is checked:
-# if the chains agree, they found the same posterior (the R-hat
-# statistic of section 5 measures it); if they disagree, none of them
+# model's posterior with Hamiltonian Monte Carlo (NUTS, the No-U-Turn
+# Sampler) in **four chains**: four independent runs from different
+# starting points, 1,000 draws each, pooled into the 4,000 draws the
+# selection estimates use. Four rather than one is how convergence is
+# checked: if the chains agree, they found the same posterior (the R-hat
+# statistic of section 5, which compares the spread between chains with
+# the spread within them, measures it); if they disagree, none of them
 # can be trusted.
 #
-# The chains can run **at the same time**, one per CPU core, which
-# makes the fit several times faster. The sampler (NumPyro, on
-# JAX) does that only if JAX sees four *devices*. A device here is not
-# hardware: on a CPU, JAX shows one device unless it is told to split
-# the CPU into several, which the environment variable `XLA_FLAGS`
-# below does. It must be set **before anything imports JAX** (sigmutsel
+# The chains can run **at the same time**, one per processor (CPU) core,
+# which makes the fit several times faster. The sampler (NumPyro, built
+# on JAX, a library for numerical computing) does that only if JAX sees
+# four *devices*. A device here is not hardware: on a CPU, JAX shows one
+# device unless it is told to split the CPU into several, which the
+# environment variable `XLA_FLAGS` below does (XLA is the compiler JAX
+# runs on). It must be set **before anything imports JAX** (sigmutsel
 # imports it), so it is the first thing the tutorial runs.
 #
 # - **A machine with 4 or more cores** (most laptops and desktops
@@ -140,12 +144,14 @@
 # devices. (JAX is not imported here: imported this early, it warns
 # when the signature step starts worker processes.)
 #
-# > **If you have an NVIDIA GPU (optional).** Only the fit of section 5
-# > gains from it; everything else stays on the CPU, and no call
-# > changes. Three things, before sigmutsel is imported:
+# > **If you have an NVIDIA GPU (graphics processor; optional).** Only
+# > the fit of section 5 gains from it; everything else stays on the
+# > CPU, and no call changes. Three things, before sigmutsel is
+# > imported:
 # >
-# > 1. install JAX's CUDA build at the version sigmutsel is tested
-# >    with: `pip install "jax[cuda12]==0.11.0"`;
+# > 1. install JAX's build for CUDA (NVIDIA's GPU software) at the
+# >    version sigmutsel is tested with: `pip install
+# >    "jax[cuda12]==0.11.0"`;
 # > 2. run the four chains together on the one GPU: add
 # >    `os.environ["SIGMUTSEL_CHAIN_METHOD"] = "vectorized"` to the cell
 # >    below (left at its default, `"parallel"`, NumPyro warns that
@@ -223,8 +229,9 @@ WORK.mkdir(exist_ok=True)
 # %% [markdown]
 # ## 1. Download the mutation calls and choose the files
 #
-# The GDC (NCI's Genomic Data Commons) publishes TCGA's somatic
-# mutation calls as one MAF file (a tab-separated table of mutations)
+# The GDC (Genomic Data Commons of the US National Cancer Institute)
+# publishes TCGA's somatic mutation calls as one MAF file (Mutation
+# Annotation Format: a tab-separated table of mutations)
 # per sequenced *aliquot*. `download_project_maf_files` finds a
 # project's open-access MAFs, downloads them over HTTPS and unpacks
 # them into one flat directory. It needs no account and no extra
@@ -292,14 +299,16 @@ print(len(list(maf_dir.glob("*.maf"))), "files chosen")
 #   (where reads map badly), duplicated calls, and multi-base events
 #   (doublets, kept aside because the model is about single-base
 #   substitutions) are removed, and calls on common germline alleles
-#   (gnomAD frequency above `1.5e-4`) are masked, because the GDC's
+#   (frequency above `1.5e-4` in gnomAD, the Genome Aggregation
+#   Database) are masked, because the GDC's
 #   own filter already removes most calls there.
 # - **Mutational signatures**: each tumor's mutations are decomposed
-#   into COSMIC signatures (SBS4 tobacco, SBS2/SBS13 APOBEC, SBS1/SBS5
-#   clock-like, ...). The decomposition runs twice: first unrestricted,
-#   to find sequencing-artifact mutations and treatment-exposed
-#   tumors; then restricted to the signatures known in this cancer
-#   type (`exclude_signature_subgroups=PROJECT`).
+#   into the single-base substitution (SBS) signatures of COSMIC, the
+#   Catalogue Of Somatic Mutations In Cancer (SBS4 tobacco, SBS2 and
+#   SBS13 APOBEC, SBS1 and SBS5 clock-like, ...). The decomposition runs
+#   twice: first unrestricted, to find sequencing-artifact mutations and
+#   treatment-exposed tumors; then restricted to the signatures known in
+#   this cancer type (`exclude_signature_subgroups=PROJECT`).
 # - **The channel universe**: each call is placed on its gene's
 #   transcript and classified as synonymous, missense, nonsense or
 #   splice, and each gene's **opportunity** (how many sites could
@@ -385,7 +394,8 @@ calls[
 # **Sample QC.** A tumor sample with little tumor in it (low purity),
 # or whose variant allele fractions do not look like a tumor's, gives
 # too few calls and would look like a low-rate tumor. Such tumors are
-# flagged, from TCGA's ABSOLUTE purity and copy-number calls (public,
+# flagged, from TCGA's purity and copy-number calls (made with the
+# ABSOLUTE method; public,
 # downloaded once), and left out of every fit below through
 # `excluded_samples`. This step is TCGA-specific: for other data, use
 # your own purity estimates or skip it.
@@ -507,15 +517,15 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading the figure.** Each point is a tumor. Burdens span two orders of
-# magnitude (from a handful of calls to over a thousand), so a single
+# **Reading the figure.** Each point is a tumor. Burdens span two orders
+# of magnitude (from a handful of calls to over a thousand), so a single
 # "cohort rate" would describe almost no tumor: the model gives each
 # tumor its own rate, from its own burden and spectrum. A group of
-# tumors gets most of its mutations from APOBEC (left, the points to
-# the right), another from tobacco (right). APOBEC prefers a C in a
-# TCW context (W = A or T), and two of the most common mutations of
-# this cancer, PIK3CA E545K and E542K, are C>T changes in exactly that
-# context. Keep that in mind for project (a).
+# tumors gets most of its mutations from APOBEC (left, the points to the
+# right), another from tobacco (right). APOBEC prefers a C in a TCW
+# context (a T, the C, then W = A or T), and two of the most common
+# mutations of this cancer, PIK3CA E545K and E542K, are C>T changes in
+# exactly that context. Keep that in mind for project (a).
 
 # %% [markdown]
 # ## 5. Fit the neutral rate model
@@ -568,18 +578,18 @@ print(
 
 # %% [markdown]
 # Now the model. `assign_cov_matrix` takes the design as given (no
-# second PCA). `compute_channel_base_mus` computes each tumor's type
-# rates and each gene's baseline rate on both channels, the share of
-# a tumor's mutations that falls in a gene following the tumor's own
-# spectrum. `estimate_channel_rg_cov_effects` fits the covariate
-# effects `c`, the channel intercept and the dispersion `theta` of
-# `r_g` by Hamiltonian Monte Carlo (NUTS, 4 chains, in parallel if
-# JAX sees 4 devices, checked first); `sample="full"` keeps the
-# posterior draws, which the selection estimates below need. This fit
-# is the slow step; the fitted model is saved. If it prints "There are
-# not enough devices to run parallel chains", the chains are running
-# one after another: the result is the same, only slower (see "Chains,
-# cores and `XLA_FLAGS`").
+# second principal component analysis). `compute_channel_base_mus`
+# computes each tumor's type rates and each gene's baseline rate on both
+# channels, the share of a tumor's mutations that falls in a gene
+# following the tumor's own spectrum. `estimate_channel_rg_cov_effects`
+# fits the covariate effects `c`, the channel intercept and the
+# dispersion `theta` of `r_g` by Hamiltonian Monte Carlo (NUTS, 4
+# chains, in parallel if JAX sees 4 devices, checked first);
+# `sample="full"` keeps the posterior draws, which the selection
+# estimates below need. This fit is the slow step; the fitted model is
+# saved. If it prints "There are not enough devices to run parallel
+# chains", the chains are running one after another: the result is the
+# same, only slower (see "Chains, cores and `XLA_FLAGS`").
 
 # %%
 import jax  # the numerical library the sampler runs on
@@ -687,16 +697,15 @@ for gene in ("TP53", "PIK3CA", "NOTCH1", "TTN", "MUC16"):
 pd.DataFrame(rows).set_index("gene").round(3)
 
 # %% [markdown]
-# **Reading the table.** "Expected carriers" is how many of the kept tumors
-# would carry at least one non-synonymous mutation in the gene if it
-# were neutral (a tumor with rate `mu` carries one with probability
+# **Reading the table.** "Expected carriers" is how many of the kept
+# tumors would carry at least one non-synonymous mutation in the gene if
+# it were neutral (a tumor with rate `mu` carries one with probability
 # `1 - exp(-mu)`). TTN and MUC16 are among the most mutated genes of
-# every cancer, and their observed counts are near what their length
-# and late replication predict: they are long, not (much) selected.
-# TP53 is mutated in about 190 of the 332 kept tumors where neutral
-# evolution would put a non-synonymous mutation in about one. This
-# comparison of observed with expected is the whole idea; `gamma`
-# makes it precise.
+# every cancer, and their observed counts are near what their length and
+# late replication predict: they are long, not (much) selected. TP53 is
+# mutated in about 190 of the 332 kept tumors where neutral evolution
+# would put a non-synonymous mutation in about one. This comparison of
+# observed with expected is the whole idea; `gamma` makes it precise.
 #
 # **Per variant.** `SiteRates` gives the rate of any single-nucleotide
 # variant, protein change or splice change in every tumor, whether it
@@ -750,14 +759,14 @@ rates["observed / expected"] = (
 rates.style.format("{:.3g}")
 
 # %% [markdown]
-# **Reading the table.** A variant's rate is tiny (a few in a million per
-# tumor), so even the most frequent variants are expected in a small
+# **Reading the table.** A variant's rate is tiny (a few in a million
+# per tumor), so even the most frequent variants are expected in a small
 # fraction of one tumor across the whole cohort (0.003 tumors for
-# E545K). The ratio is thousands: these variants are among the most strongly
-# selected mutations in this cancer. The rates of variants of the
-# same gene differ: E545K and E542K are C>T changes in a TCA context,
-# APOBEC's favourite, and mutate about four times faster than H1047R
-# (an A>G change). Project (a) is about exactly that difference.
+# E545K). The ratio is thousands: these variants are among the most
+# strongly selected mutations in this cancer. The rates of variants of
+# the same gene differ: E545K and E542K are C>T changes in a TCA
+# context, APOBEC's favourite, and mutate about four times faster than
+# H1047R (an A>G change). Project (a) is about exactly that difference.
 
 # %% [markdown]
 # ## 7. Selection coefficients for genes and variants
@@ -841,17 +850,17 @@ gene_gammas = pd.DataFrame(
 gene_gammas.round(2)
 
 # %% [markdown]
-# **Reading the table.** `mean`, `lower` and `upper` are the posterior mean
-# of gamma and its 89% interval; `tumors informative` are the tumors
-# without the mutation that entered the fit (the held-out ones are
-# not). TP53's gamma, about 600, says a TP53 non-silent mutation is
-# found in tumors about 600 times more often than its rate predicts:
-# it is the **strength of selection** on the gene (relative to neutral
-# evolution), comparable to other genes' gammas. MUC16 sits at 1; TTN
-# at about 1.5, with an interval just above 1: a modest excess,
-# and TTN is not called in section 8: among 19,000 genes
-# some intervals exclude 1 by chance, and TTN, the longest gene,
-# is always among the genes one looks at first.
+# **Reading the table.** `mean`, `lower` and `upper` are the posterior
+# mean of gamma and its 89% interval; `tumors informative` are the
+# tumors without the mutation that entered the fit (the held-out ones
+# are not). TP53's gamma, about 600, says a TP53 non-silent mutation is
+# found in tumors about 600 times more often than its rate predicts: it
+# is the **strength of selection** on the gene (relative to neutral
+# evolution), comparable to other genes' gammas. MUC16 sits at 1; TTN at
+# about 1.5, with an interval just above 1: a modest excess, and TTN is
+# not called in section 8: among 19,000 genes some intervals exclude 1
+# by chance, and TTN, the longest gene, is always among the genes one
+# looks at first.
 #
 # Two cautions. A *gene* gamma averages over all the gene's
 # non-synonymous sites: for an oncogene, a few selected hotspots
@@ -863,7 +872,8 @@ gene_gammas.round(2)
 #
 # **Per channel.** For a tumor suppressor, the predicted
 # loss-of-function channel (`"plof"`: nonsense and essential splice)
-# carries the selection; the synonymous channel (`"syn"`) is a
+# carries the selection, for an oncogene the missense channel
+# (`"mis"`); the synonymous channel (`"syn"`) is a
 # control, expected near 1.
 
 # %%
@@ -937,16 +947,22 @@ plt.show()
 # - **The call.** A test of the null hypothesis that the gene is
 #   neutral (`gamma = 1`): how surprising its number of carrier tumors
 #   is under its rates, integrating over the uncertainty of `r_g`
-#   (`p_mid`, the mid-p-value), then Benjamini-Hochberg over all genes
-#   (`q`). `called` is `q < 0.1`.
-# - **The strength.** Gamma's posterior under an **empirical-Bayes
-#   prior**: a spike near 1 (most genes are neutral) plus a slab for
-#   the selected ones, both fitted on this cohort's genes. This prior
-#   shrinks the gammas of genes with little information toward 1, so
-#   they can be compared across genes (`eb_median`, `eb_lower`,
-#   `eb_upper`); `eb_p_above` is the posterior probability that gamma
-#   exceeds 2. The flat-prior interval (`flat_*`) is kept beside it,
-#   as an estimate only, never as a call.
+#   (`p_mid`, the mid-p-value: the probability of more carriers than
+#   observed plus half that of exactly as many). Then the
+#   Benjamini-Hochberg correction over all genes gives `q`, the
+#   adjusted p-value: calling the genes with `q < 0.1` (`called`)
+#   keeps the expected share of false calls among them, the false
+#   discovery rate, at most 10%.
+# - **The strength.** Gamma's posterior under an **empirical-Bayes (EB)
+#   prior**, one estimated from the data: a spike near 1 (most genes are
+#   neutral) plus a slab for the selected ones, both fitted on this
+#   cohort's genes. This prior shrinks the gammas of genes with little
+#   information toward 1, so they can be compared across genes: the
+#   columns `eb_median` and `eb_lower` to `eb_upper`, its 89% interval;
+#   `eb_p_above` is the posterior probability that gamma exceeds 2. The
+#   estimate under a flat prior, one that favours no value of gamma
+#   (columns `flat_*`), is kept beside it, as an estimate only, never as
+#   a call.
 #
 # It takes a few minutes (it runs every gene; `n_jobs` processes).
 
@@ -974,25 +990,25 @@ called[
 ].head(20).round(3)
 
 # %% [markdown]
-# **Reading the table.** `n_tumors_with` are the carriers and
+# **Reading the table.** Rows are genes by their Ensembl id (`ENSG...`),
+# with the symbol in `gene`. `n_tumors_with` are the carriers and
 # `expected_with` the carriers expected under neutrality. The genes at
 # the top are the known drivers of head and neck cancer (TP53, CDKN2A,
-# PIK3CA, CASP8, HRAS, NFE2L2, NOTCH1, FBXW7, NSD1, FAT1, HLA-A/B,
-# ...). Compare
-# `eb_median` with `flat_median`: for a strongly selected gene with
-# many carriers they agree; for a gene with few carriers the EB
+# PIK3CA, CASP8, HRAS, NFE2L2, NOTCH1, FBXW7, NSD1, FAT1, HLA-A/B, ...).
+# Compare `eb_median` with `flat_median`: for a strongly selected gene
+# with many carriers they agree; for a gene with few carriers the EB
 # estimate is pulled toward 1. The pull is intended: across thousands of
-# genes, the flat estimates of genes with little data scatter widely
-# by chance, and the prior, learned from all genes, says how much.
+# genes, the flat estimates of genes with little data scatter widely by
+# chance, and the prior, learned from all genes, says how much.
 #
-# **What to check.** Known passengers (TTN, MUC16) should not be
-# called, and are not. Near the bottom of the list there are genes
-# you will not find in a cancer gene list: OR11H1 (an olfactory
-# receptor), and past the 20 rows shown (`called.tail(3)`) NEK5 and
-# CGB8 (one of a cluster of near-identical copies). OR11H1 and CGB8
-# belong to multi-copy families, where reads map to the wrong copy
-# and calls pile up. A called gene you do not recognise is a gene to examine
-# (its calls, its rates, its paralogs), not yet a discovery.
+# **What to check.** Known passengers (TTN, MUC16) should not be called,
+# and are not. Near the bottom of the list there are genes you will not
+# find in a cancer gene list: OR11H1 (an olfactory receptor), and past
+# the 20 rows shown (`called.tail(3)`) NEK5 and CGB8 (one of a cluster
+# of near-identical copies). OR11H1 and CGB8 belong to multi-copy
+# families, where reads map to the wrong copy and calls pile up. A
+# called gene you do not recognise is a gene to examine (its calls, its
+# rates, its paralogs), not yet a discovery.
 
 # %%
 fig, ax = plt.subplots(figsize=(5, 4.5))
@@ -1032,10 +1048,10 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading the figure.** One point per gene. The dashed line is "observed =
-# expected": a neutral gene scatters around it, more widely at small
-# counts. Called genes sit far above it. Long genes (to the right) can
-# have many carriers and still sit on the line.
+# **Reading the figure.** One point per gene. The dashed line is
+# "observed = expected": a neutral gene scatters around it, more widely
+# at small counts. Called genes sit far above it. Long genes (to the
+# right) can have many carriers and still sit on the line.
 
 # %% [markdown]
 # ## 9. Project (a): frequency is not selection
@@ -1088,10 +1104,10 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Reading the figure.** The two helical-domain hotspots are the frequent
-# ones (12 and 13 carriers), and the kinase-domain H1047R has half as
-# many (6). But E545K and E542K mutate about four times faster: they
-# are C>T changes in APOBEC's TCA context, and APOBEC is active in
+# **Reading the figure.** The two helical-domain hotspots are the
+# frequent ones (12 and 13 carriers), and the kinase-domain H1047R has
+# half as many (6). But E545K and E542K mutate about four times faster:
+# they are C>T changes in APOBEC's TCA context, and APOBEC is active in
 # many of these tumors (section 4). Once each is divided by its own
 # neutral rate, H1047R comes out the *most* strongly selected, about
 # twice the helical ones. Its interval overlaps theirs, so how sure is
@@ -1277,12 +1293,12 @@ group_table
 # - Comparing two groups' gammas from two separately fitted rate
 #   models: their difference then mixes selection with the two fits'
 #   differences.
-# - Forgetting confounders. In head and neck cancer, never-smokers
-#   are enriched for HPV-positive tumors, whose biology differs
-#   (HPV's E6 protein degrades p53, so TP53 mutations are rarely
-#   needed). A smoker/never-smoker difference in TP53 selection may be
-#   an HPV difference. Compare within HPV-negative tumors before
-#   attributing it to tobacco.
+# - Forgetting confounders. In head and neck cancer, never-smokers are
+#   enriched for tumors positive for human papillomavirus (HPV), whose
+#   biology differs (HPV's E6 protein degrades p53, so TP53 mutations
+#   are rarely needed). A smoker/never-smoker difference in TP53
+#   selection may be an HPV difference. Compare within HPV-negative
+#   tumors before attributing it to tobacco.
 # - Testing many genes and reporting the few with intervals excluding
 #   1: correct for the number of genes compared, or decide the genes
 #   before looking.

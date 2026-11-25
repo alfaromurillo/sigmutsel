@@ -43,7 +43,7 @@
 # 7. work through two small research projects: **(a)** a frequent
 #    mutation that is mostly mutation rate against a rarer one that is
 #    strongly selected, and **(b)** comparing the strength of selection
-#    between two groups of tumors (smokers and never-smokers).
+#    between two groups of tumors (HPV-positive and HPV-negative).
 #
 # Each step says what it does in plain words, what to check, and the
 # mistakes people make. You need no prior experience with the
@@ -1503,56 +1503,47 @@ for other in ("PIK3CA p.E545K", "PIK3CA p.E542K"):
 # %% [markdown]
 # ## 10. Project (b): selection in two groups of tumors
 #
-# Does selection on a gene differ between smokers and never-smokers?
-# A paper that compares *mutation frequencies* between the groups
-# cannot tell: smokers' tumors carry more mutations everywhere, so a
-# gene is mutated more often in them even with the same selection.
-# Gamma removes that, because each tumor's rate includes its own
-# burden and spectrum (tobacco's SBS4 included).
+# Does selection on a gene differ between tumors with and without human
+# papillomavirus (HPV)? In HPV-positive tumors the virus's E6 protein
+# degrades p53, and its E7 protein inactivates RB, the pathway CDKN2A
+# guards: the virus does the work that TP53 and CDKN2A mutations do in
+# HPV-negative tumors, so selection on those genes should be weaker
+# there. HPV infection also switches on APOBEC, whose favourite context
+# holds the helical PIK3CA hotspots (E545K, E542K), so one might expect
+# those hotspots to be more frequent in HPV-positive tumors because they
+# mutate faster there. Whether they do is a question for the rates, not
+# for intuition. A comparison of mutation frequencies cannot separate
+# rate from selection; gamma can, because each tumor's rate includes its
+# own burden and spectrum.
 #
-# **Step 1: the groups**, from the GDC's clinical data (public, no
-# account): `tobacco_smoking_status` of each patient.
+# **Step 1: the groups**, from the HPV calls of TCGA's PanCanAtlas
+# subtype table (from viral transcripts in each tumor's RNA), read from
+# the cBioPortal (public, no account).
 
 # %%
 import requests
 
-response = requests.post(
-    "https://api.gdc.cancer.gov/cases",
-    json={
-        "filters": {
-            "op": "in",
-            "content": {
-                "field": "project.project_id",
-                "value": [f"TCGA-{PROJECT}"],
-            },
-        },
-        "fields": "submitter_id,exposures.tobacco_smoking_status",
-        "size": 2000,
+response = requests.get(
+    "https://www.cbioportal.org/api/studies/"
+    "hnsc_tcga_pan_can_atlas_2018/clinical-data",
+    params={
+        "clinicalDataType": "PATIENT",
+        "attributeId": "SUBTYPE",  # HNSC_HPV+ or HNSC_HPV-
+        "projection": "SUMMARY",
     },
     timeout=60,
 )
-status = {
-    case["submitter_id"]: (case.get("exposures") or [{}])[0].get(
-        "tobacco_smoking_status"
-    )
-    for case in response.json()["data"]["hits"]
-}
+subtype = {row["patientId"]: row["value"] for row in response.json()}
 patient = pd.Series(kept, index=kept).str.slice(0, 12)
-smoking = patient.map(status)
+hpv = patient.map(subtype)
 groups = {
-    "never": set(smoking.index[smoking == "Lifelong Non-Smoker"]),
-    "smoker": set(
-        smoking.index[smoking.str.startswith("Current", na=False)]
-    ),
+    "HPV+": set(hpv.index[hpv == "HNSC_HPV+"]),
+    "HPV-": set(hpv.index[hpv == "HNSC_HPV-"]),
 }
 print(
     {name: len(tumors) for name, tumors in groups.items()},
-    "| status unknown:",
-    int(
-        (
-            ~smoking.index.isin(groups["never"] | groups["smoker"])
-        ).sum()
-    ),
+    "| no HPV call:",
+    int(hpv.isna().sum()),
 )
 
 # %% [markdown]
@@ -1603,18 +1594,18 @@ for item, level in [
     # none when a group has no carrier (its gamma is only a bound).
     if any(summaries[item, g]["upper_bound_only"] for g in groups):
         ratios[item] = (np.nan, np.nan, np.nan)
-        row["smoker / never"] = np.nan
+        row["HPV+ / HPV-"] = np.nan
         row["ratio 89%"] = "no carrier in a group"
-        row["P(smoker > never)"] = np.nan
+        row["P(HPV+ > HPV-)"] = np.nan
     else:
-        log_ratio = np.log(draws["smoker"]) - np.log(
-            np.random.default_rng(0).permutation(draws["never"])
+        log_ratio = np.log(draws["HPV+"]) - np.log(
+            np.random.default_rng(0).permutation(draws["HPV-"])
         )
         lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
         ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
-        row["smoker / never"] = ratios[item][0]
+        row["HPV+ / HPV-"] = ratios[item][0]
         row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
-        row["P(smoker > never)"] = float((log_ratio > 0).mean())
+        row["P(HPV+ > HPV-)"] = float((log_ratio > 0).mean())
     rows.append(row)
 group_table = pd.DataFrame(rows).set_index("item")
 group_table
@@ -1636,8 +1627,8 @@ x_min = (
     0.1  # the left edge: where an upper bound's dotted line starts
 )
 for group, offset, color in [
-    ("smoker", 0.15, "C1"),
-    ("never", -0.15, "C0"),
+    ("HPV+", 0.15, "C1"),
+    ("HPV-", -0.15, "C0"),
 ]:
     for yi, item in zip(y, items):
         s = summaries[item, group]
@@ -1676,8 +1667,10 @@ if any(
     ax.set_xlim(left=x_min)  # room for the dotted bounds
 ax.set_yticks(y, items)
 ax.set_xlabel("gamma (posterior mean, 89% interval)")
-# A framed legend, so its markers are not read as data.
-ax.legend(frameon=True, loc="upper left")
+# A framed legend above the axes, so its markers are not read as data.
+ax.legend(
+    frameon=True, loc="lower left", bbox_to_anchor=(0, 1.02), ncol=2
+)
 
 ax = axes[1]
 median, lower, upper = (
@@ -1714,31 +1707,39 @@ ax.xaxis.set_major_formatter(
     )
 )
 ax.xaxis.set_minor_formatter(ticker.NullFormatter())
-ax.set_xlabel("smoker / never-smoker gamma (89%)")
+ax.set_xlabel("HPV+ / HPV- gamma (89%)")
 fig.tight_layout()
 plt.show()
 
 # %% [markdown]
 # **Reading the figure.** Left: each gene's (and E545K's) gamma in the
-# two groups, smokers orange, never-smokers blue; right: the ratio of
-# the two, with the dashed line at "no difference". The groups'
-# intervals overlap for every item, and every ratio's interval crosses
-# 1; the never-smokers' intervals are mostly the wider ones, from a
-# group about a third the size. The width of the ratio's interval is the
-# answer to "how large a difference could this cohort have missed".
+# two groups, HPV-positive orange, HPV-negative blue; right: the ratio
+# of the two, with the dashed line at "no difference". TP53 is selected
+# about twenty times more weakly in HPV-positive tumors (the ratio's
+# interval lies far below 1), and CDKN2A has no carrier among them at
+# all, only an upper bound (dotted): the virus inactivates both
+# pathways, so mutations in these genes bring little. PIK3CA leans the
+# other way, about two and a half times more strongly selected in
+# HPV-positive tumors, but the lower end of its interval sits at about
+# 1: suggestive, not resolved. For NOTCH1 and E545K the cohort cannot
+# tell. The HPV-positive group is a fifth the size of the other, hence
+# its wider intervals; the width of a ratio's interval is the answer to
+# "how large a difference could this cohort have missed".
 
 # %% [markdown]
-# **Reading the table.** No ratio's interval excludes 1. TP53's gamma is
-# somewhat higher in smokers and CDKN2A's in never-smokers, but the
-# intervals run from about half to two or three times: with 74
-# never-smokers (and, for E545K, two carriers among them), this cohort
-# cannot tell these genes' selection apart between the groups. That
-# is a result worth reporting as it is ("no evidence of a difference,
-# and differences up to threefold cannot be excluded"), and it is
-# what a frequency comparison hides: TP53 is mutated in 56% of the
-# smokers' tumors and 55% of the never-smokers', and the gamma
-# comparison says that similar frequency is consistent with similar
-# selection, given each tumor's rates.
+# **Reading the table.** For TP53 the frequencies point the same way as
+# the gammas: 4 of the 57 HPV-positive tumors carry a mutation (7%),
+# against 176 of the 262 HPV-negative ones (67%). For E545K intuition
+# would mislead. It is in 7% of the HPV-positive tumors and 3% of the
+# HPV-negative ones, and APOBEC has a larger share of the HPV-positive
+# tumors' mutations (median 24% against 14%); but those tumors carry
+# fewer mutations (a median of 64 calls against 112), so E545K's rate
+# per tumor is in fact about half as high in them (`model.mu_ms`, the
+# median over each group). Its higher frequency there is not rate.
+# Whether it is selection the cohort cannot say: on 4 and 8 carriers the
+# ratio's interval runs from 0.6 to 7.5. That is a result worth
+# reporting as it is ("no evidence of a difference, and anything from
+# somewhat weaker to seven times stronger cannot be excluded").
 #
 # **How the uncertainty is computed, and what it leaves out.** The
 # ratio's interval comes from pairing independent draws of the two
@@ -1747,7 +1748,7 @@ plt.show()
 # pairing independent draws ignores that shared part, which makes
 # the ratio's interval somewhat *wider* than it should be. So a ratio
 # whose interval excludes 1 here is a conservative finding. A
-# `P(smoker > never)` near 0.5 means no evidence of a difference,
+# `P(HPV+ > HPV-)` near 0.5 means no evidence of a difference,
 # not evidence of no difference: check the interval's width before
 # writing "the same".
 #
@@ -1758,12 +1759,11 @@ plt.show()
 # - Comparing two groups' gammas from two separately fitted rate
 #   models: their difference then mixes selection with the two fits'
 #   differences.
-# - Forgetting confounders. In head and neck cancer, never-smokers are
-#   enriched for tumors positive for human papillomavirus (HPV), whose
-#   biology differs (HPV's E6 protein degrades p53, so TP53 mutations
-#   are rarely needed). A smoker/never-smoker difference in TP53
-#   selection may be an HPV difference. Compare within HPV-negative
-#   tumors before attributing it to tobacco.
+# - Forgetting confounders. HPV-positive tumors are mostly in the
+#   oropharynx, and their patients smoke less: a difference between
+#   the groups may be one of anatomical site or of tobacco. Compare
+#   within one site (the oropharynx has both kinds) before attributing
+#   it to the virus.
 # - Testing many genes and reporting the few with intervals excluding
 #   1: correct for the number of genes compared, or decide the genes
 #   before looking.
@@ -1933,12 +1933,12 @@ with plt.rc_context({"figure.dpi": 200}):
 #    that ranks or compares mutations by frequency (or calls the most
 #    frequent mutation the main driver) and redo its comparison with
 #    rates and gammas, as in project (a).
-# 2. **Selection by group.** Smokers and never-smokers in lung
-#    adenocarcinoma (`LUAD`; a larger cohort: run it on a server),
-#    young and old patients (`diagnoses.age_at_diagnosis` in the same
-#    GDC query), sexes, HPV status in head and neck cancer, molecular
-#    subtypes. Which genes' gammas differ, and which differences
-#    survive a confounder?
+# 2. **Selection by group.** Smokers and never-smokers in head and neck
+#    or lung cancer (`exposures.tobacco_smoking_status`, from the GDC's
+#    `cases` endpoint; `LUAD` is a larger cohort: run it on a server),
+#    young and old patients (`diagnoses.age_at_diagnosis`), sexes,
+#    molecular subtypes. Which genes' gammas differ, and which
+#    differences survive a confounder?
 # 3. **APOBEC hotspots across cancers.** PIK3CA E545K/E542K in
 #    bladder (`BLCA`), cervical (`CESC`), breast (`BRCA`) and head and
 #    neck cancer: does the helical/kinase difference hold everywhere?

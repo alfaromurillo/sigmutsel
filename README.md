@@ -33,7 +33,7 @@ goes from a public TCGA cohort (head and neck cancer, downloaded from
 the GDC) to rates, selection coefficients, the selection call, and two
 small research projects: a frequent mutation that is mostly mutation
 rate against a rarer one that is strongly selected, and comparing
-selection between smokers and never-smokers. It states the runtime of
+selection between HPV-positive and HPV-negative tumors. It states the runtime of
 every step (about 80 minutes on a desktop, after an 18-minute setup;
 one step needs 16-20 GB of memory) and the mistakes to avoid. Its
 source, `tutorials/selection_in_hnsc.py`, runs as a script or as a

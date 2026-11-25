@@ -1580,10 +1580,8 @@ def group_gamma(item, level, group, **kwargs):
 
 
 rows = []
-summaries, ratios = (
-    {},
-    {},
-)  # the numbers behind the table, for the figure
+# The numbers behind the table, kept for the figure.
+summaries, ratios = {}, {}
 for item, level in [
     ("TP53", "gene"),
     ("CDKN2A", "gene"),
@@ -1601,15 +1599,22 @@ for item, level in [
         row[f"{group} carriers"] = result.posterior.attrs[
             "n_tumors_with"
         ]
-    # The ratio of the two gammas, from independent draws of each.
-    log_ratio = np.log(draws["smoker"]) - np.log(
-        np.random.default_rng(0).permutation(draws["never"])
-    )
-    lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
-    ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
-    row["smoker / never"] = float(np.exp(np.median(log_ratio)))
-    row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
-    row["P(smoker > never)"] = float((log_ratio > 0).mean())
+    # The ratio of the two gammas, from independent draws of each;
+    # none when a group has no carrier (its gamma is only a bound).
+    if any(summaries[item, g]["upper_bound_only"] for g in groups):
+        ratios[item] = (np.nan, np.nan, np.nan)
+        row["smoker / never"] = np.nan
+        row["ratio 89%"] = "no carrier in a group"
+        row["P(smoker > never)"] = np.nan
+    else:
+        log_ratio = np.log(draws["smoker"]) - np.log(
+            np.random.default_rng(0).permutation(draws["never"])
+        )
+        lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
+        ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
+        row["smoker / never"] = ratios[item][0]
+        row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
+        row["P(smoker > never)"] = float((log_ratio > 0).mean())
     rows.append(row)
 group_table = pd.DataFrame(rows).set_index("item")
 group_table
@@ -1620,32 +1625,59 @@ from matplotlib import ticker  # axis tick placement and labels
 items = list(group_table.index)
 y = np.arange(len(items))[::-1]
 fig, axes = plt.subplots(
-    1, 2, figsize=(9, 3.2), sharey=True, width_ratios=[3, 2]
+    1,
+    2,
+    figsize=(9, 0.45 * len(items) + 1),
+    sharey=True,
+    width_ratios=[3, 2],
 )
 ax = axes[0]
+x_min = (
+    0.1  # the left edge: where an upper bound's dotted line starts
+)
 for group, offset, color in [
     ("smoker", 0.15, "C1"),
     ("never", -0.15, "C0"),
 ]:
-    s = [summaries[item, group] for item in items]
-    ax.errorbar(
-        [x["mean"] for x in s],
-        y + offset,
-        xerr=[
-            [x["mean"] - x["lower"] for x in s],
-            [x["upper"] - x["mean"] for x in s],
-        ],
-        fmt="o",
-        ms=4,
-        capsize=2,
-        color=color,
-        label=group,
-    )
+    for yi, item in zip(y, items):
+        s = summaries[item, group]
+        if s["upper_bound_only"]:
+            # No carrier in this group: only an upper bound, dotted.
+            ax.plot(
+                [x_min, s["upper"]],
+                [yi + offset] * 2,
+                ls=":",
+                color=color,
+            )
+            ax.plot(
+                s["upper"], yi + offset, marker="|", ms=8, color=color
+            )
+        else:
+            ax.errorbar(
+                s["mean"],
+                yi + offset,
+                xerr=[
+                    [s["mean"] - s["lower"]],
+                    [s["upper"] - s["mean"]],
+                ],
+                fmt="o",
+                ms=4,
+                capsize=2,
+                color=color,
+            )
+    ax.plot(
+        [], [], "o", ms=4, color=color, label=group
+    )  # legend entry
 ax.axvline(1, color="0.6", lw=1, ls="--")
 ax.set_xscale("log")
+if any(
+    summaries[i, g]["upper_bound_only"] for i in items for g in groups
+):
+    ax.set_xlim(left=x_min)  # room for the dotted bounds
 ax.set_yticks(y, items)
 ax.set_xlabel("gamma (posterior mean, 89% interval)")
-ax.legend(frameon=False, loc="upper left")
+# A framed legend, so its markers are not read as data.
+ax.legend(frameon=True, loc="upper left")
 
 ax = axes[1]
 median, lower, upper = (
@@ -1660,6 +1692,18 @@ ax.errorbar(
     capsize=2,
     color="0.2",
 )
+for yi, item in zip(y, items):
+    if np.isnan(ratios[item][0]):
+        ax.text(
+            1,
+            yi,
+            "no carrier in a group",
+            ha="center",
+            va="center",
+            fontsize=7,
+            color="0.4",
+            bbox={"facecolor": "white", "edgecolor": "none"},
+        )
 ax.axvline(1, color="0.6", lw=1, ls="--")
 ax.set_xscale("log")
 # Ticks at powers of 2 (1/4, 1/2, 1, 2, 4), fractions below 1.

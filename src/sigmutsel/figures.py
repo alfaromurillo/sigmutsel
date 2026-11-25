@@ -715,12 +715,16 @@ def plot_sig_decomposition_with_burden(
 
     # Left panel: horizontal log10-burden bars
     log_b = np.log10(sorted_burden.clip(lower=1).values)
-    ax_bar.barh(
+    # One filled profile, a step per tumor: with hundreds of tumors a
+    # bar is under a pixel tall, and separate half-height bars render
+    # as bands of drawn and blank rows that are not in the data.
+    ax_bar.fill_betweenx(
         np.arange(len(sorted_burden)),
+        0,
         log_b,
-        height=0.5,
+        step="mid",
         color="gray",
-        edgecolor=None,
+        linewidth=0,
     )
     ax_bar.invert_xaxis()
     ax_bar.set_yticks([])

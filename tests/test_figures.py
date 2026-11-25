@@ -190,3 +190,25 @@ def test_model_plot_gamma_results_returns_the_figure(tmp_path):
         "GENEA",
         "GENEB",
     }
+
+
+def test_burden_panel_is_one_profile_not_separate_bars():
+    """The burden panel is a single filled step profile (separate
+    half-height bars rendered as stripes at hundreds of tumors)."""
+    from matplotlib.collections import PolyCollection
+
+    from sigmutsel.figures import plot_sig_decomposition_with_burden
+
+    rng = np.random.default_rng(0)
+    tumors = [f"T{i}" for i in range(300)]
+    burden = pd.Series(rng.integers(5, 2000, 300), index=tumors)
+    assignments = pd.DataFrame(
+        rng.dirichlet(np.ones(3), 300) * burden.to_numpy()[:, None],
+        index=tumors,
+        columns=["SBS1", "SBS2", "SBS5"],
+    )
+    fig = plot_sig_decomposition_with_burden(burden, assignments)
+    ax_bar = fig.axes[0]
+    assert not ax_bar.patches  # no bars
+    assert len(ax_bar.collections) == 1
+    assert isinstance(ax_bar.collections[0], PolyCollection)

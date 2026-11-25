@@ -1744,9 +1744,9 @@ plt.show()
 # per tumor is in fact about half as high in them (`model.mu_ms`, the
 # median over each group). Its higher frequency there is not rate.
 # Whether it is selection the cohort cannot say: on 4 and 8 carriers the
-# ratio's interval runs from 0.6 to 7.5. That is a result worth
+# ratio's interval runs from 0.6 to 6.8. That is a result worth
 # reporting as it is ("no evidence of a difference, and anything from
-# somewhat weaker to seven times stronger cannot be excluded").
+# somewhat weaker to nearly seven times stronger cannot be excluded").
 #
 # **How the uncertainty is computed, and what it leaves out.** The
 # ratio's interval comes from pairing independent draws of the two

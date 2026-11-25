@@ -29,7 +29,7 @@ In this tutorial you will:
 7. work through two small research projects: **(a)** a frequent
    mutation that is mostly mutation rate against a rarer one that is
    strongly selected, and **(b)** comparing the strength of selection
-   between two groups of tumors (smokers and never-smokers).
+   between two groups of tumors (HPV-positive and HPV-negative).
 
 Each step says what it does in plain words, what to check, and the
 mistakes people make. You need no prior experience with the
@@ -188,7 +188,14 @@ import numpy as np  # arrays and numerical functions
 import pandas as pd  # tables (DataFrames): every result is one
 
 import sigmutsel
+import sigmutsel.constants  # package-wide settings, the seed below
 from sigmutsel import Model, MutationDataset  # the two main objects
+
+# A fixed seed makes the sampling reproducible: the rate model's fit
+# and the draws behind every gamma give the same numbers on every run.
+# Left at None (the default), each run differs slightly, by the Monte
+# Carlo error.
+sigmutsel.constants.random_seed = 0
 
 print("sigmutsel", sigmutsel.__version__)
 ```
@@ -259,7 +266,7 @@ mafs = download_project_maf_files(PROJECT, raw_maf_dir)  # a rerun
 print(f"{len(mafs)} MAF files in {time.time() - start:.0f} s")
 ```
 
-    511 MAF files in 2 s
+    511 MAF files in 1 s
 
 
 **Choose the files before anything reads them.** One aliquot per
@@ -882,7 +889,7 @@ r2, per_gene = model.estimate_passenger_genes_r2(
 print(f"R² of passenger genes' non-silent counts: {r2:.3f}")
 ```
 
-    max R-hat: 1.0058080440396662
+    max R-hat: 1.0048759607240831
 
 
     R² of passenger genes' non-silent counts: 0.741
@@ -1052,35 +1059,35 @@ pd.DataFrame(rows).set_index("gene").round(3)
       <th>TP53</th>
       <td>1.198</td>
       <td>0.003</td>
-      <td>1.302</td>
+      <td>1.300</td>
       <td>187</td>
     </tr>
     <tr>
       <th>PIK3CA</th>
       <td>1.015</td>
       <td>0.009</td>
-      <td>4.264</td>
+      <td>4.262</td>
       <td>50</td>
     </tr>
     <tr>
       <th>NOTCH1</th>
       <td>1.182</td>
       <td>0.022</td>
-      <td>10.601</td>
+      <td>10.597</td>
       <td>42</td>
     </tr>
     <tr>
       <th>TTN</th>
-      <td>1.052</td>
+      <td>1.049</td>
       <td>0.451</td>
-      <td>136.191</td>
+      <td>136.229</td>
       <td>130</td>
     </tr>
     <tr>
       <th>MUC16</th>
       <td>0.717</td>
       <td>0.204</td>
-      <td>78.954</td>
+      <td>78.960</td>
       <td>62</td>
     </tr>
   </tbody>
@@ -1220,58 +1227,58 @@ rates.style.format("{:.3g}")
 
 <style type="text/css">
 </style>
-<table id="T_f79a9">
+<table id="T_d8a52">
   <thead>
     <tr>
       <th class="blank level0" >&nbsp;</th>
-      <th id="T_f79a9_level0_col0" class="col_heading level0 col0" >observed carriers</th>
-      <th id="T_f79a9_level0_col1" class="col_heading level0 col1" >expected carriers</th>
-      <th id="T_f79a9_level0_col2" class="col_heading level0 col2" >median rate per tumor</th>
-      <th id="T_f79a9_level0_col3" class="col_heading level0 col3" >observed / expected</th>
+      <th id="T_d8a52_level0_col0" class="col_heading level0 col0" >observed carriers</th>
+      <th id="T_d8a52_level0_col1" class="col_heading level0 col1" >expected carriers</th>
+      <th id="T_d8a52_level0_col2" class="col_heading level0 col2" >median rate per tumor</th>
+      <th id="T_d8a52_level0_col3" class="col_heading level0 col3" >observed / expected</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <th id="T_f79a9_level0_row0" class="row_heading level0 row0" >PIK3CA p.E545K</th>
-      <td id="T_f79a9_row0_col0" class="data row0 col0" >12</td>
-      <td id="T_f79a9_row0_col1" class="data row0 col1" >0.00278</td>
-      <td id="T_f79a9_row0_col2" class="data row0 col2" >4.55e-06</td>
-      <td id="T_f79a9_row0_col3" class="data row0 col3" >4.32e+03</td>
+      <th id="T_d8a52_level0_row0" class="row_heading level0 row0" >PIK3CA p.E545K</th>
+      <td id="T_d8a52_row0_col0" class="data row0 col0" >12</td>
+      <td id="T_d8a52_row0_col1" class="data row0 col1" >0.00278</td>
+      <td id="T_d8a52_row0_col2" class="data row0 col2" >4.54e-06</td>
+      <td id="T_d8a52_row0_col3" class="data row0 col3" >4.32e+03</td>
     </tr>
     <tr>
-      <th id="T_f79a9_level0_row1" class="row_heading level0 row1" >PIK3CA p.E542K</th>
-      <td id="T_f79a9_row1_col0" class="data row1 col0" >13</td>
-      <td id="T_f79a9_row1_col1" class="data row1 col1" >0.00288</td>
-      <td id="T_f79a9_row1_col2" class="data row1 col2" >4.7e-06</td>
-      <td id="T_f79a9_row1_col3" class="data row1 col3" >4.52e+03</td>
+      <th id="T_d8a52_level0_row1" class="row_heading level0 row1" >PIK3CA p.E542K</th>
+      <td id="T_d8a52_row1_col0" class="data row1 col0" >13</td>
+      <td id="T_d8a52_row1_col1" class="data row1 col1" >0.00288</td>
+      <td id="T_d8a52_row1_col2" class="data row1 col2" >4.7e-06</td>
+      <td id="T_d8a52_row1_col3" class="data row1 col3" >4.52e+03</td>
     </tr>
     <tr>
-      <th id="T_f79a9_level0_row2" class="row_heading level0 row2" >PIK3CA p.H1047R</th>
-      <td id="T_f79a9_row2_col0" class="data row2 col0" >6</td>
-      <td id="T_f79a9_row2_col1" class="data row2 col1" >0.000667</td>
-      <td id="T_f79a9_row2_col2" class="data row2 col2" >1.29e-06</td>
-      <td id="T_f79a9_row2_col3" class="data row2 col3" >9e+03</td>
+      <th id="T_d8a52_level0_row2" class="row_heading level0 row2" >PIK3CA p.H1047R</th>
+      <td id="T_d8a52_row2_col0" class="data row2 col0" >6</td>
+      <td id="T_d8a52_row2_col1" class="data row2 col1" >0.000666</td>
+      <td id="T_d8a52_row2_col2" class="data row2 col2" >1.29e-06</td>
+      <td id="T_d8a52_row2_col3" class="data row2 col3" >9e+03</td>
     </tr>
     <tr>
-      <th id="T_f79a9_level0_row3" class="row_heading level0 row3" >HRAS p.G12S</th>
-      <td id="T_f79a9_row3_col0" class="data row3 col0" >3</td>
-      <td id="T_f79a9_row3_col1" class="data row3 col1" >0.00223</td>
-      <td id="T_f79a9_row3_col2" class="data row3 col2" >5.13e-06</td>
-      <td id="T_f79a9_row3_col3" class="data row3 col3" >1.34e+03</td>
+      <th id="T_d8a52_level0_row3" class="row_heading level0 row3" >HRAS p.G12S</th>
+      <td id="T_d8a52_row3_col0" class="data row3 col0" >3</td>
+      <td id="T_d8a52_row3_col1" class="data row3 col1" >0.00223</td>
+      <td id="T_d8a52_row3_col2" class="data row3 col2" >5.13e-06</td>
+      <td id="T_d8a52_row3_col3" class="data row3 col3" >1.35e+03</td>
     </tr>
     <tr>
-      <th id="T_f79a9_level0_row4" class="row_heading level0 row4" >TP53 p.R248Q</th>
-      <td id="T_f79a9_row4_col0" class="data row4 col0" >4</td>
-      <td id="T_f79a9_row4_col1" class="data row4 col1" >0.00209</td>
-      <td id="T_f79a9_row4_col2" class="data row4 col2" >4.81e-06</td>
-      <td id="T_f79a9_row4_col3" class="data row4 col3" >1.91e+03</td>
+      <th id="T_d8a52_level0_row4" class="row_heading level0 row4" >TP53 p.R248Q</th>
+      <td id="T_d8a52_row4_col0" class="data row4 col0" >4</td>
+      <td id="T_d8a52_row4_col1" class="data row4 col1" >0.00209</td>
+      <td id="T_d8a52_row4_col2" class="data row4 col2" >4.8e-06</td>
+      <td id="T_d8a52_row4_col3" class="data row4 col3" >1.92e+03</td>
     </tr>
     <tr>
-      <th id="T_f79a9_level0_row5" class="row_heading level0 row5" >TP53 p.R175H</th>
-      <td id="T_f79a9_row5_col0" class="data row5 col0" >6</td>
-      <td id="T_f79a9_row5_col1" class="data row5 col1" >0.00237</td>
-      <td id="T_f79a9_row5_col2" class="data row5 col2" >5.84e-06</td>
-      <td id="T_f79a9_row5_col3" class="data row5 col3" >2.53e+03</td>
+      <th id="T_d8a52_level0_row5" class="row_heading level0 row5" >TP53 p.R175H</th>
+      <td id="T_d8a52_row5_col0" class="data row5 col0" >6</td>
+      <td id="T_d8a52_row5_col1" class="data row5 col1" >0.00237</td>
+      <td id="T_d8a52_row5_col2" class="data row5 col2" >5.83e-06</td>
+      <td id="T_d8a52_row5_col3" class="data row5 col3" >2.53e+03</td>
     </tr>
   </tbody>
 </table>
@@ -1285,8 +1292,9 @@ fraction of one tumor across the whole cohort (0.003 tumors for
 E545K). The ratio is thousands: these variants are among the most
 strongly selected mutations in this cancer. The rates of variants of
 the same gene differ: E545K and E542K are C>T changes in a TCA
-context, APOBEC's favourite, and mutate about three and a half times faster than
-H1047R (an A>G change). Project (a) is about exactly that difference.
+context, APOBEC's favourite, and mutate about three and a half times
+faster than H1047R (an A>G change). Project (a) is about exactly that
+difference.
 
 
 ```python
@@ -1418,53 +1426,53 @@ gene_gammas.round(2)
 ```
 
     Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  636  229      360     1000      3973      3883  1.00       3.7     4.3
+          mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  623  2e+02      350     1000      4165      3938  1.00       3.6     5.3
 
 
     Gamma posterior summary:
            mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  18.9  7.1       10       32      4055      3872  1.00      0.11    0.12
+    gamma  18.7  7.3      9.9       32      4165      3938  1.00      0.11    0.13
 
 
     Gamma posterior summary:
           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  230  119      100      430      3821      3906  1.00       1.9       3
+    gamma  225  113      100      430      4165      3938  1.00       1.7     2.2
 
 
     Gamma posterior summary:
           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  7.3  2.66      4.1       12      4098      3655  1.00     0.042   0.049
-
-
-    Gamma posterior summary:
-          mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  4.3  1.41      2.5      6.8      3808      3911  1.00     0.023   0.025
-
-
-    Gamma posterior summary:
-          mean  sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma   31  14       15       57      3661      3511  1.00      0.23    0.29
+    gamma  7.1  2.53        4       12      4165      3938  1.00     0.038   0.047
 
 
     Gamma posterior summary:
            mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  45.5  21.5       21       85      3959      3873  1.00      0.34    0.41
+    gamma  4.27  1.39      2.5      6.8      4165      3938  1.00     0.021   0.019
+
+
+    Gamma posterior summary:
+           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  30.6  13.3       15       54      4165      3938  1.00       0.2    0.25
+
+
+    Gamma posterior summary:
+           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  44.3  20.5       20       80      4165      3938  1.00      0.31    0.39
 
 
     Gamma posterior summary:
           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  8.4  3.9      4.2       16      3932      3822  1.00     0.062   0.093
+    gamma  8.3  3.6      4.2       15      4165      3938  1.00     0.054   0.071
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  1.463  0.265      1.1      1.9      4078      3841  1.00    0.0041  0.0031
+    gamma  1.455  0.268      1.1      1.9      4165      3938  1.00    0.0041  0.0037
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  1.127  0.284     0.74      1.6      3868      3755  1.00    0.0045  0.0039
+    gamma  1.137  0.311     0.72      1.7      4165      3938  1.00    0.0048  0.0044
 
 
 
@@ -1495,90 +1503,90 @@ gene_gammas.round(2)
   <tbody>
     <tr>
       <th>TP53</th>
-      <td>636.11</td>
-      <td>363.20</td>
-      <td>1037.03</td>
+      <td>622.85</td>
+      <td>347.16</td>
+      <td>1033.45</td>
       <td>False</td>
       <td>187</td>
       <td>104</td>
     </tr>
     <tr>
       <th>PIK3CA</th>
-      <td>18.94</td>
-      <td>10.14</td>
-      <td>31.64</td>
+      <td>18.66</td>
+      <td>9.92</td>
+      <td>31.56</td>
       <td>False</td>
       <td>50</td>
       <td>280</td>
     </tr>
     <tr>
       <th>CDKN2A</th>
-      <td>230.50</td>
-      <td>102.87</td>
-      <td>434.52</td>
+      <td>225.03</td>
+      <td>100.24</td>
+      <td>427.58</td>
       <td>False</td>
       <td>52</td>
       <td>197</td>
     </tr>
     <tr>
       <th>NOTCH1</th>
-      <td>7.30</td>
-      <td>4.07</td>
-      <td>12.09</td>
+      <td>7.10</td>
+      <td>3.97</td>
+      <td>11.54</td>
       <td>False</td>
       <td>42</td>
       <td>276</td>
     </tr>
     <tr>
       <th>FAT1</th>
-      <td>4.30</td>
-      <td>2.52</td>
-      <td>6.81</td>
+      <td>4.27</td>
+      <td>2.46</td>
+      <td>6.78</td>
       <td>False</td>
       <td>47</td>
       <td>258</td>
     </tr>
     <tr>
       <th>CASP8</th>
-      <td>31.00</td>
-      <td>15.33</td>
-      <td>56.69</td>
+      <td>30.65</td>
+      <td>15.13</td>
+      <td>54.46</td>
       <td>False</td>
       <td>27</td>
       <td>302</td>
     </tr>
     <tr>
       <th>HRAS</th>
-      <td>45.51</td>
-      <td>20.68</td>
-      <td>84.94</td>
+      <td>44.31</td>
+      <td>20.34</td>
+      <td>80.42</td>
       <td>False</td>
       <td>17</td>
       <td>313</td>
     </tr>
     <tr>
       <th>NSD1</th>
-      <td>8.42</td>
-      <td>4.16</td>
-      <td>15.51</td>
+      <td>8.30</td>
+      <td>4.21</td>
+      <td>14.77</td>
       <td>False</td>
       <td>33</td>
       <td>284</td>
     </tr>
     <tr>
       <th>TTN</th>
-      <td>1.46</td>
-      <td>1.08</td>
-      <td>1.92</td>
+      <td>1.45</td>
+      <td>1.07</td>
+      <td>1.90</td>
       <td>False</td>
       <td>130</td>
       <td>198</td>
     </tr>
     <tr>
       <th>MUC16</th>
-      <td>1.13</td>
-      <td>0.74</td>
-      <td>1.63</td>
+      <td>1.14</td>
+      <td>0.72</td>
+      <td>1.68</td>
       <td>False</td>
       <td>62</td>
       <td>268</td>
@@ -1629,47 +1637,47 @@ channel_gammas.round(2)
 
     Gamma posterior summary:
           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  369  134      200      610      3778      3788  1.00       2.2     2.7
+    gamma  378  140      210      620      4165      3938  1.00       2.1     2.7
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  9e+02  4e+02      520     1600      3866      3803  1.00       5.8     7.9
-
-
-    Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma   11  7.8      2.7       25      3551      3660  1.00      0.13    0.19
-
-
-    Gamma posterior summary:
-           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  6.07  2.22      3.4       10      3898      3999  1.00     0.036   0.042
-
-
-    Gamma posterior summary:
-           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  22.1  10.7      9.5       41      4096      3971  1.00      0.17    0.23
-
-
-    Gamma posterior summary:
-           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  2.04  1.07     0.78      4.1      4054      3960  1.00     0.017   0.019
+    gamma  9e+02  4e+02      490     1600      4165      3938  1.00       5.7     7.2
 
 
     Gamma posterior summary:
            mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  21.7  8.2       12       37      3909      3608  1.00      0.13    0.17
+    gamma  10.8  7.7      2.6       24      4165      3938  1.00      0.12    0.17
 
 
     Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  2.8  3.2     0.13      8.6      3747      3670  1.00     0.052   0.092
+          mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma    6  2.19      3.3      9.9      4165      3938  1.00     0.033   0.038
 
 
     Gamma posterior summary:
            mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  2.66  2.13     0.43      6.6      4286      4083  1.00     0.033   0.042
+    gamma  22.2  10.4      9.5       41      4165      3938  1.00      0.16    0.18
+
+
+    Gamma posterior summary:
+           mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  1.99  1.08     0.73      3.9      4165      3938  1.00     0.016   0.022
+
+
+    Gamma posterior summary:
+           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  21.9  8.7       11       37      4165      3938  1.00      0.13    0.19
+
+
+    Gamma posterior summary:
+           mean sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  2.66  3     0.13        8      4165      3938  1.00     0.046   0.085
+
+
+    Gamma posterior summary:
+           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  2.67  2.2     0.42      6.7      4165      3938  1.00     0.034   0.052
 
 
 
@@ -1700,63 +1708,63 @@ channel_gammas.round(2)
   <tbody>
     <tr>
       <th>TP53 (mis)</th>
-      <td>369.14</td>
-      <td>204.63</td>
-      <td>607.51</td>
+      <td>378.00</td>
+      <td>210.55</td>
+      <td>615.04</td>
       <td>False</td>
       <td>143</td>
       <td>147</td>
     </tr>
     <tr>
       <th>TP53 (plof)</th>
-      <td>947.62</td>
-      <td>519.40</td>
-      <td>1570.15</td>
+      <td>943.66</td>
+      <td>492.29</td>
+      <td>1593.95</td>
       <td>False</td>
       <td>55</td>
       <td>229</td>
     </tr>
     <tr>
       <th>TP53 (syn)</th>
-      <td>11.04</td>
-      <td>2.69</td>
-      <td>24.95</td>
+      <td>10.78</td>
+      <td>2.57</td>
+      <td>24.30</td>
       <td>False</td>
       <td>2</td>
       <td>330</td>
     </tr>
     <tr>
       <th>NOTCH1 (mis)</th>
-      <td>6.07</td>
-      <td>3.36</td>
-      <td>10.01</td>
+      <td>6.00</td>
+      <td>3.29</td>
+      <td>9.87</td>
       <td>False</td>
       <td>34</td>
       <td>284</td>
     </tr>
     <tr>
       <th>NOTCH1 (plof)</th>
-      <td>22.14</td>
-      <td>9.47</td>
-      <td>40.60</td>
+      <td>22.17</td>
+      <td>9.48</td>
+      <td>40.83</td>
       <td>False</td>
       <td>8</td>
       <td>308</td>
     </tr>
     <tr>
       <th>NOTCH1 (syn)</th>
-      <td>2.04</td>
-      <td>0.78</td>
-      <td>4.07</td>
+      <td>1.99</td>
+      <td>0.73</td>
+      <td>3.89</td>
       <td>False</td>
       <td>5</td>
       <td>327</td>
     </tr>
     <tr>
       <th>PIK3CA (mis)</th>
-      <td>21.71</td>
-      <td>11.90</td>
-      <td>36.58</td>
+      <td>21.94</td>
+      <td>11.43</td>
+      <td>36.64</td>
       <td>False</td>
       <td>50</td>
       <td>280</td>
@@ -1765,16 +1773,16 @@ channel_gammas.round(2)
       <th>PIK3CA (plof)</th>
       <td>NaN</td>
       <td>NaN</td>
-      <td>8.65</td>
+      <td>8.00</td>
       <td>True</td>
       <td>0</td>
       <td>330</td>
     </tr>
     <tr>
       <th>PIK3CA (syn)</th>
-      <td>2.66</td>
-      <td>0.43</td>
-      <td>6.64</td>
+      <td>2.67</td>
+      <td>0.42</td>
+      <td>6.68</td>
       <td>False</td>
       <td>1</td>
       <td>331</td>
@@ -1853,32 +1861,32 @@ variant_gammas.round(0)
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  7e+03  3e+03     3000    13000      4454      4146  1.00        47      53
+    gamma  7e+03  3e+03     2900    12000      4165      3938  1.00        48      71
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  7e+03  4e+03     3300    14000      3864      3846  1.00        57      81
+    gamma  7e+03  4e+03     3200    14000      4165      3938  1.00        53      68
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  1e+04  8e+03     5300    28000      3964      3840  1.00       130     250
+    gamma  1e+04  8e+03     5300    28000      4165      3938  1.00       120     170
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  2e+03  1e+03      620     4800      3967      4023  1.00        23      36
+    gamma  2e+03  1e+03      590     4700      4165      3938  1.00        22      34
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  9e+03  6e+03     3100    19000      4085      3918  1.00        89     150
+    gamma  9e+03  6e+03     3100    19000      4165      3938  1.00        84     120
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  1e+04  7e+03     4900    26000      3811      3727  1.00       120     230
+    gamma  1e+04  7e+03     4700    25000      4165      3938  1.00       100     140
 
 
 
@@ -1909,54 +1917,54 @@ variant_gammas.round(0)
   <tbody>
     <tr>
       <th>PIK3CA p.E545K</th>
-      <td>6781.0</td>
-      <td>3011.0</td>
-      <td>12515.0</td>
+      <td>6586.0</td>
+      <td>2915.0</td>
+      <td>12073.0</td>
       <td>False</td>
       <td>12</td>
       <td>280</td>
     </tr>
     <tr>
       <th>PIK3CA p.E542K</th>
-      <td>7345.0</td>
-      <td>3297.0</td>
-      <td>13659.0</td>
+      <td>7240.0</td>
+      <td>3218.0</td>
+      <td>13562.0</td>
       <td>False</td>
       <td>13</td>
       <td>280</td>
     </tr>
     <tr>
       <th>PIK3CA p.H1047R</th>
-      <td>14122.0</td>
-      <td>5300.0</td>
-      <td>27768.0</td>
+      <td>14138.0</td>
+      <td>5277.0</td>
+      <td>28002.0</td>
       <td>False</td>
       <td>6</td>
       <td>280</td>
     </tr>
     <tr>
       <th>HRAS p.G12S</th>
-      <td>2199.0</td>
-      <td>625.0</td>
-      <td>4815.0</td>
+      <td>2140.0</td>
+      <td>587.0</td>
+      <td>4715.0</td>
       <td>False</td>
       <td>3</td>
       <td>313</td>
     </tr>
     <tr>
       <th>TP53 p.R248Q</th>
-      <td>9480.0</td>
-      <td>3114.0</td>
-      <td>19231.0</td>
+      <td>9466.0</td>
+      <td>3128.0</td>
+      <td>19356.0</td>
       <td>False</td>
       <td>4</td>
       <td>104</td>
     </tr>
     <tr>
       <th>TP53 p.R175H</th>
-      <td>12836.0</td>
-      <td>4931.0</td>
-      <td>25751.0</td>
+      <td>12638.0</td>
+      <td>4738.0</td>
+      <td>24825.0</td>
       <td>False</td>
       <td>6</td>
       <td>104</td>
@@ -2092,34 +2100,34 @@ called[
       <th>ENSG00000064012</th>
       <td>CASP8</td>
       <td>27</td>
-      <td>1.167</td>
+      <td>1.168</td>
       <td>0.000</td>
-      <td>25.824</td>
-      <td>13.801</td>
-      <td>51.602</td>
-      <td>27.932</td>
-    </tr>
-    <tr>
-      <th>ENSG00000147889</th>
-      <td>CDKN2A</td>
-      <td>52</td>
-      <td>0.448</td>
-      <td>0.000</td>
-      <td>196.668</td>
-      <td>92.754</td>
-      <td>397.152</td>
-      <td>202.390</td>
+      <td>25.835</td>
+      <td>13.919</td>
+      <td>50.965</td>
+      <td>27.949</td>
     </tr>
     <tr>
       <th>ENSG00000141510</th>
       <td>TP53</td>
       <td>187</td>
-      <td>0.989</td>
+      <td>0.987</td>
       <td>0.000</td>
-      <td>574.524</td>
-      <td>349.884</td>
-      <td>1025.585</td>
-      <td>580.555</td>
+      <td>574.363</td>
+      <td>347.658</td>
+      <td>1034.633</td>
+      <td>580.276</td>
+    </tr>
+    <tr>
+      <th>ENSG00000147889</th>
+      <td>CDKN2A</td>
+      <td>52</td>
+      <td>0.450</td>
+      <td>0.000</td>
+      <td>190.035</td>
+      <td>103.468</td>
+      <td>407.676</td>
+      <td>196.170</td>
     </tr>
     <tr>
       <th>ENSG00000174775</th>
@@ -2127,54 +2135,54 @@ called[
       <td>17</td>
       <td>0.480</td>
       <td>0.000</td>
-      <td>35.929</td>
-      <td>17.343</td>
-      <td>76.285</td>
-      <td>40.549</td>
+      <td>35.553</td>
+      <td>17.795</td>
+      <td>75.089</td>
+      <td>40.294</td>
     </tr>
     <tr>
       <th>ENSG00000121879</th>
       <td>PIK3CA</td>
       <td>50</td>
-      <td>3.418</td>
+      <td>3.417</td>
       <td>0.000</td>
-      <td>17.016</td>
-      <td>9.848</td>
-      <td>31.254</td>
-      <td>17.757</td>
+      <td>16.967</td>
+      <td>9.861</td>
+      <td>31.805</td>
+      <td>17.669</td>
     </tr>
     <tr>
       <th>ENSG00000116044</th>
       <td>NFE2L2</td>
       <td>24</td>
-      <td>1.433</td>
+      <td>1.436</td>
       <td>0.000</td>
-      <td>17.878</td>
-      <td>9.489</td>
-      <td>36.693</td>
-      <td>19.474</td>
+      <td>18.045</td>
+      <td>9.555</td>
+      <td>35.985</td>
+      <td>19.592</td>
     </tr>
     <tr>
       <th>ENSG00000148400</th>
       <td>NOTCH1</td>
       <td>42</td>
-      <td>7.374</td>
+      <td>7.373</td>
       <td>0.000</td>
-      <td>6.462</td>
-      <td>3.914</td>
-      <td>11.673</td>
-      <td>6.701</td>
+      <td>6.552</td>
+      <td>3.924</td>
+      <td>11.524</td>
+      <td>6.771</td>
     </tr>
     <tr>
       <th>ENSG00000109670</th>
       <td>FBXW7</td>
       <td>22</td>
-      <td>2.341</td>
+      <td>2.338</td>
       <td>0.000</td>
-      <td>9.972</td>
-      <td>5.508</td>
-      <td>18.969</td>
-      <td>10.820</td>
+      <td>9.961</td>
+      <td>5.561</td>
+      <td>18.686</td>
+      <td>10.732</td>
     </tr>
     <tr>
       <th>ENSG00000234745</th>
@@ -2182,54 +2190,54 @@ called[
       <td>11</td>
       <td>0.632</td>
       <td>0.000</td>
-      <td>17.337</td>
-      <td>7.923</td>
-      <td>39.381</td>
-      <td>20.816</td>
+      <td>17.399</td>
+      <td>8.019</td>
+      <td>37.776</td>
+      <td>20.748</td>
     </tr>
     <tr>
       <th>ENSG00000165671</th>
       <td>NSD1</td>
       <td>33</td>
-      <td>5.579</td>
+      <td>5.578</td>
       <td>0.000</td>
-      <td>7.173</td>
-      <td>3.985</td>
-      <td>13.895</td>
-      <td>7.530</td>
+      <td>7.300</td>
+      <td>4.090</td>
+      <td>13.905</td>
+      <td>7.629</td>
     </tr>
     <tr>
       <th>ENSG00000206503</th>
       <td>HLA-A</td>
       <td>10</td>
-      <td>0.612</td>
+      <td>0.614</td>
       <td>0.000</td>
-      <td>16.198</td>
-      <td>7.703</td>
-      <td>35.625</td>
-      <td>19.764</td>
+      <td>16.082</td>
+      <td>7.625</td>
+      <td>34.036</td>
+      <td>19.432</td>
     </tr>
     <tr>
       <th>ENSG00000083857</th>
       <td>FAT1</td>
       <td>47</td>
-      <td>14.311</td>
+      <td>14.318</td>
       <td>0.001</td>
-      <td>3.893</td>
-      <td>2.332</td>
-      <td>6.763</td>
-      <td>3.977</td>
+      <td>3.946</td>
+      <td>2.363</td>
+      <td>6.666</td>
+      <td>4.026</td>
     </tr>
     <tr>
       <th>ENSG00000129474</th>
       <td>AJUBA</td>
       <td>11</td>
-      <td>1.360</td>
+      <td>1.361</td>
       <td>0.003</td>
-      <td>8.193</td>
-      <td>2.939</td>
-      <td>17.223</td>
-      <td>9.532</td>
+      <td>8.268</td>
+      <td>1.890</td>
+      <td>16.799</td>
+      <td>9.490</td>
     </tr>
     <tr>
       <th>ENSG00000163513</th>
@@ -2237,21 +2245,21 @@ called[
       <td>11</td>
       <td>1.374</td>
       <td>0.003</td>
-      <td>7.962</td>
-      <td>3.257</td>
-      <td>16.773</td>
-      <td>9.244</td>
+      <td>8.118</td>
+      <td>3.075</td>
+      <td>17.072</td>
+      <td>9.300</td>
     </tr>
     <tr>
       <th>ENSG00000079999</th>
       <td>KEAP1</td>
       <td>12</td>
-      <td>1.747</td>
-      <td>0.006</td>
-      <td>6.844</td>
-      <td>1.058</td>
-      <td>13.925</td>
-      <td>7.790</td>
+      <td>1.743</td>
+      <td>0.005</td>
+      <td>7.019</td>
+      <td>1.068</td>
+      <td>14.238</td>
+      <td>7.897</td>
     </tr>
     <tr>
       <th>ENSG00000136238</th>
@@ -2259,43 +2267,43 @@ called[
       <td>7</td>
       <td>0.569</td>
       <td>0.007</td>
-      <td>10.879</td>
+      <td>11.094</td>
       <td>1.039</td>
-      <td>25.172</td>
-      <td>14.418</td>
+      <td>25.849</td>
+      <td>14.409</td>
     </tr>
     <tr>
       <th>ENSG00000172819</th>
       <td>RARG</td>
       <td>9</td>
-      <td>1.032</td>
+      <td>1.031</td>
       <td>0.008</td>
-      <td>8.268</td>
+      <td>8.428</td>
       <td>1.037</td>
-      <td>18.446</td>
-      <td>10.061</td>
+      <td>18.830</td>
+      <td>10.092</td>
     </tr>
     <tr>
       <th>ENSG00000100393</th>
       <td>EP300</td>
       <td>21</td>
-      <td>5.196</td>
+      <td>5.193</td>
       <td>0.044</td>
-      <td>4.337</td>
+      <td>4.387</td>
       <td>1.034</td>
-      <td>8.519</td>
-      <td>4.584</td>
+      <td>8.742</td>
+      <td>4.615</td>
     </tr>
     <tr>
       <th>ENSG00000167548</th>
       <td>KMT2D</td>
       <td>35</td>
-      <td>11.237</td>
+      <td>11.224</td>
       <td>0.044</td>
-      <td>3.593</td>
-      <td>1.055</td>
-      <td>6.536</td>
-      <td>3.689</td>
+      <td>3.610</td>
+      <td>1.059</td>
+      <td>6.602</td>
+      <td>3.700</td>
     </tr>
     <tr>
       <th>ENSG00000130538</th>
@@ -2303,10 +2311,10 @@ called[
       <td>6</td>
       <td>0.622</td>
       <td>0.065</td>
-      <td>6.944</td>
+      <td>6.829</td>
       <td>1.008</td>
-      <td>19.864</td>
-      <td>11.720</td>
+      <td>19.754</td>
+      <td>11.532</td>
     </tr>
   </tbody>
 </table>
@@ -2504,41 +2512,41 @@ project_a.style.format("{:.3g}")
 
 <style type="text/css">
 </style>
-<table id="T_35d03">
+<table id="T_d8508">
   <thead>
     <tr>
       <th class="blank level0" >&nbsp;</th>
-      <th id="T_35d03_level0_col0" class="col_heading level0 col0" >carriers</th>
-      <th id="T_35d03_level0_col1" class="col_heading level0 col1" >expected (neutral)</th>
-      <th id="T_35d03_level0_col2" class="col_heading level0 col2" >gamma</th>
-      <th id="T_35d03_level0_col3" class="col_heading level0 col3" >gamma lower</th>
-      <th id="T_35d03_level0_col4" class="col_heading level0 col4" >gamma upper</th>
+      <th id="T_d8508_level0_col0" class="col_heading level0 col0" >carriers</th>
+      <th id="T_d8508_level0_col1" class="col_heading level0 col1" >expected (neutral)</th>
+      <th id="T_d8508_level0_col2" class="col_heading level0 col2" >gamma</th>
+      <th id="T_d8508_level0_col3" class="col_heading level0 col3" >gamma lower</th>
+      <th id="T_d8508_level0_col4" class="col_heading level0 col4" >gamma upper</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <th id="T_35d03_level0_row0" class="row_heading level0 row0" >PIK3CA p.E545K</th>
-      <td id="T_35d03_row0_col0" class="data row0 col0" >12</td>
-      <td id="T_35d03_row0_col1" class="data row0 col1" >0.00278</td>
-      <td id="T_35d03_row0_col2" class="data row0 col2" >6.78e+03</td>
-      <td id="T_35d03_row0_col3" class="data row0 col3" >3.01e+03</td>
-      <td id="T_35d03_row0_col4" class="data row0 col4" >1.25e+04</td>
+      <th id="T_d8508_level0_row0" class="row_heading level0 row0" >PIK3CA p.E545K</th>
+      <td id="T_d8508_row0_col0" class="data row0 col0" >12</td>
+      <td id="T_d8508_row0_col1" class="data row0 col1" >0.00278</td>
+      <td id="T_d8508_row0_col2" class="data row0 col2" >6.59e+03</td>
+      <td id="T_d8508_row0_col3" class="data row0 col3" >2.92e+03</td>
+      <td id="T_d8508_row0_col4" class="data row0 col4" >1.21e+04</td>
     </tr>
     <tr>
-      <th id="T_35d03_level0_row1" class="row_heading level0 row1" >PIK3CA p.E542K</th>
-      <td id="T_35d03_row1_col0" class="data row1 col0" >13</td>
-      <td id="T_35d03_row1_col1" class="data row1 col1" >0.00288</td>
-      <td id="T_35d03_row1_col2" class="data row1 col2" >7.34e+03</td>
-      <td id="T_35d03_row1_col3" class="data row1 col3" >3.3e+03</td>
-      <td id="T_35d03_row1_col4" class="data row1 col4" >1.37e+04</td>
+      <th id="T_d8508_level0_row1" class="row_heading level0 row1" >PIK3CA p.E542K</th>
+      <td id="T_d8508_row1_col0" class="data row1 col0" >13</td>
+      <td id="T_d8508_row1_col1" class="data row1 col1" >0.00288</td>
+      <td id="T_d8508_row1_col2" class="data row1 col2" >7.24e+03</td>
+      <td id="T_d8508_row1_col3" class="data row1 col3" >3.22e+03</td>
+      <td id="T_d8508_row1_col4" class="data row1 col4" >1.36e+04</td>
     </tr>
     <tr>
-      <th id="T_35d03_level0_row2" class="row_heading level0 row2" >PIK3CA p.H1047R</th>
-      <td id="T_35d03_row2_col0" class="data row2 col0" >6</td>
-      <td id="T_35d03_row2_col1" class="data row2 col1" >0.000667</td>
-      <td id="T_35d03_row2_col2" class="data row2 col2" >1.41e+04</td>
-      <td id="T_35d03_row2_col3" class="data row2 col3" >5.3e+03</td>
-      <td id="T_35d03_row2_col4" class="data row2 col4" >2.78e+04</td>
+      <th id="T_d8508_level0_row2" class="row_heading level0 row2" >PIK3CA p.H1047R</th>
+      <td id="T_d8508_row2_col0" class="data row2 col0" >6</td>
+      <td id="T_d8508_row2_col1" class="data row2 col1" >0.000666</td>
+      <td id="T_d8508_row2_col2" class="data row2 col2" >1.41e+04</td>
+      <td id="T_d8508_row2_col3" class="data row2 col3" >5.28e+03</td>
+      <td id="T_d8508_row2_col4" class="data row2 col4" >2.8e+04</td>
     </tr>
   </tbody>
 </table>
@@ -2579,12 +2587,12 @@ plt.show()
 
 **Reading the figure.** The two helical-domain hotspots are the
 frequent ones (12 and 13 carriers), and the kinase-domain H1047R has
-half as many (6). But E545K and E542K mutate about three and a half times faster:
-they are C>T changes in APOBEC's TCA context, and APOBEC is active in
-many of these tumors (section 4). Once each is divided by its own
-neutral rate, H1047R comes out the *most* strongly selected, about
-twice the helical ones. Its interval overlaps theirs, so how sure is
-that? From the posterior draws:
+half as many (6). But E545K and E542K mutate about three and a half
+times faster: they are C>T changes in APOBEC's TCA context, and APOBEC
+is active in many of these tumors (section 4). Once each is divided by
+its own neutral rate, H1047R comes out the *most* strongly selected,
+about twice the helical ones. Its interval overlaps theirs, so how
+sure is that? From the posterior draws:
 
 
 ```python
@@ -2603,8 +2611,8 @@ for other in ("PIK3CA p.E545K", "PIK3CA p.E542K"):
     )
 ```
 
-    H1047R / p.E545K: 2.01 [0.65, 5.94], P(H1047R stronger) = 0.84
-    H1047R / p.E542K: 1.89 [0.63, 5.40], P(H1047R stronger) = 0.82
+    H1047R / p.E545K: 2.10 [0.67, 6.06], P(H1047R stronger) = 0.85
+    H1047R / p.E542K: 1.91 [0.62, 5.60], P(H1047R stronger) = 0.82
 
 
 The posterior favours stronger selection on H1047R, but with six
@@ -2634,61 +2642,52 @@ about a factor of two between two variants with care.
 
 ## 10. Project (b): selection in two groups of tumors
 
-Does selection on a gene differ between smokers and never-smokers?
-A paper that compares *mutation frequencies* between the groups
-cannot tell: smokers' tumors carry more mutations everywhere, so a
-gene is mutated more often in them even with the same selection.
-Gamma removes that, because each tumor's rate includes its own
-burden and spectrum (tobacco's SBS4 included).
+Does selection on a gene differ between tumors with and without human
+papillomavirus (HPV)? In HPV-positive tumors the virus's E6 protein
+degrades p53, and its E7 protein inactivates RB, the pathway CDKN2A
+guards: the virus does the work that TP53 and CDKN2A mutations do in
+HPV-negative tumors, so selection on those genes should be weaker
+there. HPV infection also switches on APOBEC, whose favourite context
+holds the helical PIK3CA hotspots (E545K, E542K), so one might expect
+those hotspots to be more frequent in HPV-positive tumors because they
+mutate faster there. Whether they do is a question for the rates, not
+for intuition. A comparison of mutation frequencies cannot separate
+rate from selection; gamma can, because each tumor's rate includes its
+own burden and spectrum.
 
-**Step 1: the groups**, from the GDC's clinical data (public, no
-account): `tobacco_smoking_status` of each patient.
+**Step 1: the groups**, from the HPV calls of TCGA's PanCanAtlas
+subtype table (from viral transcripts in each tumor's RNA), read from
+the cBioPortal (public, no account).
 
 
 ```python
 import requests
 
-response = requests.post(
-    "https://api.gdc.cancer.gov/cases",
-    json={
-        "filters": {
-            "op": "in",
-            "content": {
-                "field": "project.project_id",
-                "value": [f"TCGA-{PROJECT}"],
-            },
-        },
-        "fields": "submitter_id,exposures.tobacco_smoking_status",
-        "size": 2000,
+response = requests.get(
+    "https://www.cbioportal.org/api/studies/"
+    "hnsc_tcga_pan_can_atlas_2018/clinical-data",
+    params={
+        "clinicalDataType": "PATIENT",
+        "attributeId": "SUBTYPE",  # HNSC_HPV+ or HNSC_HPV-
+        "projection": "SUMMARY",
     },
     timeout=60,
 )
-status = {
-    case["submitter_id"]: (case.get("exposures") or [{}])[0].get(
-        "tobacco_smoking_status"
-    )
-    for case in response.json()["data"]["hits"]
-}
+subtype = {row["patientId"]: row["value"] for row in response.json()}
 patient = pd.Series(kept, index=kept).str.slice(0, 12)
-smoking = patient.map(status)
+hpv = patient.map(subtype)
 groups = {
-    "never": set(smoking.index[smoking == "Lifelong Non-Smoker"]),
-    "smoker": set(
-        smoking.index[smoking.str.startswith("Current", na=False)]
-    ),
+    "HPV+": set(hpv.index[hpv == "HNSC_HPV+"]),
+    "HPV-": set(hpv.index[hpv == "HNSC_HPV-"]),
 }
 print(
     {name: len(tumors) for name, tumors in groups.items()},
-    "| status unknown:",
-    int(
-        (
-            ~smoking.index.isin(groups["never"] | groups["smoker"])
-        ).sum()
-    ),
+    "| no HPV call:",
+    int(hpv.isna().sum()),
 )
 ```
 
-    {'never': 74, 'smoker': 250} | status unknown: 8
+    {'HPV+': 57, 'HPV-': 262} | no HPV call: 13
 
 
 **Step 2: one rate model, two gammas.** The rate model above was
@@ -2715,10 +2714,8 @@ def group_gamma(item, level, group, **kwargs):
 
 
 rows = []
-summaries, ratios = (
-    {},
-    {},
-)  # the numbers behind the table, for the figure
+# The numbers behind the table, kept for the figure.
+summaries, ratios = {}, {}
 for item, level in [
     ("TP53", "gene"),
     ("CDKN2A", "gene"),
@@ -2736,68 +2733,75 @@ for item, level in [
         row[f"{group} carriers"] = result.posterior.attrs[
             "n_tumors_with"
         ]
-    # The ratio of the two gammas, from independent draws of each.
-    log_ratio = np.log(draws["smoker"]) - np.log(
-        np.random.default_rng(0).permutation(draws["never"])
-    )
-    lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
-    ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
-    row["smoker / never"] = float(np.exp(np.median(log_ratio)))
-    row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
-    row["P(smoker > never)"] = float((log_ratio > 0).mean())
+    # The ratio of the two gammas, from independent draws of each;
+    # none when a group has no carrier (its gamma is only a bound).
+    if any(summaries[item, g]["upper_bound_only"] for g in groups):
+        ratios[item] = (np.nan, np.nan, np.nan)
+        row["HPV+ / HPV-"] = np.nan
+        row["ratio 89%"] = "no carrier in a group"
+        row["P(HPV+ > HPV-)"] = np.nan
+    else:
+        log_ratio = np.log(draws["HPV+"]) - np.log(
+            np.random.default_rng(0).permutation(draws["HPV-"])
+        )
+        lo, hi = np.exp(np.percentile(log_ratio, [5.5, 94.5]))
+        ratios[item] = (float(np.exp(np.median(log_ratio))), lo, hi)
+        row["HPV+ / HPV-"] = ratios[item][0]
+        row["ratio 89%"] = f"[{lo:.2f}, {hi:.2f}]"
+        row["P(HPV+ > HPV-)"] = float((log_ratio > 0).mean())
     rows.append(row)
 group_table = pd.DataFrame(rows).set_index("item")
 group_table
 ```
 
     Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  466  187      250      820      3915      3767  1.00         3     3.3
+           mean  sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  47.7  29       16       98      4165      3938  1.00      0.43     0.6
+
+
+    Gamma posterior summary:
+            mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  1e+03  4e+02      550     1700      4165      3938  1.00       5.7     6.5
+
+
+    Gamma posterior summary:
+           mean  sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  23.5  29        1       73      4165      3938  1.00      0.44    0.92
 
 
     Gamma posterior summary:
           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  642  242      360     1100      3937      3557  1.00       3.9     4.1
-
-
-    Gamma posterior summary:
-          mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  400  3e+02      130      850      4210      3824  1.00         4     5.7
-
-
-    Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  204  109       87      400      3916      3961  1.00       1.7     2.5
-
-
-    Gamma posterior summary:
-           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  14.2  7.2      5.8       27      3598      3539  1.00      0.12    0.17
-
-
-    Gamma posterior summary:
-           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  20.8  8.6       11       35      3937      3988  1.00      0.14    0.21
-
-
-    Gamma posterior summary:
-          mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  9.4  4.3      4.3       17      4104      3921  1.00     0.067   0.082
+    gamma  299  152      130      580      4165      3938  1.00       2.3       3
 
 
     Gamma posterior summary:
            mean    sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  6.72  2.46      3.6       11      3615      3746  1.00     0.041   0.041
+    gamma  40.4  18.9       18       74      4165      3938  1.00      0.28    0.35
+
+
+    Gamma posterior summary:
+           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  15.7  6.6      8.1       27      4165      3938  1.00       0.1    0.15
+
+
+    Gamma posterior summary:
+           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  5.19  3.2      1.5       11      4165      3938  1.00     0.048   0.064
+
+
+    Gamma posterior summary:
+           mean   sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
+    gamma  7.59  2.8      4.2       12      4165      3938  1.00     0.042   0.051
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  5e+03  4e+03     1200    12000      4069      3935  1.00        62     120
+    gamma  1e+04  8e+03     4200    28000      4165      3938  1.00       120     160
 
 
     Gamma posterior summary:
             mean     sd eti89_lb eti89_ub  ess_bulk  ess_tail r_hat mcse_mean mcse_sd
-    gamma  8e+03  4e+03     3700    16000      4284      3952  1.00        62      97
+    gamma  6e+03  3e+03     2400    11000      4165      3938  1.00        47      65
 
 
 
@@ -2808,15 +2812,15 @@ group_table
   <thead>
     <tr style="text-align: right;">
       <th></th>
-      <th>never gamma</th>
-      <th>never 89%</th>
-      <th>never carriers</th>
-      <th>smoker gamma</th>
-      <th>smoker 89%</th>
-      <th>smoker carriers</th>
-      <th>smoker / never</th>
+      <th>HPV+ gamma</th>
+      <th>HPV+ 89%</th>
+      <th>HPV+ carriers</th>
+      <th>HPV- gamma</th>
+      <th>HPV- 89%</th>
+      <th>HPV- carriers</th>
+      <th>HPV+ / HPV-</th>
       <th>ratio 89%</th>
-      <th>P(smoker &gt; never)</th>
+      <th>P(HPV+ &gt; HPV-)</th>
     </tr>
     <tr>
       <th>item</th>
@@ -2834,63 +2838,63 @@ group_table
   <tbody>
     <tr>
       <th>TP53</th>
-      <td>465.607816</td>
-      <td>[245.0, 821.0]</td>
-      <td>41</td>
-      <td>641.954182</td>
-      <td>[355.5, 1100.0]</td>
-      <td>141</td>
-      <td>1.391743</td>
-      <td>[0.62, 3.18]</td>
-      <td>0.73475</td>
+      <td>47.654619</td>
+      <td>[15.7, 98.1]</td>
+      <td>4</td>
+      <td>1010.193330</td>
+      <td>[552.0, 1679.8]</td>
+      <td>176</td>
+      <td>0.043598</td>
+      <td>[0.01, 0.12]</td>
+      <td>0.00000</td>
     </tr>
     <tr>
       <th>CDKN2A</th>
-      <td>400.011743</td>
-      <td>[130.5, 853.1]</td>
-      <td>14</td>
-      <td>203.855885</td>
-      <td>[87.2, 399.1]</td>
-      <td>36</td>
-      <td>0.533024</td>
-      <td>[0.16, 1.85]</td>
-      <td>0.20300</td>
+      <td>NaN</td>
+      <td>[nan, 73.0]</td>
+      <td>0</td>
+      <td>299.164397</td>
+      <td>[130.1, 576.7]</td>
+      <td>52</td>
+      <td>NaN</td>
+      <td>no carrier in a group</td>
+      <td>NaN</td>
     </tr>
     <tr>
       <th>PIK3CA</th>
-      <td>14.196558</td>
-      <td>[5.8, 27.3]</td>
-      <td>8</td>
-      <td>20.795769</td>
-      <td>[10.8, 34.9]</td>
-      <td>41</td>
-      <td>1.515456</td>
-      <td>[0.58, 4.14]</td>
-      <td>0.75275</td>
+      <td>40.374263</td>
+      <td>[18.2, 74.1]</td>
+      <td>12</td>
+      <td>15.693101</td>
+      <td>[8.1, 27.2]</td>
+      <td>35</td>
+      <td>2.546037</td>
+      <td>[0.97, 6.19]</td>
+      <td>0.93825</td>
     </tr>
     <tr>
       <th>NOTCH1</th>
-      <td>9.401658</td>
-      <td>[4.3, 17.4]</td>
-      <td>11</td>
-      <td>6.716676</td>
-      <td>[3.6, 11.3]</td>
-      <td>30</td>
-      <td>0.739648</td>
-      <td>[0.29, 1.75]</td>
-      <td>0.29650</td>
+      <td>5.185211</td>
+      <td>[1.5, 10.9]</td>
+      <td>3</td>
+      <td>7.588859</td>
+      <td>[4.2, 12.4]</td>
+      <td>38</td>
+      <td>0.625570</td>
+      <td>[0.19, 1.74]</td>
+      <td>0.24050</td>
     </tr>
     <tr>
       <th>PIK3CA p.E545K</th>
-      <td>5096.416835</td>
-      <td>[1182.8, 11992.6]</td>
-      <td>2</td>
-      <td>8309.801373</td>
-      <td>[3720.7, 15611.6]</td>
-      <td>10</td>
-      <td>1.854209</td>
-      <td>[0.52, 7.74]</td>
-      <td>0.77075</td>
+      <td>13224.358991</td>
+      <td>[4214.4, 27613.1]</td>
+      <td>4</td>
+      <td>5988.333890</td>
+      <td>[2441.1, 11444.8]</td>
+      <td>8</td>
+      <td>2.149205</td>
+      <td>[0.60, 6.78]</td>
+      <td>0.83500</td>
     </tr>
   </tbody>
 </table>
@@ -2905,32 +2909,61 @@ from matplotlib import ticker  # axis tick placement and labels
 items = list(group_table.index)
 y = np.arange(len(items))[::-1]
 fig, axes = plt.subplots(
-    1, 2, figsize=(9, 3.2), sharey=True, width_ratios=[3, 2]
+    1,
+    2,
+    figsize=(9, 0.45 * len(items) + 1),
+    sharey=True,
+    width_ratios=[3, 2],
 )
 ax = axes[0]
+x_min = (
+    0.1  # the left edge: where an upper bound's dotted line starts
+)
 for group, offset, color in [
-    ("smoker", 0.15, "C1"),
-    ("never", -0.15, "C0"),
+    ("HPV+", 0.15, "C1"),
+    ("HPV-", -0.15, "C0"),
 ]:
-    s = [summaries[item, group] for item in items]
-    ax.errorbar(
-        [x["mean"] for x in s],
-        y + offset,
-        xerr=[
-            [x["mean"] - x["lower"] for x in s],
-            [x["upper"] - x["mean"] for x in s],
-        ],
-        fmt="o",
-        ms=4,
-        capsize=2,
-        color=color,
-        label=group,
-    )
+    for yi, item in zip(y, items):
+        s = summaries[item, group]
+        if s["upper_bound_only"]:
+            # No carrier in this group: only an upper bound, dotted.
+            ax.plot(
+                [x_min, s["upper"]],
+                [yi + offset] * 2,
+                ls=":",
+                color=color,
+            )
+            ax.plot(
+                s["upper"], yi + offset, marker="|", ms=8, color=color
+            )
+        else:
+            ax.errorbar(
+                s["mean"],
+                yi + offset,
+                xerr=[
+                    [s["mean"] - s["lower"]],
+                    [s["upper"] - s["mean"]],
+                ],
+                fmt="o",
+                ms=4,
+                capsize=2,
+                color=color,
+            )
+    ax.plot(
+        [], [], "o", ms=4, color=color, label=group
+    )  # legend entry
 ax.axvline(1, color="0.6", lw=1, ls="--")
 ax.set_xscale("log")
+if any(
+    summaries[i, g]["upper_bound_only"] for i in items for g in groups
+):
+    ax.set_xlim(left=x_min)  # room for the dotted bounds
 ax.set_yticks(y, items)
 ax.set_xlabel("gamma (posterior mean, 89% interval)")
-ax.legend(frameon=False, loc="upper left")
+# A framed legend above the axes, so its markers are not read as data.
+ax.legend(
+    frameon=True, loc="lower left", bbox_to_anchor=(0, 1.02), ncol=2
+)
 
 ax = axes[1]
 median, lower, upper = (
@@ -2945,6 +2978,18 @@ ax.errorbar(
     capsize=2,
     color="0.2",
 )
+for yi, item in zip(y, items):
+    if np.isnan(ratios[item][0]):
+        ax.text(
+            1,
+            yi,
+            "no carrier in a group",
+            ha="center",
+            va="center",
+            fontsize=7,
+            color="0.4",
+            bbox={"facecolor": "white", "edgecolor": "none"},
+        )
 ax.axvline(1, color="0.6", lw=1, ls="--")
 ax.set_xscale("log")
 # Ticks at powers of 2 (1/4, 1/2, 1, 2, 4), fractions below 1.
@@ -2955,7 +3000,7 @@ ax.xaxis.set_major_formatter(
     )
 )
 ax.xaxis.set_minor_formatter(ticker.NullFormatter())
-ax.set_xlabel("smoker / never-smoker gamma (89%)")
+ax.set_xlabel("HPV+ / HPV- gamma (89%)")
 fig.tight_layout()
 plt.show()
 ```
@@ -2967,24 +3012,32 @@ plt.show()
 
 
 **Reading the figure.** Left: each gene's (and E545K's) gamma in the
-two groups, smokers orange, never-smokers blue; right: the ratio of
-the two, with the dashed line at "no difference". The groups'
-intervals overlap for every item, and every ratio's interval crosses
-1; the never-smokers' intervals are mostly the wider ones, from a
-group about a third the size. The width of the ratio's interval is the
-answer to "how large a difference could this cohort have missed".
+two groups, HPV-positive orange, HPV-negative blue; right: the ratio
+of the two, with the dashed line at "no difference". TP53 is selected
+about twenty times more weakly in HPV-positive tumors (the ratio's
+interval lies far below 1), and CDKN2A has no carrier among them at
+all, only an upper bound (dotted): the virus inactivates both
+pathways, so mutations in these genes bring little. PIK3CA leans the
+other way, about two and a half times more strongly selected in
+HPV-positive tumors, but the lower end of its interval sits at about
+1: suggestive, not resolved. For NOTCH1 and E545K the cohort cannot
+tell. The HPV-positive group is a fifth the size of the other, hence
+its wider intervals; the width of a ratio's interval is the answer to
+"how large a difference could this cohort have missed".
 
-**Reading the table.** No ratio's interval excludes 1. TP53's gamma is
-somewhat higher in smokers and CDKN2A's in never-smokers, but the
-intervals run from about half to two or three times: with 74
-never-smokers (and, for E545K, two carriers among them), this cohort
-cannot tell these genes' selection apart between the groups. That
-is a result worth reporting as it is ("no evidence of a difference,
-and differences up to threefold cannot be excluded"), and it is
-what a frequency comparison hides: TP53 is mutated in 56% of the
-smokers' tumors and 55% of the never-smokers', and the gamma
-comparison says that similar frequency is consistent with similar
-selection, given each tumor's rates.
+**Reading the table.** For TP53 the frequencies point the same way as
+the gammas: 4 of the 57 HPV-positive tumors carry a mutation (7%),
+against 176 of the 262 HPV-negative ones (67%). For E545K intuition
+would mislead. It is in 7% of the HPV-positive tumors and 3% of the
+HPV-negative ones, and APOBEC has a larger share of the HPV-positive
+tumors' mutations (median 24% against 14%); but those tumors carry
+fewer mutations (a median of 64 calls against 112), so E545K's rate
+per tumor is in fact about half as high in them (`model.mu_ms`, the
+median over each group). Its higher frequency there is not rate.
+Whether it is selection the cohort cannot say: on 4 and 8 carriers the
+ratio's interval runs from 0.6 to 6.8. That is a result worth
+reporting as it is ("no evidence of a difference, and anything from
+somewhat weaker to nearly seven times stronger cannot be excluded").
 
 **How the uncertainty is computed, and what it leaves out.** The
 ratio's interval comes from pairing independent draws of the two
@@ -2993,7 +3046,7 @@ uncertainty (the covariate effects, `r_g`) moves both the same way;
 pairing independent draws ignores that shared part, which makes
 the ratio's interval somewhat *wider* than it should be. So a ratio
 whose interval excludes 1 here is a conservative finding. A
-`P(smoker > never)` near 0.5 means no evidence of a difference,
+`P(HPV+ > HPV-)` near 0.5 means no evidence of a difference,
 not evidence of no difference: check the interval's width before
 writing "the same".
 
@@ -3004,12 +3057,11 @@ writing "the same".
 - Comparing two groups' gammas from two separately fitted rate
   models: their difference then mixes selection with the two fits'
   differences.
-- Forgetting confounders. In head and neck cancer, never-smokers are
-  enriched for tumors positive for human papillomavirus (HPV), whose
-  biology differs (HPV's E6 protein degrades p53, so TP53 mutations
-  are rarely needed). A smoker/never-smoker difference in TP53
-  selection may be an HPV difference. Compare within HPV-negative
-  tumors before attributing it to tobacco.
+- Forgetting confounders. HPV-positive tumors are mostly in the
+  oropharynx, and their patients smoke less: a difference between
+  the groups may be one of anatomical site or of tobacco. Compare
+  within one site (the oropharynx has both kinds) before attributing
+  it to the virus.
 - Testing many genes and reporting the few with intervals excluding
   1: correct for the number of genes compared, or decide the genes
   before looking.
@@ -3205,12 +3257,12 @@ Each project below is a summer's work with this tutorial's tools.
    that ranks or compares mutations by frequency (or calls the most
    frequent mutation the main driver) and redo its comparison with
    rates and gammas, as in project (a).
-2. **Selection by group.** Smokers and never-smokers in lung
-   adenocarcinoma (`LUAD`; a larger cohort: run it on a server),
-   young and old patients (`diagnoses.age_at_diagnosis` in the same
-   GDC query), sexes, HPV status in head and neck cancer, molecular
-   subtypes. Which genes' gammas differ, and which differences
-   survive a confounder?
+2. **Selection by group.** Smokers and never-smokers in head and neck
+   or lung cancer (`exposures.tobacco_smoking_status`, from the GDC's
+   `cases` endpoint; `LUAD` is a larger cohort: run it on a server),
+   young and old patients (`diagnoses.age_at_diagnosis`), sexes,
+   molecular subtypes. Which genes' gammas differ, and which
+   differences survive a confounder?
 3. **APOBEC hotspots across cancers.** PIK3CA E545K/E542K in
    bladder (`BLCA`), cervical (`CESC`), breast (`BRCA`) and head and
    neck cancer: does the helical/kinase difference hold everywhere?

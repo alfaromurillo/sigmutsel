@@ -198,7 +198,14 @@ import numpy as np  # arrays and numerical functions
 import pandas as pd  # tables (DataFrames): every result is one
 
 import sigmutsel
+import sigmutsel.constants  # package-wide settings, the seed below
 from sigmutsel import Model, MutationDataset  # the two main objects
+
+# A fixed seed makes the sampling reproducible: the rate model's fit
+# and the draws behind every gamma give the same numbers on every run.
+# Left at None (the default), each run differs slightly, by the Monte
+# Carlo error.
+sigmutsel.constants.random_seed = 0
 
 print("sigmutsel", sigmutsel.__version__)
 

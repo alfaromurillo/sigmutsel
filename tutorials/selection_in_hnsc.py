@@ -705,6 +705,9 @@ print(
 # saved. If it prints "There are not enough devices to run parallel
 # chains", the chains are running one after another: the result is the
 # same, only slower (see "Chains, cores and `XLA_FLAGS`").
+#
+# The page you are reading was run on one GPU (the box in section 0),
+# so below it prints `JAX devices: 1`; on a CPU it should print 4.
 
 # %%
 import jax  # the numerical library the sampler runs on
@@ -953,8 +956,9 @@ rates.style.format("{:.3g}")
 # E545K). The ratio is thousands: these variants are among the most
 # strongly selected mutations in this cancer. The rates of variants of
 # the same gene differ: E545K and E542K are C>T changes in a TCA
-# context, APOBEC's favourite, and mutate about four times faster than
-# H1047R (an A>G change). Project (a) is about exactly that difference.
+# context, APOBEC's favourite, and mutate about three and a half times
+# faster than H1047R (an A>G change). Project (a) is about exactly that
+# difference.
 
 # %%
 # Each tumor's rate for two PIK3CA hotspots, coloured by APOBEC's share
@@ -1448,12 +1452,12 @@ plt.show()
 # %% [markdown]
 # **Reading the figure.** The two helical-domain hotspots are the
 # frequent ones (12 and 13 carriers), and the kinase-domain H1047R has
-# half as many (6). But E545K and E542K mutate about four times faster:
-# they are C>T changes in APOBEC's TCA context, and APOBEC is active in
-# many of these tumors (section 4). Once each is divided by its own
-# neutral rate, H1047R comes out the *most* strongly selected, about
-# twice the helical ones. Its interval overlaps theirs, so how sure is
-# that? From the posterior draws:
+# half as many (6). But E545K and E542K mutate about three and a half
+# times faster: they are C>T changes in APOBEC's TCA context, and APOBEC
+# is active in many of these tumors (section 4). Once each is divided by
+# its own neutral rate, H1047R comes out the *most* strongly selected,
+# about twice the helical ones. Its interval overlaps theirs, so how
+# sure is that? From the posterior draws:
 
 # %%
 draws = {
